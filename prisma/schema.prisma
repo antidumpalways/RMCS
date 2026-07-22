@@ -1,0 +1,283 @@
+// R CELL Management System - Prisma Schema
+// Filosofi: 1 modul Inventory generik, kategori = data, bukan logic terpisah.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// SETTINGS - data dasar toko (singleton, id=1)
+// ============================================================================
+model Settings {
+  id          Int      @id @default(1)
+  storeName   String   @default("R CELL")
+  cashInitial BigInt   @default(0) // Cash Awal (rupiah)
+  balanceInitial BigInt @default(0) // Saldo Awal (e-wallet/transfer)
+  theme       String   @default("system") // light | dark | system
+  updatedAt   DateTime @updatedAt
+}
+
+// ============================================================================
+// LOCATIONS - lokasi penyimpanan barang (custom, admin kelola)
+// ============================================================================
+model Location {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique // "Rak 1", "Toples Samping", "Gudang", dll
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  products Product[]
+
+  @@index([sortOrder])
+}
+
+// ============================================================================
+// USERS - owner (1) + karyawan (banyak, bisa juga per-shift)
+// "owner" = lihat semua, "karyawan" = angka sensitif di-XXXX
+// Username bisa encode shift: "shift1", "shift2", "admin", "karyawan"
+// ============================================================================
+model User {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique
+  pin       String   // PIN 4-6 digit
+  role      String   @default("karyawan") // "owner" | "karyawan"
+  shift     String?  // opsional: "siang" | "malam" (atau bebas)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  saleTransactions    SaleTransaction[]
+  serviceTransactions ServiceTransaction[]
+  expenses            Expense[]
+  inventoryMovements  InventoryMovement[]
+  debts               Debt[]
+  debtPayments        DebtPayment[]
+  shiftClosures       ShiftClosure[]
+  stockOpnames        StockOpname[]
+}
+
+// ============================================================================
+// CATEGORIES - master kategori (Accessories, Voucher, Pulsa, Rokok, dll)
+// ============================================================================
+model Category {
+  id            Int            @id @default(autoincrement())
+  name          String         @unique
+  sortOrder     Int            @default(0)
+  createdAt     DateTime       @default(now())
+  subcategories Subcategory[]
+  products      Product[]
+}
+
+// ============================================================================
+// SUBCATEGORIES - subkategori per kategori (Tempered Glass, Hydrogel, dll)
+// ============================================================================
+model Subcategory {
+  id         Int       @id @default(autoincrement())
+  name       String
+  categoryId Int
+  category   Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  products   Product[]
+
+  @@unique([categoryId, name])
+  @@index([categoryId])
+}
+
+// ============================================================================
+// PRODUCTS - barang dagangan
+// profit SELALU dihitung = sellPrice - costPrice, tidak disimpan.
+// ============================================================================
+model Product {
+  id            Int       @id @default(autoincrement())
+  name          String
+  categoryId    Int
+  category      Category  @relation(fields: [categoryId], references: [id])
+  subcategoryId Int?
+  subcategory   Subcategory? @relation(fields: [subcategoryId], references: [id])
+  provider      String?  // opsional: Telkomsel, XL, Axis, Three, Smartfren, By.U, IM3, dll
+  validity      String?  // opsional: "3 hari", "5 hari", "7 hari", "Standard", dll
+  locationId    Int?
+  location      Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  costPrice     BigInt    @default(0) // Modal
+  sellPrice     BigInt    @default(0) // Harga Jual
+  stock         Int       @default(0) // Stok Saat Ini
+  minStock      Int       @default(3) // Minimal Stok (alert)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  inventoryMovements InventoryMovement[]
+  saleItems          SaleItem[]
+  stockOpnames       StockOpname[]
+
+  @@index([categoryId])
+  @@index([subcategoryId])
+  @@index([name])
+  @@index([provider])
+  @@index([locationId])
+}
+
+// ============================================================================
+// INVENTORY MOVEMENTS - pencatatan barang masuk (stok bertambah)
+// Setiap kali barang masuk, modal di-update ke harga beli terbaru.
+// ============================================================================
+model InventoryMovement {
+  id          Int      @id @default(autoincrement())
+  productId   Int
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  type        String   // "IN" (barang masuk) - diserderhanakan, hanya IN untuk v1
+  qty         Int
+  costAtTime  BigInt   // harga beli per unit SAAT itu (untuk histori & update modal)
+  supplier    String?  // opsional: nama supplier
+  note        String?
+  userId      Int?
+  user        User?    @relation(fields: [userId], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@index([productId])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// DEBTS / PIUTANG - customer bon
+// Karyawan boleh lihat & tambah. Owner bisa edit & tandai lunas.
+// ============================================================================
+model Debt {
+  id          Int      @id @default(autoincrement())
+  customer    String   // nama customer
+  amount      BigInt   // total hutang
+  paid        BigInt   @default(0) // sudah dibayar
+  description String?  // opsional: "Beli 2 case iPhone"
+  status      String   @default("BELUM") // BELUM | LUNAS
+  userId      Int?
+  user        User?    @relation(fields: [userId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  payments    DebtPayment[]
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+model DebtPayment {
+  id        Int      @id @default(autoincrement())
+  debtId    Int
+  debt      Debt     @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  amount    BigInt   // nominal cicilan
+  note      String?
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@index([debtId])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// SHIFT CLOSURES - end-of-shift snapshot
+// Setiap kali karyawan "tutup shift", sistem catat ringkasan
+// ============================================================================
+model ShiftClosure {
+  id            Int      @id @default(autoincrement())
+  userId        Int
+  user          User     @relation(fields: [userId], references: [id])
+  shift         String   // "siang" | "malam" (dari user.shift)
+  closedAt      DateTime @default(now())
+  salesCount    Int      @default(0)
+  salesRevenue  BigInt   @default(0)
+  salesProfit   BigInt   @default(0)
+  servicesCount Int      @default(0)
+  servicesProfit BigInt  @default(0)
+  expensesTotal BigInt   @default(0)
+  note          String?
+
+  @@index([closedAt])
+  @@index([userId])
+  @@index([shift])
+}
+
+// ============================================================================
+// STOCK OPNAME - audit stok
+// Owner input "stok fisik seharusnya X" → sistem hitung selisih vs Product.stock
+// ============================================================================
+model StockOpname {
+  id        Int      @id @default(autoincrement())
+  productId Int
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  systemStock Int    // stok di sistem saat opname
+  physicalStock Int  // hasil hitung fisik
+  diff      Int      // physical - system (negatif = kurang, positif = lebih)
+  note      String?
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// SALE TRANSACTIONS - header penjualan
+// ============================================================================
+model SaleTransaction {
+  id        Int        @id @default(autoincrement())
+  totalRevenue BigInt  @default(0) // Omzet (sum sellPrice * qty)
+  totalProfit  BigInt  @default(0) // Profit (sum (sellPrice-costPrice) * qty)
+  userId       Int?
+  user         User?     @relation(fields: [userId], references: [id])
+  createdAt    DateTime @default(now())
+  items        SaleItem[]
+
+  @@index([createdAt])
+  @@index([userId])
+}
+
+model SaleItem {
+  id        Int      @id @default(autoincrement())
+  saleId    Int
+  sale      SaleTransaction @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  productId Int
+  product   Product  @relation(fields: [productId], references: [id])
+  qty       Int
+  priceAtSale BigInt // harga jual saat transaksi
+  costAtSale BigInt // modal saat transaksi (snapshot)
+  revenue   BigInt  // priceAtSale * qty
+  profit    BigInt  // (priceAtSale - costAtSale) * qty
+
+  @@index([saleId])
+  @@index([productId])
+}
+
+// ============================================================================
+// BIAYA ADMIN - rekap jasa harian (top up, transfer, tarik tunai, dll)
+// User input: jumlah transaksi + total admin. Profit = total admin (otomatis).
+// ============================================================================
+model ServiceTransaction {
+  id        Int      @id @default(autoincrement())
+  count     Int      // jumlah transaksi
+  profit    BigInt   // total admin (otomatis = profit)
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId])
+}
+
+// ============================================================================
+// EXPENSES - pengeluaran (otomatis kurangi cash saat dicatat)
+// ============================================================================
+model Expense {
+  id        Int      @id @default(autoincrement())
+  name      String
+  amount    BigInt
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId])
+}
