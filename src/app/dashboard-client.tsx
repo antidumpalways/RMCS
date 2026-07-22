@@ -1,5 +1,8 @@
 'use client';
 
+import * as React from 'react';
+import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Wallet,
@@ -14,17 +17,20 @@ import {
   XCircle,
 } from 'lucide-react';
 import { formatRupiah } from '@/lib/utils';
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
 import type { DashboardSummary } from '@/lib/automation';
-import Link from 'next/link';
+
+// Lazy load recharts (~366KB) — hanya di-load saat grafik visible
+const SalesChart = dynamic(
+  () => import('./sales-chart').then((m) => m.SalesChart),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-44 items-center justify-center text-xs text-muted-foreground">
+        Memuat grafik...
+      </div>
+    ),
+  }
+);
 
 type Props = {
   data: DashboardSummary;
@@ -213,35 +219,7 @@ export function DashboardClient({ data, isKaryawan }: Props) {
               Belum ada transaksi
             </div>
           ) : (
-            <div className="h-44">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis
-                    dataKey="date"
-                    tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
-                  />
-                  <YAxis
-                    tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
-                    tickFormatter={(v) => {
-                      if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}jt`;
-                      if (v >= 1_000) return `${(v / 1_000).toFixed(0)}rb`;
-                      return String(v);
-                    }}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: 'hsl(var(--popover))',
-                      border: '1px solid hsl(var(--border))',
-                      borderRadius: 8,
-                      fontSize: 12,
-                    }}
-                    formatter={(v: number) => formatRupiah(v)}
-                  />
-                  <Bar dataKey="Revenue" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            <SalesChart data={chartData} />
           )}
         </CardContent>
       </Card>
