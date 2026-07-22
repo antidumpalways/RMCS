@@ -136,6 +136,44 @@ export async function updateProduct(
   revalidatePath('/harga');
 }
 
+// ============================================================================
+// ADJUST STOCK - koreksi stok manual (untuk admin/owner)
+// Set stok ke nilai absolut, dengan audit trail di InventoryMovement
+// ============================================================================
+export async function adjustStock(data: {
+  productId: number;
+  newStock: number;
+  note: string;
+}) {
+  if (data.newStock < 0) throw new Error('Stok tidak boleh negatif');
+  if (!data.note.trim()) throw new Error('Catatan koreksi wajib diisi');
+  const me = await getCurrentUser();
+  await prisma.$transaction(async (tx) => {
+    const product = await tx.product.findUniqueOrThrow({ where: { id: data.productId } });
+    const diff = data.newStock - product.stock;
+    if (diff === 0) {
+      throw new Error('Stok tidak berubah');
+    }
+    await tx.product.update({
+      where: { id: data.productId },
+      data: { stock: data.newStock },
+    });
+    await tx.inventoryMovement.create({
+      data: {
+        productId: data.productId,
+        type: 'ADJUST',
+        qty: diff,
+        costAtTime: product.costPrice,
+        note: `Koreksi: ${data.note.trim()}`,
+        userId: me?.id ?? null,
+      },
+    });
+  });
+  revalidatePath('/inventory');
+  revalidatePath('/');
+  revalidatePath('/harga');
+}
+
 export async function deleteProduct(id: number) {
   await prisma.product.delete({ where: { id } });
   revalidatePath('/inventory');

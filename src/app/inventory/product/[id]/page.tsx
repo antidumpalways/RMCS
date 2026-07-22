@@ -20,13 +20,19 @@ export default async function ProductDetailPage({
     include: { category: true, subcategory: true, location: true },
   });
   if (!p) notFound();
-  const [allCategories, subs, locations] = await Promise.all([
+  const [allCategories, subs, locations, movements] = await Promise.all([
     prisma.category.findMany({ orderBy: { sortOrder: 'asc' } }),
     prisma.subcategory.findMany({
       where: { categoryId: p.categoryId },
       orderBy: { name: 'asc' },
     }),
     prisma.location.findMany({ orderBy: { sortOrder: 'asc' } }),
+    prisma.inventoryMovement.findMany({
+      where: { productId },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      include: { user: { select: { username: true } } },
+    }),
   ]);
   return (
     <>
@@ -52,6 +58,14 @@ export default async function ProductDetailPage({
         categories={allCategories}
         subcategories={subs}
         locations={locations.map((l) => ({ id: l.id, name: l.name }))}
+        movements={movements.map((m) => ({
+          id: m.id,
+          type: m.type,
+          qty: m.qty,
+          note: m.note,
+          userName: m.user?.username ?? null,
+          createdAt: m.createdAt.toISOString(),
+        }))}
       />
     </>
   );

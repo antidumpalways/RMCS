@@ -20,14 +20,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Plus, Minus, Pencil, Trash2, ArrowLeft, MapPin } from 'lucide-react';
-import { formatRupiah } from '@/lib/utils';
+import { Plus, Minus, Pencil, Trash2, ArrowLeft, MapPin, Sliders } from 'lucide-react';
+import { formatRupiah, formatDateTimeID } from '@/lib/utils';
 import {
   addStock,
   recordSale,
   updateProduct,
   deleteProduct,
+  adjustStock,
 } from '@/lib/actions';
+import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/components/ui/toast';
 
 type Product = {
@@ -50,18 +52,28 @@ type Product = {
 type Cat = { id: number; name: string };
 type Sub = { id: number; categoryId: number; name: string };
 type Loc = { id: number; name: string };
+type Movement = {
+  id: number;
+  type: string;
+  qty: number;
+  note: string | null;
+  userName: string | null;
+  createdAt: string;
+};
 
 export function ProductDetailClient({
   product,
   categories,
   subcategories,
   locations,
+  movements,
   isKaryawan,
 }: {
   product: Product;
   categories: Cat[];
   subcategories: Sub[];
   locations: Loc[];
+  movements: Movement[];
   isKaryawan: boolean;
 }) {
   const router = useRouter();
@@ -153,7 +165,16 @@ export function ProductDetailClient({
       </div>
 
       {!isKaryawan && (
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
+          <AdjustStockDialog
+            productId={product.id}
+            productName={product.name}
+            currentStock={product.stock}
+            onDone={() => {
+              router.refresh();
+              toast({ title: 'Stok dikoreksi' });
+            }}
+          />
           <EditProductDialog
             product={product}
             categories={categories}
@@ -173,6 +194,54 @@ export function ProductDetailClient({
             }}
           />
         </div>
+      )}
+
+      {!isKaryawan && movements.length > 0 && (
+        <Card>
+          <CardContent className="p-3">
+            <div className="mb-2 text-sm font-semibold">Riwayat Stok</div>
+            <div className="space-y-1">
+              {movements.map((m) => {
+                const isAdjust = m.type === 'ADJUST';
+                const isOut = m.qty < 0;
+                return (
+                  <div
+                    key={m.id}
+                    className="flex items-start justify-between gap-2 border-b pb-1.5 text-xs last:border-b-0 last:pb-0"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        {isAdjust && (
+                          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                            Koreksi
+                          </span>
+                        )}
+                        <span className="text-muted-foreground">
+                          {formatDateTimeID(m.createdAt)}
+                        </span>
+                        {m.userName && (
+                          <span className="text-muted-foreground">· {m.userName}</span>
+                        )}
+                      </div>
+                      {m.note && (
+                        <div className="mt-0.5 truncate text-muted-foreground">{m.note}</div>
+                      )}
+                    </div>
+                    <div
+                      className={`shrink-0 text-sm font-bold ${
+                        isOut
+                          ? 'text-rose-600 dark:text-rose-400'
+                          : 'text-emerald-600 dark:text-emerald-400'
+                      }`}
+                    >
+                      {m.qty > 0 ? `+${m.qty}` : m.qty}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );
@@ -570,6 +639,142 @@ function EditProductDialog({
           </div>
           <Button type="submit" className="w-full">
             Simpan
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ============================================================================
+// ADJUST STOCK (koreksi manual - admin/owner only)
+// ============================================================================
+function AdjustStockDialog({
+  productId,
+  productName,
+  currentStock,
+  onDone,
+}: {
+  productId: number;
+  productName: string;
+  currentStock: number;
+  onDone: () => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [newStock, setNewStock] = React.useState('');
+  const [note, setNote] = React.useState('');
+  const [submitting, setSubmitting] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const diff = newStock ? Number(newStock) - currentStock : 0;
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        setOpen(v);
+        if (!v) {
+          setNewStock('');
+          setNote('');
+          setError(null);
+        }
+      }}
+    >
+      <Button onClick={() => setOpen(true)} variant="outline" className="text-xs sm:text-sm">
+        <Sliders className="mr-1 h-4 w-4" /> Koreksi
+      </Button>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Koreksi Stok Manual</DialogTitle>
+        </DialogHeader>
+        <div className="text-sm">
+          <strong>{productName}</strong>
+          <div className="mt-1 text-xs text-muted-foreground">
+            Stok saat ini: <strong>{currentStock}</strong>
+          </div>
+        </div>
+        <form
+          action={async (fd) => {
+            const n = Number(fd.get('newStock') || 0);
+            const r = String(fd.get('note') ?? '').trim();
+            if (isNaN(n) || n < 0) {
+              setError('Stok harus angka ≥ 0');
+              return;
+            }
+            if (!r) {
+              setError('Catatan wajib diisi (audit trail)');
+              return;
+            }
+            if (n === currentStock) {
+              setError('Stok tidak berubah');
+              return;
+            }
+            setSubmitting(true);
+            setError(null);
+            try {
+              await adjustStock({
+                productId,
+                newStock: n,
+                note: r,
+              });
+              setOpen(false);
+              setNewStock('');
+              setNote('');
+              onDone();
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setSubmitting(false);
+            }
+          }}
+          className="space-y-3"
+        >
+          <div className="space-y-1">
+            <Label>Stok Baru (absolut)</Label>
+            <Input
+              type="number"
+              inputMode="numeric"
+              name="newStock"
+              value={newStock}
+              onChange={(e) => setNewStock(e.target.value)}
+              placeholder={`Saat ini: ${currentStock}`}
+              required
+              min={0}
+              autoFocus
+            />
+            {newStock && diff !== 0 && (
+              <p
+                className={`text-xs ${
+                  diff > 0
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-rose-600 dark:text-rose-400'
+                }`}
+              >
+                {diff > 0 ? `+${diff}` : diff} dari stok saat ini
+              </p>
+            )}
+          </div>
+          <div className="space-y-1">
+            <Label>Catatan Koreksi (wajib)</Label>
+            <Textarea
+              name="note"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="mis. Salah input stok awal, ditemukan 3 unit rusak, dll"
+              required
+              rows={2}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Tercatat di audit log untuk transparansi
+            </p>
+          </div>
+          {error && (
+            <div className="rounded-md bg-rose-50 p-2 text-center text-xs text-rose-700 dark:bg-rose-950/30 dark:text-rose-400">
+              {error}
+            </div>
+          )}
+          <Button type="submit" className="w-full" disabled={submitting}>
+            {submitting ? 'Menyimpan...' : 'Simpan Koreksi'}
           </Button>
         </form>
       </DialogContent>
