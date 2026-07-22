@@ -237,11 +237,30 @@ Estimasi kasar: dengan 4 user login/hari × 50 transaksi/hari × 30 hari = ~6000
 npx prisma db push
 ```
 
-### Lupa PIN owner
-→ Login ke Neon SQL Editor, reset manual:
+### Lupa PIN owner / Ganti PIN
+→ Login ke Neon SQL Editor, jalankan:
 ```sql
-UPDATE "User" SET pin = '0000' WHERE username = 'admin';
+-- Ganti PIN owner
+UPDATE "User" SET pin = 'pinBaruAnda' WHERE username = 'admin';
+
+-- Ganti PIN karyawan
+UPDATE "User" SET pin = 'pinBaru' WHERE username = 'shift1';
+UPDATE "User" SET pin = 'pinBaru' WHERE username = 'shift2';
+UPDATE "User" SET pin = 'pinBaru' WHERE username = 'karyawan';
+
+-- Lihat semua user
+SELECT username, role, shift, active FROM "User";
 ```
+
+**Fitur ganti PIN via UI** (planned v2): owner bisa ganti PIN user lain dari menu Pengaturan. Untuk sekarang pakai SQL Editor.
+
+### Keamanan Login
+- PIN disimpan **plain text** di DB (acceptable untuk konter kecil, akses DB hanya via Vercel env var)
+- **Rate limiting**: 5x gagal dalam window yang sama → akun dikunci 5 menit (anti-brute-force)
+- **Generic error**: tidak bedain "user tidak ada" vs "PIN salah" (anti-enumeration)
+- **HTTPS** otomatis di Vercel
+- **Session cookie** HTTP-only, SameSite=Lax, 30 hari
+- **Hint PIN default** hanya tampil di development mode (auto-hidden di production)
 
 ### Build error "Module not found"
 → Pastikan `npm install` berjalan sukses di Vercel. Cek build log di Vercel Dashboard.

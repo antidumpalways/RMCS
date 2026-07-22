@@ -35,10 +35,14 @@ export function LoginForm({ storeName }: { storeName: string }) {
                   // success - browser will follow
                   return;
                 }
-                if (msg.includes('Username dan PIN')) setError('Username dan PIN wajib diisi');
-                else if (msg.includes('tidak ditemukan')) setError('Username tidak ditemukan');
-                else if (msg.includes('PIN salah')) setError('PIN salah');
-                else setError(msg || 'Login gagal');
+                if (msg.includes('Username dan PIN wajib')) {
+                  setError('Username dan PIN wajib diisi');
+                } else if (msg.includes('Terlalu banyak')) {
+                  setError(msg);
+                } else {
+                  // Generic — tidak bedain "user tidak ada" vs "PIN salah"
+                  setError('Username atau PIN salah');
+                }
                 setPending(false);
               }
             }}
@@ -82,10 +86,11 @@ export function LoginForm({ storeName }: { storeName: string }) {
             <Button type="submit" className="w-full" size="lg" disabled={pending}>
               {pending ? 'Memeriksa...' : 'Masuk'}
             </Button>
-            <p className="text-center text-[10px] text-muted-foreground">
-              <strong>admin</strong> / 1234 (owner)<br />
-              <strong>shift1</strong> / 1111 (siang) • <strong>shift2</strong> / 2222 (malam)
-            </p>
+            {process.env.NODE_ENV !== 'production' && (
+              <p className="text-center text-[10px] text-muted-foreground">
+                <strong>DEV ONLY:</strong> admin/1234 • shift1/1111 • shift2/2222
+              </p>
+            )}
           </form>
         </CardContent>
       </Card>
