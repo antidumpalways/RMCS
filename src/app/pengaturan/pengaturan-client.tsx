@@ -142,10 +142,12 @@ export function PengaturanClient({ isKaryawan, settings }: Props) {
         </CardContent>
       </Card>
 
-      <Button onClick={save} disabled={saving} className="w-full" size="lg">
-        <Save className="mr-2 h-4 w-4" />
-        {saving ? 'Menyimpan...' : 'Simpan Pengaturan'}
-      </Button>
+      <div className="sticky bottom-[calc(56px+env(safe-area-inset-bottom))] -mx-4 bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:static sm:mx-0 sm:bg-transparent sm:p-0 sm:backdrop-blur-none">
+        <Button onClick={save} disabled={saving} className="w-full" size="lg">
+          <Save className="mr-2 h-4 w-4" />
+          {saving ? 'Menyimpan...' : 'Simpan Pengaturan'}
+        </Button>
+      </div>
 
       {!isKaryawan && (
         <Link href="/pengaturan/lokasi">

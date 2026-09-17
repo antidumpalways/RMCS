@@ -49,7 +49,7 @@ export function LaporanClient({ isKaryawan, from, to, data }: Props) {
       <Card>
         <CardContent className="p-3">
           <div className="flex items-end gap-2">
-            <Calendar className="h-4 w-4 text-muted-foreground" />
+            <Calendar className="h-4 w-4 shrink-0 text-muted-foreground" />
             <div className="flex-1 grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <Label className="text-[10px]">Dari</Label>
@@ -61,7 +61,7 @@ export function LaporanClient({ isKaryawan, from, to, data }: Props) {
                     url.searchParams.set('from', e.target.value);
                     router.push(url.toString());
                   }}
-                  className="h-9"
+                  className="h-11"
                 />
               </div>
               <div className="space-y-1">
@@ -74,7 +74,7 @@ export function LaporanClient({ isKaryawan, from, to, data }: Props) {
                     url.searchParams.set('to', e.target.value);
                     router.push(url.toString());
                   }}
-                  className="h-9"
+                  className="h-11"
                 />
               </div>
             </div>

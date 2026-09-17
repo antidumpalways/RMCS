@@ -134,12 +134,14 @@ export function InventoryClient({
 
       {view === 'list' ? (
         <>
-          <Input
-            placeholder="Cari di semua kategori..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="bg-muted/40"
-          />
+          <div className="sticky top-[108px] z-20 -mx-4 bg-background/95 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:static sm:mx-0 sm:p-0 sm:bg-transparent">
+            <Input
+              placeholder="Cari di semua kategori..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="bg-muted/40"
+            />
+          </div>
           <div className="space-y-2">
             {categories.length === 0 ? (
               <Card>
@@ -329,11 +331,12 @@ function CategoryDetailView({
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0 scrollbar-none">
         <Button
           variant={activeSub === 'all' ? 'default' : 'outline'}
           size="sm"
           onClick={() => setActiveSub('all')}
+          className="shrink-0 h-8"
         >
           Semua
         </Button>
@@ -343,23 +346,26 @@ function CategoryDetailView({
             variant={activeSub === s.id ? 'default' : 'outline'}
             size="sm"
             onClick={() => setActiveSub(s.id)}
+            className="shrink-0 h-8"
           >
             {s.name}
           </Button>
         ))}
-        {!isKaryawan && <AddSubcategoryDialog categoryId={category.id} />}
-        <AddProductDialog
-          categoryId={category.id}
-          categoryName={category.name}
-          isKaryawan={isKaryawan}
-          subcategories={subcategories}
-          locations={locations}
-          defaultSubId={activeSub !== 'all' ? activeSub : undefined}
-          onDone={() => {
-            router.refresh();
-            toast({ title: 'Barang ditambah' });
-          }}
-        />
+        {!isKaryawan && <div className="shrink-0"><AddSubcategoryDialog categoryId={category.id} /></div>}
+        <div className="shrink-0">
+          <AddProductDialog
+            categoryId={category.id}
+            categoryName={category.name}
+            isKaryawan={isKaryawan}
+            subcategories={subcategories}
+            locations={locations}
+            defaultSubId={activeSub !== 'all' ? activeSub : undefined}
+            onDone={() => {
+              router.refresh();
+              toast({ title: 'Barang ditambah' });
+            }}
+          />
+        </div>
       </div>
 
       <div className="space-y-1.5">

@@ -74,14 +74,14 @@ export function PiutangClient({ isKaryawan, debts }: Props) {
         </div>
       </div>
 
-      <div className="flex gap-1.5">
-        <Button size="sm" variant={filter === 'BELUM' ? 'default' : 'outline'} onClick={() => setFilter('BELUM')}>
+      <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0">
+        <Button size="sm" variant={filter === 'BELUM' ? 'default' : 'outline'} onClick={() => setFilter('BELUM')} className="h-8 shrink-0">
           Belum Lunas
         </Button>
-        <Button size="sm" variant={filter === 'LUNAS' ? 'default' : 'outline'} onClick={() => setFilter('LUNAS')}>
+        <Button size="sm" variant={filter === 'LUNAS' ? 'default' : 'outline'} onClick={() => setFilter('LUNAS')} className="h-8 shrink-0">
           Lunas
         </Button>
-        <Button size="sm" variant={filter === 'all' ? 'default' : 'outline'} onClick={() => setFilter('all')}>
+        <Button size="sm" variant={filter === 'all' ? 'default' : 'outline'} onClick={() => setFilter('all')} className="h-8 shrink-0">
           Semua
         </Button>
       </div>

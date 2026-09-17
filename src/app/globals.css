@@ -56,7 +56,10 @@
   html, body {
     @apply bg-background text-foreground;
     -webkit-tap-highlight-color: transparent;
-    overscroll-behavior-y: none;
+    overscroll-behavior-y: contain;
+  }
+  html {
+    scrollbar-gutter: stable;
   }
   body {
     @apply antialiased;

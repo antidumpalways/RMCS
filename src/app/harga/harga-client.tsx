@@ -114,25 +114,27 @@ export function HargaClient({ isKaryawan, products, locations }: Props) {
         </p>
       </div>
 
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          placeholder='Cari barang... mis. "Surya", "rak 1", "toples"'
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onFocus={() => setLocSuggest(true)}
-          onBlur={() => setTimeout(() => setLocSuggest(false), 200)}
-          className="pl-9 pr-9"
-          autoFocus
-        />
-        {q && (
-          <button
-            onClick={() => setQ('')}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        )}
+      <div className="sticky top-[108px] z-20 -mx-4 bg-background/95 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:static sm:mx-0 sm:p-0 sm:bg-transparent">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder='Cari barang... mis. "Surya", "rak 1", "toples"'
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onFocus={() => setLocSuggest(true)}
+            onBlur={() => setTimeout(() => setLocSuggest(false), 200)}
+            className="pl-9 pr-9"
+            autoFocus
+          />
+          {q && (
+            <button
+              onClick={() => setQ('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Auto-suggestion lokasi berdasarkan kata kunci */}
@@ -164,10 +166,10 @@ export function HargaClient({ isKaryawan, products, locations }: Props) {
         </div>
       )}
 
-      {/* Category chips */}
+      {/* Category chips - horizontal scroll on mobile */}
       <div>
         <div className="mb-1 text-[10px] uppercase text-muted-foreground">Kategori</div>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap">
           <Button
             size="sm"
             variant={activeCat === 'all' ? 'default' : 'outline'}
@@ -182,7 +184,7 @@ export function HargaClient({ isKaryawan, products, locations }: Props) {
               size="sm"
               variant={activeCat === c.id ? 'default' : 'outline'}
               onClick={() => setActiveCat(c.id)}
-              className="h-7 text-xs"
+              className="h-8 shrink-0 text-xs"
             >
               {c.name} ({c.count})
             </Button>
@@ -190,10 +192,10 @@ export function HargaClient({ isKaryawan, products, locations }: Props) {
         </div>
       </div>
 
-      {/* Location chips dengan counter barang habis */}
+      {/* Location chips dengan counter barang habis - horizontal scroll */}
       <div>
         <div className="mb-1 text-[10px] uppercase text-muted-foreground">Lokasi</div>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap">
           <Button
             size="sm"
             variant={activeLoc === 'all' ? 'default' : 'outline'}

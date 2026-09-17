@@ -25,6 +25,8 @@ import {
   Wallet,
   Receipt,
   User,
+  Minus,
+  Plus,
 } from 'lucide-react';
 import { formatRupiah, formatDateTimeID } from '@/lib/utils';
 import { ShiftBadge } from '@/components/shift-badge';
@@ -352,6 +354,7 @@ function SaleDialog({
   const [subId, setSubId] = React.useState<string>('all');
   const [productId, setProductId] = React.useState('');
   const [qty, setQty] = React.useState('');
+  const [search, setSearch] = React.useState('');
 
   const selectedCategory = categories.find((c) => String(c.id) === categoryId);
   const subsForCategory = subcategories.filter((s) => s.categoryId === selectedCategory?.id);
@@ -361,6 +364,20 @@ function SaleDialog({
     subId === 'all'
       ? productsForCategory
       : productsForCategory.filter((p) => p.subcategoryId === Number(subId));
+
+  // searchable filter — ketik langsung tanpa scroll kategori satu-satu
+  const filteredProducts = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return productsForSub;
+    return productsForSub.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.categoryName.toLowerCase().includes(q) ||
+        (p.subcategoryName && p.subcategoryName.toLowerCase().includes(q)) ||
+        (p.provider && p.provider.toLowerCase().includes(q)) ||
+        (p.validity && p.validity.toLowerCase().includes(q))
+    );
+  }, [productsForSub, search]);
 
   const product = productsForSub.find((p) => String(p.id) === productId);
   const qtyN = Number(qty) || 0;
@@ -373,6 +390,7 @@ function SaleDialog({
     setSubId('all');
     setProductId('');
     setQty('');
+    setSearch('');
   };
 
   return (
@@ -451,6 +469,8 @@ function SaleDialog({
                       disabled={count === 0}
                       onClick={() => {
                         setCategoryId(String(c.id));
+                        setSearch('');
+                        setProductId('');
                         setStep(2);
                       }}
                       className="flex flex-col items-start rounded-lg border bg-card p-3 text-left transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
@@ -479,9 +499,11 @@ function SaleDialog({
                   type="button"
                   className="w-full"
                   onClick={() => {
-                    setSubId('all');
-                    setStep(3);
-                  }}
+                     setSubId('all');
+                     setSearch('');
+                     setProductId('');
+                     setStep(3);
+                   }}
                 >
                   Lanjut ({productsForCategory.length} barang)
                 </Button>
@@ -496,6 +518,8 @@ function SaleDialog({
                     type="button"
                     onClick={() => {
                       setSubId('all');
+                      setSearch('');
+                      setProductId('');
                       setStep(3);
                     }}
                     className="flex flex-col items-start rounded-lg border bg-card p-3 text-left transition-colors hover:bg-muted"
@@ -515,9 +539,11 @@ function SaleDialog({
                         type="button"
                         disabled={count === 0}
                         onClick={() => {
-                          setSubId(String(s.id));
-                          setStep(3);
-                        }}
+                           setSubId(String(s.id));
+                           setSearch('');
+                           setProductId('');
+                           setStep(3);
+                         }}
                         className="flex flex-col items-start rounded-lg border bg-card p-3 text-left transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         <div className="text-sm font-semibold">{s.name}</div>
@@ -566,6 +592,17 @@ function SaleDialog({
               <>
                 <div className="space-y-1">
                   <Label>Pilih Barang</Label>
+                  <Input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Cari ketik: A16, TG, pulsa, Telkomsel..."
+                    autoFocus
+                  />
+                  <div className="text-[10px] text-muted-foreground">
+                    {search.trim()
+                      ? `${filteredProducts.length} hasil untuk "${search.trim()}" dari ${productsForSub.length} barang`
+                      : `${productsForSub.length} barang di kategori ini`}
+                  </div>
                   <Select
                     value={productId}
                     onValueChange={setProductId}
@@ -574,18 +611,24 @@ function SaleDialog({
                     <SelectTrigger>
                       <SelectValue placeholder="Pilih barang..." />
                     </SelectTrigger>
-                    <SelectContent>
-                      {productsForSub.map((p) => (
-                        <SelectItem
-                          key={p.id}
-                          value={String(p.id)}
-                          disabled={p.stock <= 0}
-                        >
-                          {p.provider
-                            ? `${p.provider}${p.validity ? ` (${p.validity})` : ''} • Stok ${p.stock} • ${formatRupiah(p.sellPrice)}`
-                            : `${p.name} • Stok ${p.stock} • ${formatRupiah(p.sellPrice)}`}
-                        </SelectItem>
-                      ))}
+                    <SelectContent className="max-h-[40vh]">
+                      {filteredProducts.length === 0 ? (
+                        <div className="p-3 text-center text-xs text-muted-foreground">
+                          Tidak ada hasil untuk &quot;{search.trim()}&quot;
+                        </div>
+                      ) : (
+                        filteredProducts.map((p) => (
+                          <SelectItem
+                            key={p.id}
+                            value={String(p.id)}
+                            disabled={p.stock <= 0}
+                          >
+                            {p.provider
+                              ? `${p.provider}${p.validity ? ` (${p.validity})` : ''} • ${p.name} • Stok ${p.stock} • ${formatRupiah(p.sellPrice)}`
+                              : `${p.name} • Stok ${p.stock} • ${formatRupiah(p.sellPrice)}`}
+                          </SelectItem>
+                        ))
+                      )}
                     </SelectContent>
                   </Select>
                 </div>
@@ -613,17 +656,40 @@ function SaleDialog({
                 )}
                 <div className="space-y-1">
                   <Label>Terjual</Label>
-                  <Input
-                    type="number"
-                    inputMode="numeric"
-                    value={qty}
-                    onChange={(e) => setQty(e.target.value)}
-                    placeholder="0"
-                    min={1}
-                    max={product?.stock ?? undefined}
-                    required
-                    autoFocus
-                  />
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="h-11 w-11 shrink-0"
+                      onClick={() => setQty(String(Math.max(1, qtyN - 1)))}
+                      disabled={qtyN <= 1}
+                    >
+                      <Minus className="h-4 w-4" />
+                    </Button>
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      value={qty}
+                      onChange={(e) => setQty(e.target.value)}
+                      placeholder="0"
+                      min={1}
+                      max={product?.stock ?? undefined}
+                      required
+                      className="text-center text-lg font-bold"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="h-11 w-11 shrink-0"
+                      onClick={() => setQty(String(Math.min(product?.stock ?? 999, qtyN + 1)))}
+                      disabled={!!product && qtyN >= product.stock}
+                    >
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  {product && <div className="text-[10px] text-muted-foreground text-center">Maks stok {product.stock}</div>}
                 </div>
                 {product && qtyN > 0 && !isKaryawan && (
                   <div className="rounded-lg bg-emerald-50 p-3 text-sm dark:bg-emerald-950/30">
