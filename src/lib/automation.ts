@@ -8,7 +8,7 @@ import { endOfDay, startOfDay, startOfMonth, endOfMonth } from './utils';
 // ============================================================================
 export type DashboardSummary = {
   totalModal: bigint; // Σ (costPrice * stock) seluruh produk
-  cash: bigint; // cashInitial + Σ (revenue sale barang + profit service) - Σ expense
+  cash: bigint; // cashInitial + Σ (revenue sale barang + profit service + pembayaran piutang) - Σ expense
   totalSaldo: bigint; // balanceInitial (sederhana: tidak ada mutasi saldo di v1)
   inventoryValue: bigint; // Σ (sellPrice * stock)
   omzetHari: bigint;
@@ -134,27 +134,38 @@ export async function computeTransactionStats(from: Date, to: Date) {
 
 // ============================================================================
 // CASH CALCULATION
-// Cash = cashInitial + (Σ revenue dari semua sale barang) + (Σ profit service) - Σ expense
-// Catatan: untuk service (topup/transfer/withdraw), customer bayar "nominal",
-// modal kita adalah "cost", dan kita tidak hitung nominal sebagai cash masuk
-// karena cash fisik yang bertambah = profit saja (nominal dipakai untuk beli produk/jasa).
-// Tapi: untuk topup/transfer/withdraw, cash yang masuk = profit saja.
+// Cash = cashInitial
+//      + Σ revenue dari semua sale barang
+//      + Σ profit service (topup/transfer/withdraw)
+//      + Σ pembayaran piutang (DebtPayment) — uang masuk saat pelanggan bayar bon
+//      - Σ expense
+// Catatan: untuk service (topup/transfer/withdraw), cash yang bertambah = profit saja
+// (nominal dipakai untuk beli produk/jasa).
+// Catatan: piutang (bon) TIDAK dihitung saat bon dibuat (belum ada uang masuk),
+// baru dihitung saat pelanggan mencicil/melunasi sehingga tidak terjadi dobel hitung
+// dengan penjualan tunai (yang sudah masuk lewat saleTransaction).
 // ============================================================================
 export async function computeCash() {
   const s = await ensureSettings();
-  const sales = await prisma.saleTransaction.aggregate({
-    _sum: { totalRevenue: true },
-  });
-  const serviceProfit = await prisma.serviceTransaction.aggregate({
-    _sum: { profit: true },
-  });
-  const expenses = await prisma.expense.aggregate({
-    _sum: { amount: true },
-  });
+  const [sales, serviceProfit, debtPayments, expenses] = await Promise.all([
+    prisma.saleTransaction.aggregate({
+      _sum: { totalRevenue: true },
+    }),
+    prisma.serviceTransaction.aggregate({
+      _sum: { profit: true },
+    }),
+    prisma.debtPayment.aggregate({
+      _sum: { amount: true },
+    }),
+    prisma.expense.aggregate({
+      _sum: { amount: true },
+    }),
+  ]);
   return (
     s.cashInitial +
     (sales._sum.totalRevenue ?? 0n) +
-    (serviceProfit._sum.profit ?? 0n) -
+    (serviceProfit._sum.profit ?? 0n) +
+    (debtPayments._sum.amount ?? 0n) -
     (expenses._sum.amount ?? 0n)
   );
 }

@@ -289,12 +289,23 @@ export async function addDebtPayment(data: { debtId: number; amount: number | st
   const me = await getCurrentUser();
   await prisma.$transaction(async (tx) => {
     const debt = await tx.debt.findUniqueOrThrow({ where: { id: data.debtId } });
+    const remaining = debt.amount - debt.paid;
+    if (remaining <= 0n) {
+      throw new Error('Bon ini sudah lunas.');
+    }
+    if (amount > remaining) {
+      throw new Error(`Pembayaran melebihi sisa bon (sisa ${remaining.toString()}).`);
+    }
     const newPaid = debt.paid + amount;
     const newStatus = newPaid >= debt.amount ? 'LUNAS' : 'BELUM';
-    await tx.debt.update({
-      where: { id: data.debtId },
+    // Cegah lost update: hanya update jika paid masih sama seperti saat dibaca.
+    const updated = await tx.debt.updateMany({
+      where: { id: data.debtId, paid: debt.paid },
       data: { paid: newPaid, status: newStatus },
     });
+    if (updated.count !== 1) {
+      throw new Error('Sisa bon berubah. Muat ulang halaman lalu coba lagi.');
+    }
     await tx.debtPayment.create({
       data: {
         debtId: data.debtId,
@@ -305,6 +316,8 @@ export async function addDebtPayment(data: { debtId: number; amount: number | st
     });
   });
   revalidatePath('/piutang');
+  revalidatePath('/');
+  revalidatePath('/transaksi');
 }
 
 export async function deleteDebt(id: number) {

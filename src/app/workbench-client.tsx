@@ -24,12 +24,18 @@ export function WorkbenchClient({ username, userId, shift, products, popularIds,
       <p className="relative mt-1 text-sm leading-relaxed text-muted-foreground">Layani pelanggan, catat dengan mudah.</p>
     </section>
 
-    <QuickSale home products={products} popularIds={popularIds} userId={userId} />
+    <section aria-labelledby="sell-section">
+      <div className="mb-3">
+        <h2 id="sell-section" className="text-sm font-semibold">Catat Penjualan</h2>
+        <p className="mt-1 text-xs text-muted-foreground">Voucher, aksesoris, rokok, dan barang lain — otomatis terhitung sebagai uang masuk.</p>
+      </div>
+      <QuickSale home products={products} popularIds={popularIds} userId={userId} />
+    </section>
 
-    <section aria-labelledby="other-actions"><div className="mb-3"><h2 id="other-actions" className="text-sm font-semibold">Mau catat yang lain?</h2><p className="mt-1 text-xs text-muted-foreground">Pilih sesuai kebutuhan, isi seperlunya.</p></div><div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
+    <section aria-labelledby="other-actions"><div className="mb-3"><h2 id="other-actions" className="text-sm font-semibold">Catat transaksi lainnya</h2><p className="mt-1 text-xs text-muted-foreground">Pilih sesuai kebutuhan, isi seperlunya.</p></div><div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
       <WorkEntry kind="admin" /><WorkEntry kind="expense" />
-      <Link href="/piutang" className="flex min-h-24 items-center gap-3 rounded-2xl border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-muted/40"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-500/10 text-violet-600 dark:text-violet-400"><NotebookPen className="h-5 w-5" /></span><span className="min-w-0"><span className="block text-sm font-semibold">Bon Pelanggan</span><span className="mt-0.5 block text-xs text-muted-foreground">Catat bon atau pembayaran</span></span></Link>
-      <Link href="/inventory" className="flex min-h-24 items-center gap-3 rounded-2xl border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-muted/40"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-teal-500/10 text-teal-600 dark:text-teal-400"><PackagePlus className="h-5 w-5" /></span><span className="min-w-0"><span className="block text-sm font-semibold">Barang Masuk</span><span className="mt-0.5 block text-xs text-muted-foreground">Pilih barang & tambah stok</span></span></Link>
+      <Link href="/piutang" className="flex min-h-24 items-center gap-3 rounded-2xl border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-muted/40"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-500/10 text-violet-600 dark:text-violet-400"><NotebookPen className="h-5 w-5" /></span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-1.5"><span className="text-sm font-semibold">Bon Pelanggan</span><span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400">Piutang</span></span><span className="mt-0.5 block text-xs text-muted-foreground">Catat bon atau pembayaran</span></span></Link>
+      <Link href="/inventory" className="flex min-h-24 items-center gap-3 rounded-2xl border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-muted/40"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-teal-500/10 text-teal-600 dark:text-teal-400"><PackagePlus className="h-5 w-5" /></span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-1.5"><span className="text-sm font-semibold">Barang Masuk</span><span className="rounded-full bg-teal-500/10 px-2 py-0.5 text-[10px] font-medium text-teal-600 dark:text-teal-400">Stok</span></span><span className="mt-0.5 block text-xs text-muted-foreground">Pilih barang &amp; tambah stok</span></span></Link>
     </div></section>
 
     <section aria-labelledby="recent-sales"><div className="mb-3 flex items-center justify-between gap-2"><h2 id="recent-sales" className="text-sm font-semibold">Terakhir kamu catat</h2><Link href="/transaksi" className="inline-flex min-h-11 items-center gap-1 text-xs font-medium text-primary">Riwayat <ArrowRight className="h-3.5 w-3.5" /></Link></div>

@@ -26,13 +26,16 @@ export function WorkEntry({ kind }: { kind: 'admin' | 'expense' }) {
   const [error, setError] = React.useState('');
   const prefix = React.useId();
   const title = isAdmin ? 'Biaya Admin' : 'Pengeluaran';
+  const tag = isAdmin
+    ? { text: 'Uang masuk', className: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' }
+    : { text: 'Uang keluar', className: 'bg-orange-500/10 text-orange-600 dark:text-orange-400' };
   const amountValid = /^\d+$/.test(amount) && Number.isSafeInteger(Number(amount)) && Number(amount) >= (isAdmin ? 0 : 1);
   const valid = amountValid && (isAdmin ? /^\d+$/.test(count) && Number.isSafeInteger(Number(count)) && Number(count) > 0 : !!name.trim());
 
   return <Dialog open={open} onOpenChange={(value) => { if (!pendingRef.current) { setOpen(value); setError(''); } }}>
     <button onClick={() => setOpen(true)} className="flex min-h-24 w-full items-center gap-3 rounded-2xl border bg-card p-4 text-left transition-colors hover:border-primary/40 hover:bg-muted/40 active:scale-[0.98]">
       <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${isAdmin ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'bg-orange-500/10 text-orange-600 dark:text-orange-400'}`}><Icon className="h-5 w-5" /></span>
-      <span className="min-w-0"><span className="block text-sm font-semibold">{title}</span><span className="mt-0.5 block text-xs text-muted-foreground">{isAdmin ? 'Rekap jasa & top up' : 'Catat uang keluar'}</span></span>
+      <span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-1.5"><span className="text-sm font-semibold">{title}</span><span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${tag.className}`}>{tag.text}</span></span><span className="mt-0.5 block text-xs text-muted-foreground">{isAdmin ? 'Rekap jasa & top up' : 'Belanja toko, listrik, dll'}</span></span>
     </button>
     <DialogContent>
       <DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>{isAdmin ? 'Cukup isi jumlah transaksi jasa dan total biaya admin yang diterima.' : 'Untuk belanja toko, listrik, parkir, dan kebutuhan lainnya.'}</DialogDescription></DialogHeader>
