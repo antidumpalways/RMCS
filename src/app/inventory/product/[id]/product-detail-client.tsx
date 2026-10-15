@@ -84,7 +84,7 @@ export function ProductDetailClient({
   return (
     <div className="space-y-4">
       <Link href="/inventory" className="inline-flex items-center gap-1 text-sm text-muted-foreground">
-        <ArrowLeft className="h-4 w-4" /> Inventory
+        <ArrowLeft className="h-4 w-4" /> Stok Barang
       </Link>
 
       <div>

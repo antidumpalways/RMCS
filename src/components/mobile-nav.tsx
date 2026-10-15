@@ -2,8 +2,9 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { Home, Package, ArrowRightLeft, FileText, Tag, Wallet, Settings as Cog, ClipboardCheck, MoreHorizontal, X } from 'lucide-react';
+import { Home, Package, ArrowRightLeft, FileText, Tag, Wallet, Settings as Cog, ClipboardCheck, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 
 type NavItem = {
   href: string;
@@ -13,14 +14,14 @@ type NavItem = {
 };
 
 const allItems: NavItem[] = [
-  { href: '/', label: 'Dashboard', icon: Home },
-  { href: '/inventory', label: 'Inventory', icon: Package },
+  { href: '/', label: 'Ringkasan', icon: Home },
+  { href: '/inventory', label: 'Stok', icon: Package },
   { href: '/transaksi', label: 'Transaksi', icon: ArrowRightLeft },
-  { href: '/harga', label: 'Cek', icon: Tag },
+  { href: '/harga', label: 'Harga', icon: Tag },
   { href: '/piutang', label: 'Bon', icon: Wallet },
   { href: '/laporan', label: 'Laporan', icon: FileText, ownerOnly: true },
   { href: '/opname', label: 'Opname', icon: ClipboardCheck, ownerOnly: true },
-  { href: '/pengaturan', label: 'Atur', icon: Cog, ownerOnly: true },
+  { href: '/pengaturan', label: 'Pengaturan', icon: Cog, ownerOnly: true },
 ];
 
 export function MobileNav({
@@ -30,7 +31,13 @@ export function MobileNav({
   isKaryawan: boolean;
   pathname: string;
 }) {
-  const items = isKaryawan ? allItems.filter((i) => !i.ownerOnly) : allItems;
+  const items = isKaryawan ? [
+    { href: '/', label: 'Beranda', icon: Home },
+    { href: '/transaksi', label: 'Riwayat', icon: ArrowRightLeft },
+    { href: '/harga', label: 'Harga', icon: Tag },
+    { href: '/inventory', label: 'Stok', icon: Package },
+    { href: '/piutang', label: 'Bon', icon: Wallet },
+  ] : allItems;
   const [moreOpen, setMoreOpen] = React.useState(false);
 
   // Karyawan = 5 item pas, Owner = 8 → tampil 4 + More (5 kolom total) biar 44px touch target
@@ -45,7 +52,7 @@ export function MobileNav({
 
   return (
     <>
-      <nav className="fixed bottom-0 left-0 right-0 z-40 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+      <nav aria-label="Navigasi utama" className="fixed bottom-0 left-0 right-0 z-40 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div
           className="mx-auto grid max-w-2xl"
           style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
@@ -56,12 +63,13 @@ export function MobileNav({
               <Link
                 key={it.href}
                 href={it.href}
+                aria-current={active ? 'page' : undefined}
                 className={cn(
-                  'flex min-h-[56px] flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-medium transition-colors',
+                  'flex min-h-16 flex-col items-center justify-center gap-1 px-1 py-2 text-[11px] font-medium transition-colors',
                   active ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
                 )}
               >
-                <it.icon className={cn('h-5 w-5', active && 'text-primary')} />
+                <span className={cn('flex h-7 w-12 items-center justify-center rounded-full', active && 'bg-primary/10')}><it.icon className="h-5 w-5" /></span>
                 <span>{it.label}</span>
               </Link>
             );
@@ -69,8 +77,10 @@ export function MobileNav({
           {needsMore && (
             <button
               onClick={() => setMoreOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={moreOpen}
               className={cn(
-                'flex min-h-[56px] flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-medium transition-colors',
+                'flex min-h-16 flex-col items-center justify-center gap-1 py-2 text-[11px] font-medium transition-colors',
                 isOverflowActive ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
               )}
             >
@@ -81,21 +91,11 @@ export function MobileNav({
         </div>
       </nav>
 
-      {needsMore && moreOpen && (
-        <div className="fixed inset-0 z-50 flex flex-col justify-end">
-          <button
-            aria-label="Close"
-            onClick={() => setMoreOpen(false)}
-            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-          />
-          <div className="relative mx-auto w-full max-w-2xl animate-in slide-in-from-bottom rounded-t-xl border bg-background p-4 shadow-xl">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-sm font-semibold">Menu Lainnya</div>
-              <button onClick={() => setMoreOpen(false)} className="rounded-full p-1 hover:bg-muted">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="grid grid-cols-4 gap-2">
+      {needsMore && (
+        <Dialog open={moreOpen} onOpenChange={setMoreOpen}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Menu Lainnya</DialogTitle><DialogDescription>Kelola toko dan lihat catatan usaha.</DialogDescription></DialogHeader>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {overflowItems.map((it) => {
                 const active = pathname === it.href || (it.href !== '/' && pathname.startsWith(it.href));
                 return (
@@ -116,9 +116,8 @@ export function MobileNav({
                 );
               })}
             </div>
-            <div className="h-3" />
-          </div>
-        </div>
+          </DialogContent>
+        </Dialog>
       )}
     </>
   );

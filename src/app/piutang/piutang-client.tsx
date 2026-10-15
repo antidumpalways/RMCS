@@ -51,9 +51,9 @@ export function PiutangClient({ isKaryawan, debts }: Props) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold">Piutang / Bon</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Bon Pelanggan</h1>
           <p className="text-xs text-muted-foreground">
-            Daftar customer yang belum bayar
+            Catat bon baru atau terima pembayaran pelanggan.
           </p>
         </div>
         <AddDebtDialog onAdded={() => toast({ title: 'Piutang ditambah' })} />
@@ -217,9 +217,12 @@ function AddDebtDialog({ onAdded }: { onAdded: () => void }) {
   const [customer, setCustomer] = React.useState('');
   const [amount, setAmount] = React.useState('');
   const [description, setDescription] = React.useState('');
+  const [pending, setPending] = React.useState(false);
+  const pendingRef = React.useRef(false);
+  const [error, setError] = React.useState('');
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(value) => { if (!pendingRef.current) { setOpen(value); setError(''); } }}>
       <DialogTrigger asChild>
         <Button size="sm">
           <Plus className="mr-1 h-4 w-4" /> Bon
@@ -230,7 +233,11 @@ function AddDebtDialog({ onAdded }: { onAdded: () => void }) {
           <DialogTitle>Tambah Bon</DialogTitle>
         </DialogHeader>
         <form
-          action={async (fd) => {
+          action={async () => {
+            if (pendingRef.current) return;
+            pendingRef.current = true;
+            setPending(true);
+            setError('');
             try {
               await createDebt({
                 customer,
@@ -243,7 +250,10 @@ function AddDebtDialog({ onAdded }: { onAdded: () => void }) {
               setDescription('');
               onAdded();
             } catch (e) {
-              alert((e as Error).message);
+              setError('Bon belum tersimpan. Periksa isian dan coba lagi.');
+            } finally {
+              pendingRef.current = false;
+              setPending(false);
             }
           }}
           className="space-y-3"
@@ -279,8 +289,9 @@ function AddDebtDialog({ onAdded }: { onAdded: () => void }) {
               rows={2}
             />
           </div>
-          <Button type="submit" className="w-full">
-            Simpan
+          {error && <p role="alert" className="rounded-xl bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
+          <Button type="submit" className="w-full" disabled={pending}>
+            {pending ? 'Menyimpan...' : 'Catat Bon'}
           </Button>
         </form>
       </DialogContent>
@@ -300,12 +311,15 @@ function PayDebtDialog({
   const [open, setOpen] = React.useState(false);
   const [amount, setAmount] = React.useState('');
   const [note, setNote] = React.useState('');
+  const [pending, setPending] = React.useState(false);
+  const pendingRef = React.useRef(false);
+  const [error, setError] = React.useState('');
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(value) => { if (!pendingRef.current) { setOpen(value); setError(''); } }}>
       <DialogTrigger asChild>
         <Button size="sm" variant="outline" className="flex-1">
-          <Wallet2 className="mr-1 h-4 w-4" /> Catat Bayar
+          <Wallet2 className="mr-1 h-4 w-4" /> Terima Pembayaran
         </Button>
       </DialogTrigger>
       <DialogContent>
@@ -313,7 +327,15 @@ function PayDebtDialog({
           <DialogTitle>Catat Pembayaran</DialogTitle>
         </DialogHeader>
         <form
-          action={async (fd) => {
+          action={async () => {
+            if (pendingRef.current) return;
+            if (Number(amount) <= 0 || Number(amount) > remaining) {
+              setError('Nominal harus lebih dari nol dan tidak melebihi sisa bon.');
+              return;
+            }
+            pendingRef.current = true;
+            setPending(true);
+            setError('');
             try {
               await addDebtPayment({ debtId, amount, note });
               setOpen(false);
@@ -321,7 +343,10 @@ function PayDebtDialog({
               setNote('');
               onDone();
             } catch (e) {
-              alert((e as Error).message);
+              setError('Pembayaran belum tersimpan. Periksa isian dan coba lagi.');
+            } finally {
+              pendingRef.current = false;
+              setPending(false);
             }
           }}
           className="space-y-3"
@@ -351,8 +376,9 @@ function PayDebtDialog({
               placeholder="mis. Cicilan ke-1"
             />
           </div>
-          <Button type="submit" className="w-full">
-            Catat
+          {error && <p role="alert" className="rounded-xl bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
+          <Button type="submit" className="w-full" disabled={pending}>
+            {pending ? 'Menyimpan...' : 'Catat Pembayaran'}
           </Button>
         </form>
       </DialogContent>

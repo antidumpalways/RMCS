@@ -23,7 +23,7 @@ export default async function TransaksiPage({
     ? { createdAt: { gte: dayStart, lte: dayEnd }, user: { shift: shiftFilter } }
     : { createdAt: { gte: dayStart, lte: dayEnd } };
 
-  const [products, sales, services, expenses, categories, subcategories] = await Promise.all([
+  const [products, sales, services, expenses] = await Promise.all([
     prisma.product.findMany({
       where: { stock: { gt: 0 } },
       include: { category: true, subcategory: true },
@@ -44,8 +44,6 @@ export default async function TransaksiPage({
       include: { user: { select: { username: true, shift: true } } },
       orderBy: { createdAt: 'desc' },
     }),
-    prisma.category.findMany({ orderBy: { sortOrder: 'asc' } }),
-    prisma.subcategory.findMany({ orderBy: { name: 'asc' } }),
   ]);
 
   // Hitung ringkasan harian otomatis
@@ -72,6 +70,7 @@ export default async function TransaksiPage({
     <>
       <AppHeader user={me} />
       <TransaksiClient
+        userId={me.id}
         isKaryawan={me.role === 'karyawan'}
         date={dateStr}
         shift={shiftFilter}
@@ -86,17 +85,10 @@ export default async function TransaksiPage({
           servicesCount: services.length,
           expensesCount: expenses.length,
         }}
-        categories={categories.map((c) => ({ id: c.id, name: c.name, sortOrder: c.sortOrder }))}
-        subcategories={subcategories.map((s) => ({
-          id: s.id,
-          name: s.name,
-          categoryId: s.categoryId,
-        }))}
         products={products.map((p) => ({
           id: p.id,
           name: p.name,
           stock: p.stock,
-          costPrice: Number(p.costPrice),
           sellPrice: Number(p.sellPrice),
           categoryId: p.categoryId,
           categoryName: p.category.name,

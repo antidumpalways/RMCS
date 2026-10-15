@@ -36,12 +36,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastContext.Provider value={{ toast }}>
       {children}
-      <div className="pointer-events-none fixed bottom-4 left-1/2 z-[100] -translate-x-1/2 space-y-2">
+      <div aria-live="polite" aria-atomic="false" className="pointer-events-none fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] left-1/2 z-[100] w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 space-y-2">
         {items.map((t) => (
           <div
             key={t.id}
             className={cn(
-              'pointer-events-auto min-w-[260px] max-w-sm rounded-lg border bg-card p-3 shadow-lg',
+              'pointer-events-auto w-full rounded-2xl border bg-card p-4 shadow-lg',
               t.variant === 'destructive' && 'border-destructive text-destructive'
             )}
           >

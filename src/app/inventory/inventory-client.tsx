@@ -99,8 +99,8 @@ export function InventoryClient({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold">Inventory</h1>
-          <p className="text-xs text-muted-foreground">1 modul generik • Kategori = data</p>
+          <h1 className="text-2xl font-bold tracking-tight">Stok Barang</h1>
+          <p className="mt-1 text-xs text-muted-foreground">Cari barang untuk cek stok atau catat barang masuk.</p>
         </div>
         <div className="flex items-center gap-1">
           <Link href="/harga">
@@ -154,7 +154,10 @@ export function InventoryClient({
                 </CardContent>
               </Card>
             ) : (
-              categories.map((cat) => (
+              search.trim() ? (
+                filtered.length ? filtered.map((p) => <ProductRow key={p.id} product={p} isKaryawan={isKaryawan} />) :
+                  <div className="rounded-2xl border border-dashed p-6 text-center text-sm text-muted-foreground">Barang belum ditemukan. Coba nama lain.</div>
+              ) : categories.map((cat) => (
                 <Card
                   key={cat.id}
                   className="cursor-pointer transition-colors hover:bg-muted/40"

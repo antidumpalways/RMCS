@@ -47,7 +47,7 @@ export async function AppHeader({ user }: { user?: { id: number; username: strin
             </form>
           )}
         </div>
-        <GlobalSearch />
+        {!(isKaryawan && pathname === '/') && <GlobalSearch />}
       </header>
       <MobileNav isKaryawan={isKaryawan} pathname={pathname} />
     </>

@@ -429,6 +429,59 @@ export async function deleteStockOpname(id: number) {
 // SALES (barang terjual)
 // Stok berkurang, omzet & profit bertambah otomatis
 // ============================================================================
+export async function recordCartSale(items: { productId: number; qty: number }[]) {
+  const me = await getCurrentUser();
+  if (!me) return { error: 'Sesi berakhir. Silakan masuk kembali.' };
+  if (!Array.isArray(items) || items.length === 0 || items.length > 100) {
+    return { error: 'Pilih 1–100 jenis barang untuk dicatat.' };
+  }
+  const quantities = new Map<number, number>();
+  for (const item of items) {
+    if (!item || !Number.isSafeInteger(item.productId) || item.productId <= 0 ||
+        !Number.isSafeInteger(item.qty) || item.qty <= 0 || item.qty > 1_000_000) {
+      return { error: 'Jumlah barang harus berupa angka bulat yang valid.' };
+    }
+    const qty = (quantities.get(item.productId) ?? 0) + item.qty;
+    if (qty > 1_000_000) return { error: 'Jumlah barang terlalu besar.' };
+    quantities.set(item.productId, qty);
+  }
+  class CartError extends Error {}
+  try {
+    const sale = await prisma.$transaction(async (tx) => {
+      const products = await tx.product.findMany({ where: { id: { in: [...quantities.keys()] } } });
+      if (products.length !== quantities.size) throw new CartError('Ada barang yang tidak tersedia lagi. Perbarui daftar barang.');
+      // Keep a consistent lock order for baskets containing the same products.
+      products.sort((a, b) => a.id - b.id);
+      const lines = [];
+      let totalRevenue = 0n;
+      let totalProfit = 0n;
+      for (const p of products) {
+        const qty = quantities.get(p.id)!;
+        const updated = await tx.product.updateMany({
+          where: { id: p.id, stock: { gte: qty } },
+          data: { stock: { decrement: qty } },
+        });
+        if (updated.count !== 1) throw new CartError(`Stok ${p.name} tidak cukup. Kurangi jumlah atau perbarui daftar barang.`);
+        const revenue = p.sellPrice * BigInt(qty);
+        const profit = (p.sellPrice - p.costPrice) * BigInt(qty);
+        totalRevenue += revenue;
+        totalProfit += profit;
+        lines.push({ productId: p.id, qty, priceAtSale: p.sellPrice, costAtSale: p.costPrice, revenue, profit });
+      }
+      return tx.saleTransaction.create({
+        data: { userId: me.id, totalRevenue, totalProfit, items: { create: lines } },
+        select: { id: true },
+      });
+    });
+    for (const path of ['/', '/transaksi', '/inventory', '/harga', '/laporan']) revalidatePath(path);
+    return { success: true as const, saleId: sale.id };
+  } catch (error) {
+    if (error instanceof CartError) return { error: error.message };
+    console.error('Gagal mencatat keranjang penjualan', error);
+    return { error: 'Penjualan belum tersimpan. Periksa koneksi lalu coba lagi.' };
+  }
+}
+
 export async function recordSale(productId: number, qty: number) {
   if (qty <= 0) throw new Error('Qty harus > 0');
   const me = await getCurrentUser();
