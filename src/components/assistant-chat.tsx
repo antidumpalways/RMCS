@@ -1,7 +1,8 @@
 'use client';
 
 import * as React from 'react';
-import { Bot, CheckCircle2, Loader2, MessageCircle, Send, ShoppingBag, X } from 'lucide-react';
+import { Bot, CheckCircle2, ImagePlus, Loader2, MessageCircle, Send, ShoppingBag, X } from 'lucide-react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,6 +17,7 @@ type CatalogProduct = {
   validity: string | null;
   sellPrice: string;
   stock: number;
+  matchConfidence?: 'exact' | 'high' | 'medium' | 'low';
 };
 type StockProposal = {
   phase: 'buka' | 'tutup';
@@ -36,7 +38,25 @@ type ChatLine = {
   catalog?: CatalogProduct[];
   stockProposal?: StockProposal | null;
   saleProposal?: SaleProposal | null;
+  image?: string;
+  query?: string;
+  hasImage?: boolean;
+  canFeedback?: boolean;
 };
+
+async function prepareImage(file: File) {
+  if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) throw new Error('Pilih foto JPG, PNG, WebP, atau GIF.');
+  const bitmap = await createImageBitmap(file);
+  const ratio = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bitmap.width * ratio));
+  canvas.height = Math.max(1, Math.round(bitmap.height * ratio));
+  canvas.getContext('2d')?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const result = canvas.toDataURL('image/jpeg', 0.78);
+  if (result.length > 2_800_000) throw new Error('Foto masih terlalu besar. Coba foto lain.');
+  return result;
+}
 
 export function AssistantChat({ role }: { role: string }) {
   const router = useRouter();
@@ -46,6 +66,11 @@ export function AssistantChat({ role }: { role: string }) {
   const [savingId, setSavingId] = React.useState<string | null>(null);
   const [error, setError] = React.useState('');
   const [lines, setLines] = React.useState<ChatLine[]>([]);
+  const [image, setImage] = React.useState<string | null>(null);
+  const [feedbackNotes, setFeedbackNotes] = React.useState<Record<string, string>>({});
+  const [feedbackDone, setFeedbackDone] = React.useState<string[]>([]);
+  const [feedbackBusy, setFeedbackBusy] = React.useState<string | null>(null);
+  const fileRef = React.useRef<HTMLInputElement>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const savingRef = React.useRef<string | null>(null);
   const canRecordStock = role === 'karyawan';
@@ -56,24 +81,28 @@ export function AssistantChat({ role }: { role: string }) {
 
   const send = async (value = text) => {
     const content = value.trim();
-    if (!content || busy) return;
-    const userLine: ChatLine = { id: crypto.randomUUID(), role: 'user', content };
+    if ((!content && !image) || busy) return;
+    const actualContent = content || 'Barang apa ini? Tolong cari di katalog.';
+    const sentImage = image;
+    const userLine: ChatLine = { id: crypto.randomUUID(), role: 'user', content: actualContent, image: sentImage || undefined };
     const next = [...lines, userLine];
     setLines(next);
     setText('');
+    setImage(null);
     setBusy(true);
     setError('');
     try {
       const response = await fetch('/api/assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next.slice(-12).map(({ role: messageRole, content: messageContent }) => ({ role: messageRole, content: messageContent })) }),
+        body: JSON.stringify({ messages: next.slice(-12).map(({ role: messageRole, content: messageContent }) => ({ role: messageRole, content: messageContent })), ...(sentImage ? { image: sentImage } : {}) }),
       });
       const result = await response.json() as {
         message?: string;
         catalog?: CatalogProduct[];
         stockProposal?: StockProposal | null;
         saleProposal?: SaleProposal | null;
+        canFeedback?: boolean;
         error?: string;
       };
       if (!response.ok) throw new Error(result.error || 'Asisten sedang tidak tersedia.');
@@ -84,12 +113,32 @@ export function AssistantChat({ role }: { role: string }) {
         catalog: result.catalog,
         stockProposal: result.stockProposal,
         saleProposal: result.saleProposal,
+        query: actualContent,
+        hasImage: !!sentImage,
+        canFeedback: result.canFeedback,
       }]);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Pesan belum terkirim. Coba lagi.');
     } finally {
       setBusy(false);
     }
+  };
+
+  const submitFeedback = async (line: ChatLine, productId?: number) => {
+    if (!line.query || feedbackBusy) return;
+    setFeedbackBusy(line.id);
+    setError('');
+    try {
+      const response = await fetch('/api/assistant/feedback', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: line.query, productId, note: feedbackNotes[line.id] || undefined }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || 'Masukan belum terkirim.');
+      setFeedbackDone((current) => [...current, line.id]);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Masukan belum terkirim.');
+    } finally { setFeedbackBusy(null); }
   };
 
   const confirmStock = async (line: ChatLine, proposal: StockProposal) => {
@@ -155,7 +204,7 @@ export function AssistantChat({ role }: { role: string }) {
   return <>
     {open && <section aria-label="Asisten R CELL" className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-3 z-50 flex h-[min(72dvh,620px)] w-[min(420px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl sm:right-6" role="dialog" aria-modal="false">
       <header className="flex items-center justify-between border-b bg-card px-4 py-3">
-        <div className="flex items-center gap-2"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary"><Bot className="h-5 w-5" /></span><div><h2 className="text-sm font-semibold">Asisten R CELL</h2><p className="text-[11px] text-muted-foreground">AI DeepSeek · harga sesuai katalog</p></div></div>
+        <div className="flex items-center gap-2"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary"><Bot className="h-5 w-5" /></span><div><h2 className="text-sm font-semibold">Asisten R CELL</h2><p className="text-[11px] text-muted-foreground">AI DeepSeek · harga sesuai katalog</p>{role === 'owner' && <Link className="text-[11px] text-primary underline" href="/asisten/umpan-balik" onClick={() => setOpen(false)}>Tinjau masukan</Link>}</div></div>
         <Button type="button" size="icon" variant="ghost" aria-label="Tutup chat" onClick={() => setOpen(false)}><X className="h-4 w-4" /></Button>
       </header>
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-3">
@@ -169,12 +218,17 @@ export function AssistantChat({ role }: { role: string }) {
           </div>
         </div>}
         {lines.map((line) => <div key={line.id} className={`space-y-2 ${line.role === 'user' ? 'ml-auto max-w-[90%]' : 'mr-auto max-w-[95%]'}`}>
-          <div className={`whitespace-pre-wrap rounded-2xl p-3 text-sm leading-relaxed ${line.role === 'user' ? 'rounded-tr-sm bg-primary text-primary-foreground' : 'rounded-tl-sm bg-muted'}`}>{line.content}</div>
+          <div className={`whitespace-pre-wrap rounded-2xl p-3 text-sm leading-relaxed ${line.role === 'user' ? 'rounded-tr-sm bg-primary text-primary-foreground' : 'rounded-tl-sm bg-muted'}`}>{line.image && <img src={line.image} alt="Foto barang yang ditanyakan" className="mb-2 max-h-32 max-w-full rounded-lg object-contain" />}{line.content}</div>
           {!!line.catalog?.length && <div className="space-y-2">{line.catalog.map((product) => <article key={product.id} className="rounded-xl border bg-card p-3 text-sm">
             <p className="font-semibold leading-snug">{product.name}</p>
             <p className="mt-1 text-xs text-muted-foreground">{[product.categoryName, product.provider, product.validity].filter(Boolean).join(' · ')}</p>
             <div className="mt-2 flex items-center justify-between gap-2"><strong className="text-primary">{formatRupiah(BigInt(product.sellPrice))}</strong><span className="text-xs text-muted-foreground">Stok {product.stock}</span></div>
+            {product.matchConfidence !== 'exact' && <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">Kemungkinan cocok — periksa nama dan varian.</p>}
+            {line.query && !line.hasImage && !feedbackDone.includes(line.id) && <button type="button" className="mt-2 text-xs text-primary underline" disabled={feedbackBusy !== null} onClick={() => void submitFeedback(line, product.id)}>Ini barang yang benar</button>}
           </article>)}</div>}
+          {line.canFeedback && line.query && !line.hasImage && (feedbackDone.includes(line.id)
+            ? <p className="text-xs text-muted-foreground">Terima kasih. Owner akan meninjau masukan ini.</p>
+            : <div className="space-y-1"><label htmlFor={`feedback-${line.id}`} className="text-xs text-muted-foreground">Belum tepat? Tulis nama atau ciri barang yang dimaksud.</label><Input id={`feedback-${line.id}`} value={feedbackNotes[line.id] || ''} maxLength={200} onChange={(event) => setFeedbackNotes((current) => ({ ...current, [line.id]: event.target.value }))} placeholder="Contoh: charger mobil colokan USB-C" /><Button size="sm" type="button" variant="outline" disabled={!feedbackNotes[line.id]?.trim() || feedbackBusy !== null} onClick={() => void submitFeedback(line)}>{feedbackBusy === line.id ? 'Mengirim...' : 'Kirim koreksi ke owner'}</Button></div>)}
           {canRecordStock && line.stockProposal && <div className="rounded-xl border border-primary/30 bg-card p-3">
             <p className="text-xs font-semibold">Periksa draf cek stok {line.stockProposal.phase === 'buka' ? 'saat buka' : 'saat tutup'}</p>
             <div className="mt-2 max-h-44 space-y-1 overflow-y-auto">{line.stockProposal.items.map((item) => <div key={item.productId} className="flex justify-between gap-3 text-xs"><span className="min-w-0 truncate">{item.productName}</span><strong className="shrink-0">{item.physicalStock}</strong></div>)}</div>
@@ -197,9 +251,12 @@ export function AssistantChat({ role }: { role: string }) {
         {busy && <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Asisten sedang mencari...</div>}
         {error && <p role="alert" className="rounded-lg bg-destructive/10 p-2 text-xs text-destructive">{error}</p>}
       </div>
+      {image && <div className="flex items-center gap-2 border-t px-3 py-2 text-xs"><img src={image} alt="Foto siap dikirim" className="h-10 w-10 rounded object-cover" /><span className="flex-1">Foto siap ditanyakan</span><button type="button" aria-label="Hapus foto" onClick={() => setImage(null)}><X className="h-4 w-4" /></button></div>}
       <form className="flex items-center gap-2 border-t bg-background p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+        <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" aria-label="Pilih foto barang" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; try { setImage(await prepareImage(file)); setError(''); } catch (caught) { setError(caught instanceof Error ? caught.message : 'Foto gagal diproses.'); } event.target.value = ''; }} />
+        <Button type="button" size="icon" variant="outline" aria-label="Tambahkan foto barang" disabled={busy} onClick={() => fileRef.current?.click()}><ImagePlus className="h-4 w-4" /></Button>
         <Input value={text} onChange={(event) => setText(event.target.value)} placeholder="Tanyakan dengan bahasa sehari-hari..." aria-label="Pesan untuk asisten" maxLength={700} disabled={busy} />
-        <Button type="submit" size="icon" aria-label="Kirim pesan" disabled={busy || !text.trim()}><Send className="h-4 w-4" /></Button>
+        <Button type="submit" size="icon" aria-label="Kirim pesan" disabled={busy || (!text.trim() && !image)}><Send className="h-4 w-4" /></Button>
       </form>
     </section>}
     {!open && <Button type="button" size="icon" className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-3 z-50 h-14 w-14 rounded-full shadow-lg sm:bottom-6 sm:right-6" aria-label="Buka asisten R CELL" aria-expanded={open} onClick={() => setOpen(true)}>

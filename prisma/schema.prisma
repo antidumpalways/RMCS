@@ -59,6 +59,8 @@ model User {
   shiftClosures       ShiftClosure[]
   stockOpnames        StockOpname[]
   reviewedStockOpnames StockOpname[] @relation("StockOpnameReviewer")
+  assistantFeedback AssistantFeedback[] @relation("AssistantFeedbackAuthor")
+  reviewedAssistantFeedback AssistantFeedback[] @relation("AssistantFeedbackReviewer")
 }
 
 // ============================================================================
@@ -112,12 +114,46 @@ model Product {
   inventoryMovements InventoryMovement[]
   saleItems          SaleItem[]
   stockOpnames       StockOpname[]
+  assistantFeedback  AssistantFeedback[]
 
   @@index([categoryId])
   @@index([subcategoryId])
   @@index([name])
   @@index([provider])
   @@index([locationId])
+}
+
+// Umpan balik eksplisit, bukan perubahan otomatis pada fakta katalog.
+// Hanya alias yang disetujui owner dipakai untuk pencarian berikutnya.
+model AssistantFeedback {
+  id              Int      @id @default(autoincrement())
+  query           String
+  queryKey        String
+  productId       Int?
+  product         Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  note            String?
+  status          String   @default("PENDING") // PENDING | APPROVED | REJECTED | REVOKED
+  userId          Int
+  user            User     @relation("AssistantFeedbackAuthor", fields: [userId], references: [id])
+  reviewedById    Int?
+  reviewedBy      User?    @relation("AssistantFeedbackReviewer", fields: [reviewedById], references: [id])
+  reviewedAt      DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([status, createdAt])
+  @@index([queryKey, status])
+  @@index([createdAt])
+}
+
+// Analitik pencarian tanpa riwayat percakapan, identitas pengguna, atau foto.
+model AssistantSearchEvent {
+  id          Int      @id @default(autoincrement())
+  queryKey    String
+  resultCount Int
+  createdAt   DateTime @default(now())
+
+  @@index([queryKey, createdAt])
+  @@index([createdAt])
 }
 
 // ============================================================================

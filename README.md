@@ -19,9 +19,20 @@ PWA berbasis Next.js 15 + Prisma + PostgreSQL. Dibangun dengan filosofi *buku pe
 - **Update Harga Massal** — set margin % per kategori/subkategori
 - **Laporan otomatis** — filter tanggal, omzet/profit harian & bulanan
 - **PWA** — installable, mobile-first, 1-tangan
+- **Asisten DeepSeek** — tanya barang dengan bahasa sehari-hari atau foto, lihat harga dan stok dari katalog, serta siapkan draf penjualan dan cek stok yang tetap memerlukan konfirmasi
 - **2 mode user** (admin vs karyawan, tanpa label role) — angka sensitif di-XXXX untuk karyawan
 - **Shift tracking** otomatis via username (siang/malam)
 - **Backup JSON** & **Export Excel** untuk arsip
+
+---
+
+## Asisten katalog dan masukan
+
+- Chat memakai `DEEPSEEK_MODEL` (default `deepseek-flash`). Foto memakai `DEEPSEEK_VISION_MODEL` (default `deepseek-flash`); keduanya memakai `DEEPSEEK_API_KEY` yang hanya disimpan di server. Foto diperkecil di browser, dibatasi 2 MB, dikirim ke DeepSeek untuk deskripsi ciri barang, dan tidak disimpan oleh RMCS. Jangan memotret data pribadi.
+- Pencarian mencoba kecocokan katalog, padanan yang disetujui owner, lalu pemilihan semantik DeepSeek dari ID barang katalog. ID dan angka paket divalidasi di server. Jika ada beberapa kemungkinan, karyawan memilih varian yang tepat. Harga dan stok selalu dibaca dari `Product`; foto dan model tidak boleh mengarang fakta toko atau kecocokan perangkat.
+- Tombol **Ini barang yang benar** atau **Kirim koreksi ke owner** menyimpan masukan eksplisit. Percakapan umum tidak disimpan untuk pelatihan. Analitik hanya mencatat istilah pencarian yang dinormalisasi dan jumlah hasil tanpa identitas pengguna; catatan lebih dari 30 hari dihapus saat pencarian berikutnya. Foto tidak dicatat. Owner dapat melihat pencarian tanpa hasil yang berulang di **Asisten → Tinjau masukan**, lalu memilih barang yang benar, menyetujui, menolak, atau mencabut padanan. Padanan yang disetujui mulai memengaruhi pencarian dengan frasa yang sama; tidak mengubah produk, harga, stok, aturan bisnis, atau model AI. Masukan yang bertentangan ditahan dan harus ditinjau manual. Catatan keputusan tetap tersimpan untuk audit; owner dapat mencabutnya.
+- Pemilihan semantik penuh saat ini dibatasi 800 barang katalog agar waktu respons terkendali. Jika katalog lebih besar, pencarian kata dan padanan owner masih bekerja, tetapi pencarian makna yang tidak berbagi kata dapat gagal. Foto buram dan informasi kompatibilitas yang tidak tercatat memerlukan klarifikasi karyawan.
+- Build Vercel menjalankan `prisma db push --skip-generate` lebih dulu untuk menambah tabel masukan. Perubahan skema yang berisiko menghapus data akan menghentikan build karena tidak memakai `--accept-data-loss`. Pemeriksaan lokal: `npm run typecheck`, `npm run test:assistant`, dan `npm run build` (dengan `DATABASE_URL` yang valid).
 
 ---
 

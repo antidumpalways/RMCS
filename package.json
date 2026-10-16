@@ -4,10 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && next build",
+    "build": "prisma db push --skip-generate && prisma generate && next build",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
+    "test:assistant": "tsc --module commonjs --target es2022 --esModuleInterop --skipLibCheck --outDir node_modules/.cache/assistant-tests --rootDir src src/lib/assistant-search.test.ts && node .\\node_modules\\.cache\\assistant-tests\\lib\\assistant-search.test.js",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
