@@ -1,10 +1,11 @@
 'use client';
 
 import * as React from 'react';
-import { Bot, CheckCircle2, Loader2, MessageCircle, Send, X } from 'lucide-react';
+import { Bot, CheckCircle2, Loader2, MessageCircle, Send, ShoppingBag, X } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { recordShiftStockCheck } from '@/lib/actions';
+import { recordCartSale, recordShiftStockCheck, replaceSaleFromChat } from '@/lib/actions';
 import { formatRupiah } from '@/lib/utils';
 
 type CatalogProduct = {
@@ -20,15 +21,25 @@ type StockProposal = {
   phase: 'buka' | 'tutup';
   items: { productId: number; productName: string; physicalStock: number }[];
 };
+type SaleProposal = {
+  kind: 'create' | 'edit';
+  saleId?: number;
+  expectedSignature?: string;
+  previousItems?: { name: string; qty: number }[];
+  items: { productId: number; name: string; qty: number; unitPrice: string }[];
+  totalRevenue: string;
+};
 type ChatLine = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   catalog?: CatalogProduct[];
   stockProposal?: StockProposal | null;
+  saleProposal?: SaleProposal | null;
 };
 
 export function AssistantChat({ role }: { role: string }) {
+  const router = useRouter();
   const [open, setOpen] = React.useState(false);
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
@@ -36,6 +47,7 @@ export function AssistantChat({ role }: { role: string }) {
   const [error, setError] = React.useState('');
   const [lines, setLines] = React.useState<ChatLine[]>([]);
   const scrollRef = React.useRef<HTMLDivElement>(null);
+  const savingRef = React.useRef<string | null>(null);
   const canRecordStock = role === 'karyawan';
 
   React.useEffect(() => {
@@ -61,6 +73,7 @@ export function AssistantChat({ role }: { role: string }) {
         message?: string;
         catalog?: CatalogProduct[];
         stockProposal?: StockProposal | null;
+        saleProposal?: SaleProposal | null;
         error?: string;
       };
       if (!response.ok) throw new Error(result.error || 'Asisten sedang tidak tersedia.');
@@ -70,6 +83,7 @@ export function AssistantChat({ role }: { role: string }) {
         content: result.message || 'Saya belum bisa membantu untuk pertanyaan itu.',
         catalog: result.catalog,
         stockProposal: result.stockProposal,
+        saleProposal: result.saleProposal,
       }]);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Pesan belum terkirim. Coba lagi.');
@@ -79,7 +93,8 @@ export function AssistantChat({ role }: { role: string }) {
   };
 
   const confirmStock = async (line: ChatLine, proposal: StockProposal) => {
-    if (savingId) return;
+    if (savingRef.current) return;
+    savingRef.current = line.id;
     setSavingId(line.id);
     setError('');
     try {
@@ -94,6 +109,45 @@ export function AssistantChat({ role }: { role: string }) {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Belum berhasil menyimpan cek stok.');
     } finally {
+      savingRef.current = null;
+      setSavingId(null);
+    }
+  };
+
+  const confirmSale = async (line: ChatLine, proposal: SaleProposal) => {
+    if (savingRef.current) return;
+    savingRef.current = line.id;
+    setSavingId(line.id);
+    setError('');
+    try {
+      let saleId: number;
+      if (proposal.kind === 'create') {
+        const result = await recordCartSale(
+          proposal.items.map(({ productId, qty }) => ({ productId, qty })),
+          proposal.items.map(({ productId, unitPrice }) => ({ productId, sellPrice: unitPrice })),
+        );
+        if (result.error || !result.saleId) throw new Error(result.error || 'Penjualan belum tersimpan.');
+        saleId = result.saleId;
+      } else {
+        if (!proposal.saleId || !proposal.expectedSignature) throw new Error('Draf koreksi tidak lengkap.');
+        const result = await replaceSaleFromChat({
+          saleId: proposal.saleId,
+          expectedSignature: proposal.expectedSignature,
+          items: proposal.items.map(({ productId, qty, unitPrice }) => ({ productId, qty, expectedPrice: unitPrice })),
+        });
+        saleId = result.saleId;
+      }
+      const confirmation = proposal.kind === 'create'
+        ? `Penjualan #${saleId} tersimpan. Stok dan omzet hari ini sudah diperbarui.`
+        : `Penjualan #${saleId} dikoreksi. Stok dan omzet hari ini sudah disesuaikan.`;
+      setLines((current) => current.map((item) => item.id === line.id
+        ? { ...item, content: `${item.content}\n\n${confirmation}`, saleProposal: null }
+        : item));
+      router.refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Penjualan belum berhasil disimpan.');
+    } finally {
+      savingRef.current = null;
       setSavingId(null);
     }
   };
@@ -106,9 +160,11 @@ export function AssistantChat({ role }: { role: string }) {
       </header>
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-3">
         {!lines.length && <div className="space-y-3 pt-2">
-          <div className="max-w-[90%] rounded-2xl rounded-tl-sm bg-muted p-3 text-sm">Halo! Tulis saja seperti biasa, meski singkat atau ada typo. Saya bisa bantu mencari barang dan harga, menjelaskan alur kerja toko, atau menyiapkan cek stok.</div>
+          <div className="max-w-[90%] rounded-2xl rounded-tl-sm bg-muted p-3 text-sm">Halo! Tulis saja seperti biasa, meski singkat atau ada typo. Saya bisa bantu mencari harga, mencatat penjualan, mengoreksi penjualan hari ini, dan menyiapkan cek stok.</div>
           <div className="flex flex-wrap gap-2">
             <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Berapa harga barang ...?')}>Cari harga</button>
+            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat penjualan hari ini. Tolong tanya barang dan jumlah yang terjual.')}>Catat penjualan</button>
+            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau koreksi penjualan terakhir. Tolong tanya perubahan yang benar sebelum menyiapkan draf.')}>Koreksi penjualan</button>
             {canRecordStock && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat stok saat tutup toko. Tolong tanya barang dan jumlahnya dulu.')}>Catat stok</button>}
           </div>
         </div>}
@@ -125,6 +181,16 @@ export function AssistantChat({ role }: { role: string }) {
             <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Cek nama barang dan jumlahnya. Hasil akan disimpan sebagai catatan; selisih tetap menunggu owner.</p>
             <Button type="button" size="sm" className="mt-3 w-full" disabled={savingId !== null} onClick={() => void confirmStock(line, line.stockProposal!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> Simpan hasil hitung</>}
+            </Button>
+          </div>}
+          {line.saleProposal && <div className="rounded-xl border border-primary/30 bg-card p-3 text-sm">
+            <p className="flex items-center gap-2 text-xs font-semibold"><ShoppingBag className="h-4 w-4" /> {line.saleProposal.kind === 'create' ? 'Draf penjualan hari ini' : `Koreksi penjualan #${line.saleProposal.saleId}`}</p>
+            {!!line.saleProposal.previousItems?.length && <div className="mt-2 rounded-lg bg-muted p-2 text-xs"><p className="font-medium">Catatan lama</p>{line.saleProposal.previousItems.map((item, index) => <p key={index}>{item.name} × {item.qty}</p>)}</div>}
+            <div className="mt-2 space-y-1">{line.saleProposal.items.map((item) => <div key={item.productId} className="flex justify-between gap-3 text-xs"><span>{item.name} × {item.qty}</span><span className="shrink-0 font-medium">{formatRupiah(BigInt(item.unitPrice) * BigInt(item.qty))}</span></div>)}</div>
+            <p className="mt-2 border-t pt-2 text-right font-semibold">Total {formatRupiah(BigInt(line.saleProposal.totalRevenue))}</p>
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa semua barang dan jumlahnya. Database dan stok baru berubah setelah Anda menekan tombol ini.</p>
+            <Button type="button" size="sm" className="mt-3 w-full" disabled={savingId !== null} onClick={() => void confirmSale(line, line.saleProposal!)}>
+              {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> {line.saleProposal.kind === 'create' ? 'Konfirmasi penjualan' : 'Konfirmasi koreksi'}</>}
             </Button>
           </div>}
         </div>)}

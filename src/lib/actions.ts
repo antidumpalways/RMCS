@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { prisma } from '@/lib/prisma';
 import { toBigIntSafe } from '@/lib/utils';
 import { getCurrentUser } from '@/lib/auth';
+import { jakartaTodayBounds, saleSnapshotSignature } from '@/lib/sale-chat';
 
 // ============================================================================
 // CATEGORIES
@@ -545,7 +546,7 @@ export async function deleteStockOpname(id: number) {
 // SALES (barang terjual)
 // Stok berkurang, omzet & profit bertambah otomatis
 // ============================================================================
-export async function recordCartSale(items: { productId: number; qty: number }[]) {
+export async function recordCartSale(items: { productId: number; qty: number }[], expectedPrices?: { productId: number; sellPrice: string }[]) {
   const me = await getCurrentUser();
   if (!me) return { error: 'Sesi berakhir. Silakan masuk kembali.' };
   if (!Array.isArray(items) || items.length === 0 || items.length > 100) {
@@ -561,6 +562,16 @@ export async function recordCartSale(items: { productId: number; qty: number }[]
     if (qty > 1_000_000) return { error: 'Jumlah barang terlalu besar.' };
     quantities.set(item.productId, qty);
   }
+  const expected = new Map<number, string>();
+  if (expectedPrices) {
+    if (!Array.isArray(expectedPrices) || expectedPrices.length !== quantities.size || expectedPrices.some((item) =>
+      !item || !Number.isSafeInteger(item.productId) || item.productId <= 0 ||
+      typeof item.sellPrice !== 'string' || !/^\d+$/.test(item.sellPrice))) {
+      return { error: 'Draf harga tidak valid. Minta asisten menyiapkan ulang penjualan.' };
+    }
+    for (const item of expectedPrices) expected.set(item.productId, item.sellPrice);
+    if ([...quantities.keys()].some((id) => !expected.has(id))) return { error: 'Draf harga tidak lengkap.' };
+  }
   class CartError extends Error {}
   try {
     const sale = await prisma.$transaction(async (tx) => {
@@ -573,6 +584,9 @@ export async function recordCartSale(items: { productId: number; qty: number }[]
       let totalProfit = 0n;
       for (const p of products) {
         const qty = quantities.get(p.id)!;
+        if (expectedPrices && expected.get(p.id) !== p.sellPrice.toString()) {
+          throw new CartError(`Harga ${p.name} berubah. Minta asisten menyiapkan draf baru.`);
+        }
         const updated = await tx.product.updateMany({
           where: { id: p.id, stock: { gte: qty } },
           data: { stock: { decrement: qty } },
@@ -596,6 +610,92 @@ export async function recordCartSale(items: { productId: number; qty: number }[]
     console.error('Gagal mencatat keranjang penjualan', error);
     return { error: 'Penjualan belum tersimpan. Periksa koneksi lalu coba lagi.' };
   }
+}
+
+export async function replaceSaleFromChat(input: {
+  saleId: number;
+  expectedSignature: string;
+  items: { productId: number; qty: number; expectedPrice: string }[];
+}) {
+  const me = await getCurrentUser();
+  if (!me) throw new Error('Sesi berakhir. Silakan masuk kembali.');
+  if (!input || !Number.isSafeInteger(input.saleId) || input.saleId <= 0 ||
+      typeof input.expectedSignature !== 'string' || !/^[a-f0-9]{64}$/.test(input.expectedSignature) ||
+      !Array.isArray(input.items) || input.items.length < 1 || input.items.length > 100) {
+    throw new Error('Draf koreksi tidak valid. Minta asisten menyiapkan ulang.');
+  }
+  const requested = new Map<number, { qty: number; expectedPrice: string }>();
+  for (const item of input.items) {
+    if (!item || !Number.isSafeInteger(item.productId) || item.productId <= 0 ||
+        !Number.isSafeInteger(item.qty) || item.qty <= 0 || item.qty > 1_000_000 ||
+        typeof item.expectedPrice !== 'string' || !/^\d+$/.test(item.expectedPrice) || requested.has(item.productId)) {
+      throw new Error('Barang atau jumlah dalam draf koreksi tidak valid.');
+    }
+    requested.set(item.productId, { qty: item.qty, expectedPrice: item.expectedPrice });
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    // Kunci header agar dua koreksi atas penjualan yang sama tidak saling menimpa.
+    await tx.$queryRaw`SELECT "id" FROM "SaleTransaction" WHERE "id" = ${input.saleId} FOR UPDATE`;
+    const sale = await tx.saleTransaction.findUnique({ where: { id: input.saleId }, include: { items: true } });
+    if (!sale) throw new Error('Penjualan tidak ditemukan.');
+    if (me.role !== 'owner' && sale.userId !== me.id) throw new Error('Anda hanya bisa mengoreksi penjualan sendiri.');
+    const { start, end } = jakartaTodayBounds();
+    if (sale.createdAt < start || sale.createdAt >= end) throw new Error('Chat hanya bisa mengoreksi penjualan hari ini.');
+    if (sale.userId && await tx.shiftClosure.count({ where: { userId: sale.userId, closedAt: { gte: sale.createdAt } } })) {
+      throw new Error('Shift untuk penjualan ini sudah ditutup. Hubungi owner untuk koreksi laporan.');
+    }
+    if (saleSnapshotSignature(sale) !== input.expectedSignature) {
+      throw new Error('Penjualan berubah sejak draf dibuat. Minta asisten menyiapkan ulang.');
+    }
+
+    const products = await tx.product.findMany({ where: { id: { in: [...requested.keys()] } }, orderBy: { id: 'asc' } });
+    if (products.length !== requested.size) throw new Error('Ada barang yang sudah tidak tersedia.');
+    const oldByProduct = new Map<number, { qty: number; price: bigint; cost: bigint }>();
+    for (const item of sale.items) {
+      const previous = oldByProduct.get(item.productId);
+      if (previous) throw new Error('Penjualan lama memiliki barang duplikat; koreksi manual diperlukan.');
+      oldByProduct.set(item.productId, { qty: item.qty, price: item.priceAtSale, cost: item.costAtSale });
+    }
+    const productById = new Map(products.map((product) => [product.id, product]));
+    const allIds = [...new Set([...oldByProduct.keys(), ...requested.keys()])].sort((a, b) => a - b);
+    for (const productId of allIds) {
+      const oldQty = oldByProduct.get(productId)?.qty ?? 0;
+      const newQty = requested.get(productId)?.qty ?? 0;
+      const delta = newQty - oldQty;
+      if (delta > 0) {
+        const changed = await tx.product.updateMany({
+          where: { id: productId, stock: { gte: delta } }, data: { stock: { decrement: delta } },
+        });
+        if (changed.count !== 1) throw new Error(`Stok barang #${productId} tidak cukup untuk koreksi.`);
+      } else if (delta < 0) {
+        await tx.product.update({ where: { id: productId }, data: { stock: { increment: -delta } } });
+      }
+    }
+
+    let totalRevenue = 0n;
+    let totalProfit = 0n;
+    const lines = [...requested.entries()].map(([productId, item]) => {
+      const original = oldByProduct.get(productId);
+      const product = productById.get(productId)!;
+      const priceAtSale = original?.price ?? product.sellPrice;
+      const costAtSale = original?.cost ?? product.costPrice;
+      if (item.expectedPrice !== priceAtSale.toString()) {
+        throw new Error(`Harga ${product.name} berubah. Minta asisten menyiapkan draf baru.`);
+      }
+      const revenue = priceAtSale * BigInt(item.qty);
+      const profit = (priceAtSale - costAtSale) * BigInt(item.qty);
+      totalRevenue += revenue;
+      totalProfit += profit;
+      return { saleId: sale.id, productId, qty: item.qty, priceAtSale, costAtSale, revenue, profit };
+    });
+    await tx.saleItem.deleteMany({ where: { saleId: sale.id } });
+    await tx.saleItem.createMany({ data: lines });
+    await tx.saleTransaction.update({ where: { id: sale.id }, data: { totalRevenue, totalProfit } });
+    return { saleId: sale.id };
+  }, { timeout: 15_000 });
+  for (const path of ['/', '/transaksi', '/inventory', '/harga', '/laporan', '/serah-terima']) revalidatePath(path);
+  return result;
 }
 
 export async function recordSale(productId: number, qty: number) {
