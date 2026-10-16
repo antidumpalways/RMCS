@@ -23,7 +23,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ArrowLeft, CheckCircle2, AlertCircle, Search, ClipboardCheck, Trash2 } from 'lucide-react';
-import { recordStockOpname, applyStockOpname, deleteStockOpname } from '@/lib/actions';
+import { recordStockOpname, applyStockOpname, markStockOpnameReviewed, deleteStockOpname } from '@/lib/actions';
 import { useToast } from '@/components/ui/toast';
 import { formatDateTimeID } from '@/lib/utils';
 
@@ -41,6 +41,9 @@ type Opname = {
   systemStock: number;
   physicalStock: number;
   diff: number;
+  reviewStatus: 'PENDING' | 'REVIEWED' | 'APPLIED' | 'MATCHED';
+  reviewedAt: string | null;
+  reviewedByName: string | null;
   note: string | null;
   userName: string | null;
   createdAt: string;
@@ -76,6 +79,7 @@ export function OpnameClient({ products, opnames }: Props) {
     }
     return list;
   }, [products, q, activeCat]);
+  const pendingReviews = opnames.filter((item) => item.reviewStatus === 'PENDING' && item.diff !== 0).length;
 
   return (
     <div className="space-y-4">
@@ -88,8 +92,11 @@ export function OpnameClient({ products, opnames }: Props) {
       <div>
         <h1 className="text-xl font-bold">Stok Opname</h1>
         <p className="text-xs text-muted-foreground">
-          Audit stok: input hasil hitung fisik, sistem hitung selisih
+          Tinjau hasil hitung karyawan dan sesuaikan stok aplikasi bila perlu.
         </p>
+      </div>
+      <div className={`rounded-xl p-3 text-sm ${pendingReviews ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'}`}>
+        {pendingReviews ? `${pendingReviews} catatan selisih menunggu ditinjau.` : 'Tidak ada catatan selisih yang menunggu ditinjau.'}
       </div>
 
       <div className="sticky top-[108px] z-20 -mx-4 bg-background/95 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:static sm:mx-0 sm:p-0 sm:bg-transparent">
@@ -141,8 +148,11 @@ export function OpnameClient({ products, opnames }: Props) {
       {opnames.length > 0 && (
         <div className="space-y-2 pt-4">
           <h2 className="text-sm font-semibold text-muted-foreground">Riwayat Opname</h2>
-          {opnames.map((o) => (
-            <Card key={o.id}>
+          {opnames.map((o) => {
+            const status = o.diff === 0 ? 'MATCHED' : o.reviewStatus;
+            const statusLabel = status === 'PENDING' ? 'Menunggu tinjauan' : status === 'REVIEWED' ? 'Ditinjau · stok tidak diubah' : status === 'APPLIED' ? 'Stok sudah disesuaikan' : 'Sesuai';
+            const statusStyle = status === 'PENDING' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400' : status === 'MATCHED' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-muted text-muted-foreground';
+            return <Card key={o.id}>
               <CardContent className="p-3">
                 <div className="flex items-center justify-between">
                   <div className="min-w-0 flex-1">
@@ -160,6 +170,8 @@ export function OpnameClient({ products, opnames }: Props) {
                       {formatDateTimeID(o.createdAt)}
                       {o.userName && ` · ${o.userName}`}
                     </div>
+                    <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${statusStyle}`}>{statusLabel}</span>
+                    {o.reviewedByName && <div className="mt-1 text-[10px] text-muted-foreground">Ditinjau {o.reviewedAt ? formatDateTimeID(o.reviewedAt) : ''} oleh {o.reviewedByName}</div>}
                     {o.note && <div className="text-xs text-muted-foreground">{o.note}</div>}
                   </div>
                   <div className="text-right">
@@ -179,7 +191,7 @@ export function OpnameClient({ products, opnames }: Props) {
                     </div>
                   </div>
                 </div>
-                {o.diff !== 0 && (
+                {status === 'PENDING' && o.diff !== 0 && (
                   <div className="mt-2 flex gap-2">
                     <Button
                       size="sm"
@@ -191,13 +203,35 @@ export function OpnameClient({ products, opnames }: Props) {
                             `Terapkan hasil opname? Stok ${o.productName} jadi ${o.physicalStock}`
                           )
                         ) {
-                          await applyStockOpname(o.id);
-                          toast({ title: 'Stok diupdate' });
-                          router.refresh();
+                          try {
+                            await applyStockOpname(o.id);
+                            toast({ title: 'Stok sudah disesuaikan' });
+                            router.refresh();
+                          } catch {
+                            toast({ title: 'Belum berhasil menerapkan stok', variant: 'destructive' });
+                          }
                         }
                       }}
                     >
-                      Terapkan
+                      Terapkan stok
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="flex-1"
+                      onClick={async () => {
+                        if (confirm('Tandai sudah ditinjau? Stok aplikasi tetap seperti sekarang.')) {
+                          try {
+                            await markStockOpnameReviewed(o.id);
+                            toast({ title: 'Catatan ditandai sudah ditinjau' });
+                            router.refresh();
+                          } catch {
+                            toast({ title: 'Belum berhasil meninjau catatan', variant: 'destructive' });
+                          }
+                        }
+                      }}
+                    >
+                      Sudah ditinjau
                     </Button>
                     <Button
                       size="sm"
@@ -215,8 +249,8 @@ export function OpnameClient({ products, opnames }: Props) {
                   </div>
                 )}
               </CardContent>
-            </Card>
-          ))}
+            </Card>;
+          })}
         </div>
       )}
     </div>

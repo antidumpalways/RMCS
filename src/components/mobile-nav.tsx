@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { Home, Package, ArrowRightLeft, FileText, Tag, Wallet, Settings as Cog, ClipboardCheck, MoreHorizontal } from 'lucide-react';
+import { Home, Package, ArrowRightLeft, FileText, Tag, Wallet, Settings as Cog, ClipboardCheck, ClipboardList, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 
@@ -19,6 +19,7 @@ const allItems: NavItem[] = [
   { href: '/transaksi', label: 'Transaksi', icon: ArrowRightLeft },
   { href: '/harga', label: 'Harga', icon: Tag },
   { href: '/piutang', label: 'Bon', icon: Wallet },
+  { href: '/serah-terima', label: 'Serah Terima', icon: ClipboardList, ownerOnly: true },
   { href: '/laporan', label: 'Laporan', icon: FileText, ownerOnly: true },
   { href: '/opname', label: 'Opname', icon: ClipboardCheck, ownerOnly: true },
   { href: '/pengaturan', label: 'Pengaturan', icon: Cog, ownerOnly: true },
@@ -36,6 +37,7 @@ export function MobileNav({
     { href: '/transaksi', label: 'Penjualan', icon: ArrowRightLeft },
     { href: '/cek-stok', label: 'Cek Stok', icon: ClipboardCheck },
     { href: '/piutang', label: 'Bon', icon: Wallet },
+    { href: '/serah-terima', label: 'Serah Terima', icon: ClipboardList },
   ] : allItems;
   const [moreOpen, setMoreOpen] = React.useState(false);
 

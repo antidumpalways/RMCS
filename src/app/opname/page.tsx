@@ -19,7 +19,11 @@ export default async function OpnamePage() {
       orderBy: { createdAt: 'desc' },
       // A single employee stock check can record hundreds of products at once.
       take: 1000,
-      include: { product: { select: { name: true, stock: true } }, user: { select: { username: true } } },
+      include: {
+        product: { select: { name: true, stock: true } },
+        user: { select: { username: true } },
+        reviewedBy: { select: { username: true } },
+      },
     }),
   ]);
   return (
@@ -39,6 +43,9 @@ export default async function OpnamePage() {
           systemStock: o.systemStock,
           physicalStock: o.physicalStock,
           diff: o.diff,
+          reviewStatus: o.diff === 0 ? 'MATCHED' : o.reviewStatus,
+          reviewedAt: o.reviewedAt?.toISOString() ?? null,
+          reviewedByName: o.reviewedBy?.username ?? null,
           note: o.note,
           userName: o.user?.username ?? null,
           createdAt: o.createdAt.toISOString(),

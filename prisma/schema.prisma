@@ -58,6 +58,7 @@ model User {
   debtPayments        DebtPayment[]
   shiftClosures       ShiftClosure[]
   stockOpnames        StockOpname[]
+  reviewedStockOpnames StockOpname[] @relation("StockOpnameReviewer")
 }
 
 // ============================================================================
@@ -192,6 +193,9 @@ model ShiftClosure {
   servicesCount Int      @default(0)
   servicesProfit BigInt  @default(0)
   expensesTotal BigInt   @default(0)
+  openingStockCount Int  @default(0)
+  closingStockCount Int  @default(0)
+  stockDiscrepancyCount Int @default(0)
   note          String?
 
   @@index([closedAt])
@@ -210,9 +214,13 @@ model StockOpname {
   systemStock Int    // stok di sistem saat opname
   physicalStock Int  // hasil hitung fisik
   diff      Int      // physical - system (negatif = kurang, positif = lebih)
+  reviewStatus String @default("PENDING") // PENDING | REVIEWED | APPLIED | MATCHED
+  reviewedAt DateTime?
   note      String?
   userId    Int?
   user      User?    @relation(fields: [userId], references: [id])
+  reviewedByUserId Int?
+  reviewedBy User? @relation("StockOpnameReviewer", fields: [reviewedByUserId], references: [id])
   createdAt DateTime @default(now())
 
   @@index([productId])

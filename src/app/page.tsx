@@ -3,6 +3,7 @@ import { DashboardClient } from './dashboard-client';
 import { computeDashboard } from '@/lib/automation';
 import { requireUser } from '@/lib/guard';
 import { prisma } from '@/lib/prisma';
+import { startOfDay } from '@/lib/utils';
 import { WorkbenchClient } from './workbench-client';
 
 export const dynamic = 'force-dynamic';
@@ -10,7 +11,7 @@ export const dynamic = 'force-dynamic';
 export default async function HomePage() {
   const me = await requireUser();
   if (me.role === 'karyawan') {
-    const [products, popular, recentSales] = await Promise.all([
+    const [products, popular, recentSales, closingChecks] = await Promise.all([
       prisma.product.findMany({
         select: { id: true, name: true, stock: true, sellPrice: true, categoryId: true, provider: true, validity: true, category: { select: { name: true } } },
         orderBy: { name: 'asc' },
@@ -22,9 +23,13 @@ export default async function HomePage() {
         where: { userId: me.id }, orderBy: { createdAt: 'desc' }, take: 4,
         select: { id: true, createdAt: true, items: { select: { qty: true, product: { select: { name: true } } } } },
       }),
+      prisma.stockOpname.count({
+        where: { userId: me.id, createdAt: { gte: startOfDay() }, note: 'Cek stok tutup shift' },
+      }),
     ]);
     return <><AppHeader user={me} /><WorkbenchClient
       username={me.username} userId={me.id} shift={me.shift}
+      hasClosingStockCheck={closingChecks > 0}
       products={products.map(({ category, sellPrice, ...product }) => ({ ...product, categoryName: category.name, sellPrice: Number(sellPrice) }))}
       popularIds={popular.map((item) => item.productId)}
       recentSales={recentSales.map((sale) => ({ id: sale.id, createdAt: sale.createdAt.toISOString(), items: sale.items.map((item) => ({ name: item.product.name, qty: item.qty })) }))}

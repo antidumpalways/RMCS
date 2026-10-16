@@ -343,7 +343,7 @@ export async function closeShift(note?: string) {
   const shiftStart = todayStart;
   const shiftEnd = now;
 
-  const [sales, services, expenses] = await Promise.all([
+  const [sales, services, expenses, stockChecks] = await Promise.all([
     prisma.saleTransaction.findMany({
       where: {
         createdAt: { gte: shiftStart, lte: shiftEnd },
@@ -362,14 +362,25 @@ export async function closeShift(note?: string) {
         ...(me.id ? { userId: me.id } : {}),
       },
     }),
+    prisma.stockOpname.findMany({
+      where: {
+        userId: me.id,
+        createdAt: { gte: shiftStart, lte: shiftEnd },
+        note: { in: ['Cek stok buka shift', 'Cek stok tutup shift'] },
+      },
+      select: { note: true, diff: true, reviewStatus: true },
+    }),
   ]);
 
   const salesRevenue = sales.reduce((a, s) => a + s.totalRevenue, 0n);
   const salesProfit = sales.reduce((a, s) => a + s.totalProfit, 0n);
   const servicesProfit = services.reduce((a, s) => a + s.profit, 0n);
   const expensesTotal = expenses.reduce((a, e) => a + e.amount, 0n);
+  const openingStockCount = stockChecks.filter((item) => item.note === 'Cek stok buka shift').length;
+  const closingStockCount = stockChecks.filter((item) => item.note === 'Cek stok tutup shift').length;
+  const stockDiscrepancyCount = stockChecks.filter((item) => item.diff !== 0 && item.reviewStatus === 'PENDING').length;
 
-  await prisma.shiftClosure.create({
+  const closure = await prisma.shiftClosure.create({
     data: {
       userId: me.id,
       shift: shiftName || 'all',
@@ -380,18 +391,27 @@ export async function closeShift(note?: string) {
       servicesCount: services.length,
       servicesProfit,
       expensesTotal,
+      openingStockCount,
+      closingStockCount,
+      stockDiscrepancyCount,
       note: note?.trim() || null,
     },
+    select: { id: true },
   });
   revalidatePath('/transaksi');
   revalidatePath('/laporan');
+  revalidatePath('/serah-terima');
   return {
+    id: closure.id,
     salesCount: sales.length,
     salesRevenue,
     salesProfit,
     servicesCount: services.length,
     servicesProfit,
     expensesTotal,
+    openingStockCount,
+    closingStockCount,
+    stockDiscrepancyCount,
   };
 }
 
@@ -406,6 +426,7 @@ export async function recordStockOpname(data: {
 }) {
   if (data.physicalStock < 0) throw new Error('Stok fisik tidak boleh negatif');
   const me = await getCurrentUser();
+  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat mencatat opname manual.');
   const product = await prisma.product.findUniqueOrThrow({ where: { id: data.productId } });
   const diff = data.physicalStock - product.stock;
   await prisma.stockOpname.create({
@@ -414,6 +435,7 @@ export async function recordStockOpname(data: {
       systemStock: product.stock,
       physicalStock: data.physicalStock,
       diff,
+      reviewStatus: diff === 0 ? 'MATCHED' : 'PENDING',
       note: data.note?.trim() || null,
       userId: me?.id ?? null,
     },
@@ -459,6 +481,7 @@ export async function recordShiftStockCheck(data: {
         systemStock,
         physicalStock: item.physicalStock,
         diff,
+        reviewStatus: diff === 0 ? 'MATCHED' : 'PENDING',
         note: `Cek stok ${data.phase} shift`,
         userId: me.id,
       };
@@ -475,17 +498,45 @@ export async function recordShiftStockCheck(data: {
 }
 
 export async function applyStockOpname(id: number) {
-  // Apply hasil opname ke Product.stock
-  const opname = await prisma.stockOpname.findUniqueOrThrow({ where: { id } });
-  await prisma.product.update({
-    where: { id: opname.productId },
-    data: { stock: opname.physicalStock },
+  const me = await getCurrentUser();
+  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat menerapkan hasil opname.');
+  await prisma.$transaction(async (tx) => {
+    const opname = await tx.stockOpname.findUniqueOrThrow({ where: { id } });
+    if (opname.reviewStatus !== 'PENDING' || opname.diff === 0) {
+      throw new Error('Catatan ini sudah ditinjau atau tidak memiliki selisih.');
+    }
+    const productUpdate = await tx.product.updateMany({
+      where: { id: opname.productId, stock: opname.systemStock },
+      data: { stock: opname.physicalStock },
+    });
+    if (productUpdate.count !== 1) {
+      throw new Error('Stok produk sudah berubah sejak hitungan ini. Tinjau ulang sebelum menerapkan.');
+    }
+    await tx.stockOpname.update({
+      where: { id },
+      data: { reviewStatus: 'APPLIED', reviewedAt: new Date(), reviewedByUserId: me.id },
+    });
   });
   revalidatePath('/inventory');
   revalidatePath('/opname');
+  revalidatePath('/serah-terima');
+}
+
+export async function markStockOpnameReviewed(id: number) {
+  const me = await getCurrentUser();
+  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat meninjau hasil opname.');
+  const result = await prisma.stockOpname.updateMany({
+    where: { id, reviewStatus: 'PENDING', diff: { not: 0 } },
+    data: { reviewStatus: 'REVIEWED', reviewedAt: new Date(), reviewedByUserId: me.id },
+  });
+  if (result.count !== 1) throw new Error('Catatan ini sudah ditinjau atau tidak memiliki selisih.');
+  revalidatePath('/opname');
+  revalidatePath('/serah-terima');
 }
 
 export async function deleteStockOpname(id: number) {
+  const me = await getCurrentUser();
+  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat menghapus catatan opname.');
   await prisma.stockOpname.delete({ where: { id } });
   revalidatePath('/opname');
 }

@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Wallet, Receipt, ArrowRight, CheckCircle2, Loader2, Moon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -68,31 +69,62 @@ export function WorkEntry({ kind }: { kind: 'admin' | 'expense' }) {
   </Dialog>;
 }
 
-export function FinishShift() {
+export function FinishShift({ hasClosingStockCheck }: { hasClosingStockCheck: boolean }) {
   const router = useRouter();
   const [open, setOpen] = React.useState(false);
   const [note, setNote] = React.useState('');
   const [pending, setPending] = React.useState(false);
   const pendingRef = React.useRef(false);
   const [error, setError] = React.useState('');
-  const [result, setResult] = React.useState<{ salesCount: number; servicesCount: number } | null>(null);
+  const [result, setResult] = React.useState<{
+    salesCount: number;
+    servicesCount: number;
+    openingStockCount: number;
+    closingStockCount: number;
+    stockDiscrepancyCount: number;
+    note: string;
+  } | null>(null);
   const noteId = React.useId();
   return <Dialog open={open} onOpenChange={(value) => { if (!pendingRef.current) { setOpen(value); if (!value) { setResult(null); setError(''); } } }}>
     <button onClick={() => setOpen(true)} className="flex min-h-16 w-full items-center gap-3 rounded-2xl border border-dashed bg-muted/30 p-4 text-left hover:bg-muted/60"><Moon className="h-5 w-5 shrink-0 text-muted-foreground" /><span className="flex-1"><span className="block text-sm font-semibold">Selesai Shift</span><span className="block text-xs text-muted-foreground">Simpan rekap & catatan serah terima</span></span><ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" /></button>
     <DialogContent>
       <DialogHeader><DialogTitle>{result ? 'Rekap shift tersimpan' : 'Selesai untuk hari ini?'}</DialogTitle><DialogDescription>{result ? 'Terima kasih! Catatan kerja kamu sudah disimpan.' : 'Simpan rekap transaksi hari ini dan titipkan catatan untuk shift berikutnya.'}</DialogDescription></DialogHeader>
-      {result ? <div className="space-y-5"><div className="rounded-2xl bg-primary/10 p-5 text-center"><CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-primary" /><p className="font-semibold">Kerja bagus hari ini!</p><p className="mt-2 text-sm text-muted-foreground">{result.salesCount} penjualan · {result.servicesCount} rekap jasa</p></div><Button size="lg" className="w-full rounded-xl" onClick={() => { setOpen(false); setResult(null); setNote(''); router.refresh(); }}>Kembali ke beranda</Button></div> : <form className="space-y-4" onSubmit={async (event) => {
+      {result ? <div className="space-y-4">
+        <div className="rounded-2xl bg-primary/10 p-5 text-center"><CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-primary" /><p className="font-semibold">Serah terima tersimpan</p><p className="mt-1 text-xs text-muted-foreground">Ringkasan shift sudah dicatat untuk owner.</p></div>
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          <div className="rounded-xl border bg-card p-3"><span className="block text-xs text-muted-foreground">Penjualan</span><strong>{result.salesCount}</strong> transaksi</div>
+          <div className="rounded-xl border bg-card p-3"><span className="block text-xs text-muted-foreground">Rekap jasa</span><strong>{result.servicesCount}</strong> transaksi</div>
+          <div className="rounded-xl border bg-card p-3"><span className="block text-xs text-muted-foreground">Cek stok saat buka</span><strong>{result.openingStockCount}</strong> barang</div>
+          <div className="rounded-xl border bg-card p-3"><span className="block text-xs text-muted-foreground">Cek stok saat tutup</span><strong>{result.closingStockCount}</strong> barang</div>
+        </div>
+        <div className={`rounded-xl p-3 text-sm ${result.stockDiscrepancyCount ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'}`}>
+          {result.stockDiscrepancyCount ? `${result.stockDiscrepancyCount} catatan selisih stok menunggu owner.` : 'Tidak ada selisih stok dari hitungan hari ini.'}
+        </div>
+        {result.note && <div className="rounded-xl border p-3"><p className="text-xs font-semibold">Pesan untuk shift berikutnya</p><p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{result.note}</p></div>}
+        <div className="grid gap-2">
+          <Button asChild size="lg" className="w-full rounded-xl"><Link href="/serah-terima">Lihat serah terima</Link></Button>
+          <Button variant="outline" size="lg" className="w-full rounded-xl" onClick={() => { setOpen(false); setResult(null); setNote(''); router.refresh(); }}>Kembali ke beranda</Button>
+        </div>
+      </div> : <form className="space-y-4" onSubmit={async (event) => {
         event.preventDefault();
         if (pendingRef.current) return;
         pendingRef.current = true; setPending(true); setError('');
         try {
           const summary = await closeShift(note);
-          setResult({ salesCount: summary.salesCount, servicesCount: summary.servicesCount });
+          setResult({
+            salesCount: summary.salesCount,
+            servicesCount: summary.servicesCount,
+            openingStockCount: summary.openingStockCount,
+            closingStockCount: summary.closingStockCount,
+            stockDiscrepancyCount: summary.stockDiscrepancyCount,
+            note: note.trim(),
+          });
           router.refresh();
         } catch { setError('Rekap belum tersimpan. Silakan coba lagi.'); }
         finally { pendingRef.current = false; setPending(false); }
       }}>
         <div className="space-y-2"><Label htmlFor={noteId}>Catatan untuk shift berikutnya <span className="font-normal text-muted-foreground">(opsional)</span></Label><Textarea id={noteId} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Contoh: voucher XL tinggal sedikit, tolong cek rak depan." rows={4} maxLength={1000} disabled={pending} /></div>
+        {!hasClosingStockCheck && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300"><p className="font-medium">Cek stok tutup shift belum dicatat.</p><p className="mt-1 text-xs">Sebaiknya cocokkan stok dengan catatan manual sebelum serah terima.</p><Link href="/cek-stok?mode=tutup" onClick={() => setOpen(false)} className="mt-2 inline-flex min-h-10 items-center font-semibold underline underline-offset-4">Cek stok sekarang</Link></div>}
         <p className="text-xs leading-relaxed text-muted-foreground">Rekap berisi penjualan, biaya admin, dan pengeluaran yang kamu catat hari ini.</p>
         {error && <p role="alert" className="rounded-xl bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
         <Button type="submit" size="lg" className="w-full rounded-xl" disabled={pending}>{pending ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : 'Simpan Rekap Shift'}</Button>

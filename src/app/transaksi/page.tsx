@@ -23,7 +23,7 @@ export default async function TransaksiPage({
     ? { createdAt: { gte: dayStart, lte: dayEnd }, user: { shift: shiftFilter } }
     : { createdAt: { gte: dayStart, lte: dayEnd } };
 
-  const [products, sales, services, expenses] = await Promise.all([
+  const [products, sales, services, expenses, closingChecks] = await Promise.all([
     prisma.product.findMany({
       where: { stock: { gt: 0 } },
       include: { category: true, subcategory: true },
@@ -44,6 +44,11 @@ export default async function TransaksiPage({
       include: { user: { select: { username: true, shift: true } } },
       orderBy: { createdAt: 'desc' },
     }),
+    me.role === 'karyawan'
+      ? prisma.stockOpname.count({
+          where: { userId: me.id, createdAt: { gte: startOfDay() }, note: 'Cek stok tutup shift' },
+        })
+      : Promise.resolve(1),
   ]);
 
   // Hitung ringkasan harian otomatis
@@ -72,6 +77,7 @@ export default async function TransaksiPage({
       <TransaksiClient
         userId={me.id}
         isKaryawan={me.role === 'karyawan'}
+        hasClosingStockCheck={closingChecks > 0}
         date={dateStr}
         shift={shiftFilter}
         summary={{
