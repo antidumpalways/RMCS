@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { headers } from 'next/headers';
 import { GlobalSearch } from './global-search';
 import { MobileNav } from './mobile-nav';
+import { AssistantChat } from './assistant-chat';
 import { LogOut, Store } from 'lucide-react';
 import { prisma } from '@/lib/prisma';
 import { logoutAction } from '@/lib/auth-actions';
@@ -50,6 +51,7 @@ export async function AppHeader({ user }: { user?: { id: number; username: strin
         {!(isKaryawan && pathname === '/') && <GlobalSearch />}
       </header>
       <MobileNav isKaryawan={isKaryawan} pathname={pathname} />
+      {user && <AssistantChat role={user.role} />}
     </>
   );
 }

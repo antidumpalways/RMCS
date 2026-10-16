@@ -78,6 +78,7 @@ git push -u origin main
    - Name: `DATABASE_URL`
    - Value: paste connection string Neon dari step 1
    - Environment: pilih **Production** (dan **Preview** jika mau)
+   - Untuk mengaktifkan chat AI, tambahkan `DEEPSEEK_API_KEY` dari DeepSeek Platform sebagai secret. `DEEPSEEK_MODEL` opsional; default aplikasi `deepseek-flash`.
 5. Klik **Deploy**
 6. Tunggu ~2-5 menit (build + install)
 
