@@ -43,7 +43,7 @@ export default async function OpnamePage() {
           systemStock: o.systemStock,
           physicalStock: o.physicalStock,
           diff: o.diff,
-          reviewStatus: o.diff === 0 ? 'MATCHED' : o.reviewStatus,
+          reviewStatus: (o.diff === 0 ? 'MATCHED' : o.reviewStatus) as 'PENDING' | 'REVIEWED' | 'APPLIED' | 'MATCHED',
           reviewedAt: o.reviewedAt?.toISOString() ?? null,
           reviewedByName: o.reviewedBy?.username ?? null,
           note: o.note,
