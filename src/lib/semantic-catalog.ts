@@ -35,8 +35,7 @@ export function validatedSemanticMatches(raw: unknown, products: SemanticProduct
   });
 }
 
-export async function semanticCatalogSearch(query: string, products: SemanticProduct[], apiKey: string) {
-  if (!products.length || products.length > 800) return [];
+async function searchBatch(query: string, products: SemanticProduct[], apiKey: string) {
   const response = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -52,10 +51,33 @@ export async function semanticCatalogSearch(query: string, products: SemanticPro
     }),
     signal: AbortSignal.timeout(12_000),
   });
-  if (!response.ok) return [];
+  if (!response.ok) throw new Error('Semantic catalog search unavailable.');
   const data = await response.json() as { choices?: { message?: { content?: string } }[] };
   const content = data.choices?.[0]?.message?.content;
   if (!content) return [];
-  try { return validatedSemanticMatches(JSON.parse(content), products, query); }
+  try { return validatedSemanticMatches(JSON.parse(content.match(/\{[\s\S]*\}/)?.[0] || content), products, query); }
   catch { return []; }
+}
+
+export async function semanticCatalogSearch(query: string, products: SemanticProduct[], apiKey: string) {
+  if (!products.length) return [];
+  if (products.length > 3000) throw new Error('Catalog exceeds semantic search limit.');
+  const batches = Array.from({ length: Math.ceil(products.length / 500) }, (_, index) => products.slice(index * 500, (index + 1) * 500));
+  const results = await Promise.allSettled(batches.map((batch) => searchBatch(query, batch, apiKey)));
+  const partial = results.some((result) => result.status === 'rejected');
+  if (results.every((result) => result.status === 'rejected')) throw new Error('Semantic catalog search unavailable.');
+  const confidenceOrder = { high: 0, medium: 1, low: 2 };
+  const matches = new Map<number, SemanticMatch>();
+  for (const result of results) {
+    if (result.status !== 'fulfilled') continue;
+    for (const match of result.value) {
+      const confidence = partial && match.confidence === 'high' ? 'medium' : match.confidence;
+      const previous = matches.get(match.id);
+      if (!previous || confidenceOrder[confidence] < confidenceOrder[previous.confidence]) {
+        matches.set(match.id, { id: match.id, confidence });
+      }
+    }
+  }
+  if (partial && !matches.size) throw new Error('Semantic catalog search incomplete.');
+  return [...matches.values()].sort((a, b) => confidenceOrder[a.confidence] - confidenceOrder[b.confidence]).slice(0, 8);
 }

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth';
-import { catalogSearchTerms } from '@/lib/catalog-search';
+import { catalogQueryKey } from '@/lib/catalog-search';
 import { prisma } from '@/lib/prisma';
 import { respectsNumericAttributes } from '@/lib/semantic-catalog';
 
@@ -34,7 +34,7 @@ export async function POST(request: Request) {
   const query = typeof data.query === 'string' ? data.query.trim().slice(0, 200) : '';
   const note = typeof data.note === 'string' ? data.note.trim().slice(0, 200) : '';
   const productId = Number.isSafeInteger(data.productId) && (data.productId as number) > 0 ? data.productId as number : null;
-  const queryKey = catalogSearchTerms(query).join(' ');
+  const queryKey = catalogQueryKey(query);
   if (query.length < 3 || query.length > 200 || !queryKey || (!productId && !note)) {
     return NextResponse.json({ error: 'Sebutkan pertanyaan barang dan pilih hasil yang tepat atau tulis koreksinya.' }, { status: 400 });
   }
@@ -81,9 +81,11 @@ export async function PATCH(request: Request) {
           id: product.id, name: product.name, categoryName: product.category.name,
           provider: product.provider, validity: product.validity,
         })) throw new Error('Angka ukuran atau masa aktif pada pertanyaan berbeda dari barang yang dipilih.');
-        const conflicting = await tx.assistantFeedback.findFirst({
-          where: { queryKey: feedback.queryKey, status: 'APPROVED', productId: { not: chosenProductId } },
+        const approved = await tx.assistantFeedback.findMany({
+          where: { status: 'APPROVED', productId: { not: chosenProductId } },
+          select: { query: true }, take: 2000,
         });
+        const conflicting = approved.some((item) => catalogQueryKey(item.query) === catalogQueryKey(feedback.query));
         if (conflicting) throw new Error('Padanan ini sudah disetujui untuk barang lain. Tolak masukan yang bertentangan.');
       }
       await tx.assistantFeedback.update({
