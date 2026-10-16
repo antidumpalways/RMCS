@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { catalogDatabaseNeedle, catalogSearchTerms, matchesCatalogProduct } from '@/lib/catalog-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -95,19 +96,25 @@ function catalogProduct(product: {
 }
 
 async function findCatalogProducts(query: string) {
+  const terms = catalogSearchTerms(query);
+  if (!terms.length) return [];
   const products = await prisma.product.findMany({
     where: {
-      OR: [
-        { name: { contains: query, mode: 'insensitive' } },
-        { provider: { contains: query, mode: 'insensitive' } },
-        { category: { name: { contains: query, mode: 'insensitive' } } },
-      ],
+      AND: terms.map((term) => {
+        const needle = catalogDatabaseNeedle(term);
+        return { OR: [
+          { name: { contains: needle, mode: 'insensitive' as const } },
+          { provider: { contains: needle, mode: 'insensitive' as const } },
+          { validity: { contains: needle, mode: 'insensitive' as const } },
+          { category: { name: { contains: needle, mode: 'insensitive' as const } } },
+        ] };
+      }),
     },
     include: { category: { select: { name: true } } },
     orderBy: { name: 'asc' },
-    take: 8,
+    take: 120,
   });
-  return products.map(catalogProduct);
+  return products.map(catalogProduct).filter((product) => matchesCatalogProduct(product, terms)).slice(0, 8);
 }
 
 export async function POST(request: Request) {
@@ -244,6 +251,14 @@ export async function POST(request: Request) {
           if (new Set(resolved.map((item) => item.productId)).size === resolved.length) stockProposal = { phase, items: resolved };
           else stockDraftProblem = true;
         }
+      }
+    }
+
+    if (catalogSearchUsed) {
+      const directMatches = await findCatalogProducts(lastMessage.content);
+      if (directMatches.length) {
+        catalog.clear();
+        for (const product of directMatches) catalog.set(product.id, product);
       }
     }
 
