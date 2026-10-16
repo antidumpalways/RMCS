@@ -33,9 +33,8 @@ export function MobileNav({
 }) {
   const items = isKaryawan ? [
     { href: '/', label: 'Beranda', icon: Home },
-    { href: '/transaksi', label: 'Riwayat', icon: ArrowRightLeft },
-    { href: '/harga', label: 'Harga', icon: Tag },
-    { href: '/inventory', label: 'Stok', icon: Package },
+    { href: '/transaksi', label: 'Penjualan', icon: ArrowRightLeft },
+    { href: '/cek-stok', label: 'Cek Stok', icon: ClipboardCheck },
     { href: '/piutang', label: 'Bon', icon: Wallet },
   ] : allItems;
   const [moreOpen, setMoreOpen] = React.useState(false);

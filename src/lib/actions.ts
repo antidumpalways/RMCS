@@ -422,6 +422,58 @@ export async function recordStockOpname(data: {
   revalidatePath('/opname');
 }
 
+// Employee stock check at the start or end of a shift. Save the physical count
+// and its difference for the owner to review; this does not change Product.stock.
+export async function recordShiftStockCheck(data: {
+  phase: 'buka' | 'tutup';
+  counts: { productId: number; physicalStock: number }[];
+}) {
+  const me = await getCurrentUser();
+  if (!me || me.role !== 'karyawan') throw new Error('Menu ini khusus karyawan.');
+  if (!data || !['buka', 'tutup'].includes(data.phase)) throw new Error('Waktu cek stok tidak valid.');
+  if (!Array.isArray(data.counts) || data.counts.length === 0 || data.counts.length > 500) {
+    throw new Error('Isi hasil hitung minimal satu barang.');
+  }
+
+  const seen = new Set<number>();
+  for (const item of data.counts) {
+    if (!Number.isSafeInteger(item?.productId) || item.productId <= 0 || seen.has(item.productId) ||
+        !Number.isSafeInteger(item.physicalStock) || item.physicalStock < 0 || item.physicalStock > 1_000_000) {
+      throw new Error('Periksa kembali jumlah stok yang diisi.');
+    }
+    seen.add(item.productId);
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const products = await tx.product.findMany({
+      where: { id: { in: data.counts.map((item) => item.productId) } },
+      select: { id: true, stock: true },
+    });
+    if (products.length !== data.counts.length) throw new Error('Ada barang yang sudah tidak tersedia. Muat ulang halaman.');
+    const stockById = new Map(products.map((product) => [product.id, product.stock]));
+    const entries = data.counts.map((item) => {
+      const systemStock = stockById.get(item.productId)!;
+      const diff = item.physicalStock - systemStock;
+      return {
+        productId: item.productId,
+        systemStock,
+        physicalStock: item.physicalStock,
+        diff,
+        note: `Cek stok ${data.phase} shift`,
+        userId: me.id,
+      };
+    });
+    await tx.stockOpname.createMany({ data: entries });
+    return { checkedCount: entries.length, changedCount: entries.filter((entry) => entry.diff !== 0).length };
+  });
+
+  revalidatePath('/cek-stok');
+  revalidatePath('/opname');
+  revalidatePath('/inventory');
+  revalidatePath('/');
+  return result;
+}
+
 export async function applyStockOpname(id: number) {
   // Apply hasil opname ke Product.stock
   const opname = await prisma.stockOpname.findUniqueOrThrow({ where: { id } });

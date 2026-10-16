@@ -17,7 +17,8 @@ export default async function OpnamePage() {
     }),
     prisma.stockOpname.findMany({
       orderBy: { createdAt: 'desc' },
-      take: 30,
+      // A single employee stock check can record hundreds of products at once.
+      take: 1000,
       include: { product: { select: { name: true, stock: true } }, user: { select: { username: true } } },
     }),
   ]);
