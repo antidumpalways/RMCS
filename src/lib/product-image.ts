@@ -20,18 +20,23 @@ export async function describeProductImage(dataUrl: string, apiKey: string) {
     body: JSON.stringify({
       model: process.env.DEEPSEEK_VISION_MODEL || 'deepseek-flash',
       messages: [
-        { role: 'system', content: 'Deskripsikan hanya ciri barang yang terlihat dalam foto untuk pencarian katalog: jenis, tulisan/merek/model yang terbaca, bentuk dan konektor. Jawab singkat dalam bahasa Indonesia. Jika buram atau tidak jelas, katakan tidak jelas. Jangan menyimpulkan harga, stok, keaslian atau kompatibilitas perangkat.' },
+        { role: 'system', content: 'Baca foto sebagai petunjuk pencarian katalog toko. Jawab dua baris dalam bahasa Indonesia: "Status: TERBACA" atau "Status: TIDAK_TERBACA", lalu "Ciri: ...". Gunakan TERBACA jika ada jenis barang, tulisan, merek, model, ukuran, atau ciri pembeda yang benar-benar terlihat; sebutkan hanya yang terlihat jelas. Gunakan TIDAK_TERBACA jika tidak ada ciri barang yang dapat dipercaya. Jangan menebak merek, harga, stok, keaslian, atau kompatibilitas perangkat.' },
         { role: 'user', content: [
-          { type: 'text', text: 'Apa ciri barang yang terlihat? Ini hanya petunjuk pencarian, bukan sumber fakta toko.' },
-          { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } },
+          { type: 'text', text: 'Baca tulisan pada label atau kemasan jika ada. Sebutkan jenis barang dan ciri pembeda yang terlihat. Foto ini bukan sumber fakta harga atau stok toko.' },
+          { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
         ] },
       ],
-      max_tokens: 180,
+      max_tokens: 500,
       stream: false,
     }),
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(25_000),
   });
   if (!response.ok) throw new Error('Foto belum bisa dibaca oleh DeepSeek. Coba lagi atau jelaskan barangnya lewat teks.');
   const data = await response.json() as { choices?: { message?: { content?: string } }[] };
-  return data.choices?.[0]?.message?.content?.trim().slice(0, 600) || 'Foto tidak cukup jelas untuk dikenali.';
+  const content = data.choices?.[0]?.message?.content?.trim();
+  if (!content) throw new Error('DeepSeek tidak mengembalikan hasil pembacaan foto.');
+  const status = /^Status:\s*(TERBACA|TIDAK_TERBACA)\b/im.exec(content)?.[1];
+  const description = content.replace(/^Status:\s*(?:TERBACA|TIDAK_TERBACA)\s*/im, '').replace(/^Ciri:\s*/im, '').trim().slice(0, 600);
+  const readable = status === 'TERBACA' || (!status && !/tidak (?:cukup jelas|jelas|terbaca|dapat dikenali|bisa dikenali)/i.test(description));
+  return { description: readable ? description : '', readable: readable && !!description };
 }

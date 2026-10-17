@@ -236,9 +236,23 @@ export async function POST(request: Request) {
 
   try {
     let imageDescription = '';
+    let imageReadable = false;
     if (image) {
-      try { imageDescription = await describeProductImage(image, apiKey); }
-      catch { return NextResponse.json({ error: 'Foto belum bisa dibaca. Coba lagi atau jelaskan barangnya lewat teks.' }, { status: 502 }); }
+      try {
+        const imageResult = await describeProductImage(image, apiKey);
+        imageDescription = imageResult.description;
+        imageReadable = imageResult.readable;
+      }
+      catch (error) {
+        console.error('Photo analysis failed:', error instanceof Error ? error.message : 'unknown error');
+        return NextResponse.json({ error: 'Foto belum berhasil dianalisis. Coba lagi atau jelaskan barangnya lewat teks.' }, { status: 502 });
+      }
+      if (!imageReadable && lastMessage.content === 'Barang apa ini? Tolong cari di katalog.') {
+        return NextResponse.json({
+          message: 'Saya belum bisa membaca ciri barang dari foto ini. Coba foto label atau kemasan lebih dekat dengan cahaya terang, atau ketik nama/merek yang terlihat.',
+          catalog: [], stockProposal: null, saleProposal: null, canFeedback: false,
+        });
+      }
     }
     const { start: dayStart, end: dayEnd, date: todayDate } = jakartaTodayBounds();
     const todaySalesWhere = { createdAt: { gte: dayStart, lt: dayEnd }, ...(user.role === 'karyawan' ? { userId: user.id } : {}) };
@@ -503,7 +517,9 @@ export async function POST(request: Request) {
       message = 'Belum ada perubahan yang saya simpan. Sebutkan barang dan jumlahnya untuk menyiapkan draf; database baru berubah setelah Anda menekan konfirmasi.';
     }
     if (image && !saleProposal && !stockProposal) {
-      message = `Ciri yang terbaca dari foto: ${imageDescription.slice(0, 240)}\n\n${message} Kecocokan dengan perangkat atau kendaraan perlu dipastikan dari label barang bila tidak tercatat di katalog.`;
+      message = imageReadable
+        ? `Ciri yang terbaca dari foto: ${imageDescription.slice(0, 240)}\n\n${message} Kecocokan dengan perangkat atau kendaraan perlu dipastikan dari label barang bila tidak tercatat di katalog.`
+        : `Saya belum bisa membaca ciri barang dari foto ini. ${message}`;
     }
 
     // Hanya istilah pencarian yang dinormalisasi dicatat; foto dan isi chat tidak disimpan.
