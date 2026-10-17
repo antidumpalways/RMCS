@@ -42,26 +42,48 @@ function editDistance(left: string, right: string) {
 
 export function rankCatalogProducts<T extends SearchableProduct>(products: T[], terms: string[]) {
   const documentFrequency = new Map<string, number>();
-  const productTerms = products.map((product) => {
+  const indexed = products.map((product) => {
+    const nameTerms = catalogSearchTerms(product.name);
     const values = [...new Set(catalogSearchTerms([
       product.name, product.provider, product.validity, product.categoryName,
     ].filter(Boolean).join(' ')))];
     for (const token of values) documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
-    return values;
+    return { values, nameTerms };
   });
   return products.flatMap((product, index) => {
-    if (!productTerms[index].length) return [];
+    if (!indexed[index].values.length) return [];
     let matched = 0;
     let score = 0;
+    let nameSimilarity = 0;
     for (const term of terms.slice(0, 16)) {
-      const candidate = productTerms[index].find((token) => token === term) ||
-        productTerms[index].find((token) => !/\d/.test(term + token) && term.length >= 5 && token.length >= 5 && editDistance(term, token) <= 1);
-      if (!candidate) continue;
+      const similarity = (token: string) => {
+        if (token === term) return 1;
+        if (/\d/.test(term + token) || term.length < 5 || token.length < 5) return 0;
+        const distance = editDistance(term, token);
+        return distance <= (Math.max(term.length, token.length) >= 8 ? 2 : 1)
+          ? 1 - distance / Math.max(term.length, token.length) : 0;
+      };
+      const candidates = indexed[index].values.map((token) => ({ token, similarity: similarity(token) }));
+      candidates.sort((a, b) => b.similarity - a.similarity);
+      const candidate = candidates[0];
+      if (!candidate || candidate.similarity < 0.7) continue;
       matched++;
-      score += Math.log(1 + products.length / (documentFrequency.get(candidate) ?? products.length));
-      if (candidate === term) score += 0.5;
+      score += Math.log(1 + products.length / (documentFrequency.get(candidate.token) ?? products.length)) * candidate.similarity;
+      if (candidate.token === term) score += 0.5;
+      nameSimilarity = Math.max(nameSimilarity, ...indexed[index].nameTerms.map(similarity));
     }
     if (!matched) return [];
-    return [{ product, score, matched }];
+    return [{ product, score, matched, nameSimilarity }];
   }).sort((a, b) => b.score - a.score || b.matched - a.matched || a.product.name.localeCompare(b.product.name));
+}
+
+export function strongSpellingCandidates<T>(ranked: { product: T; score: number; matched: number; nameSimilarity: number }[], queryTermCount: number) {
+  const best = ranked[0];
+  if (!best || best.nameSimilarity < 0.7 || best.matched < Math.min(2, queryTermCount)) return [];
+  const group = ranked.filter((entry) => entry.score >= best.score * 0.88 &&
+    entry.matched >= best.matched && entry.nameSimilarity >= 0.7).slice(0, 8);
+  const groupProducts = new Set(group.map((entry) => entry.product));
+  const next = ranked.find((entry) => !groupProducts.has(entry.product));
+  if (next && best.score < next.score * 1.6) return [];
+  return group.map((entry) => entry.product);
 }

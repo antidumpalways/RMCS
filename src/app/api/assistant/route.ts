@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import type { Prisma } from '@prisma/client';
 import { getCurrentUser } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { catalogQueryKey, catalogSearchTerms, rankCatalogProducts } from '@/lib/catalog-search';
+import { catalogQueryKey, catalogSearchTerms, rankCatalogProducts, strongSpellingCandidates } from '@/lib/catalog-search';
 import { respectsNumericAttributes, semanticCatalogSearch } from '@/lib/semantic-catalog';
 import { describeProductImage, validateProductImage } from '@/lib/product-image';
 import { jakartaTodayBounds, saleSnapshotSignature } from '@/lib/sale-chat';
@@ -119,7 +119,7 @@ const systemPrompt = `Kamu adalah asisten kerja R CELL untuk owner dan karyawan.
 ATURAN TEGAS:
 - Pahami pertanyaan bebas dalam bahasa sehari-hari, termasuk typo ringan, singkatan, dan urutan kata yang berbeda. Jika maksud atau barangnya belum pasti, tanyakan bagian yang perlu diperjelas.
 - Bantu mencari barang/harga/stok dari katalog, menyiapkan cek stok, mencatat penjualan hari ini, dan mengoreksi penjualan hari ini. Jawab pertanyaan umum dengan wajar, tetapi jangan mengarang data toko yang tidak tersedia lewat fungsi.
-- Untuk setiap pertanyaan harga, ketersediaan, barang serupa, atau foto barang, WAJIB panggil search_products. Gunakan konteks percakapan dan deskripsi foto untuk menyusun query. Harga hanya berasal dari katalog. Jangan menebak, mengubah, atau mencari harga dari internet. Jangan menyebut modal atau keuntungan.
+- Untuk setiap pertanyaan harga, ketersediaan, barang serupa, foto barang, atau pesan yang hanya menyebut nama/ciri barang, WAJIB panggil search_products. Gunakan konteks percakapan dan deskripsi foto untuk menyusun query. Pertahankan ejaan pengguna pada nama/merek agar server dapat memeriksa typo terhadap katalog. Harga hanya berasal dari katalog. Jangan menebak, mengubah, atau mencari harga dari internet. Jangan menyebut modal atau keuntungan.
 - Foto hanya petunjuk pengenalan; jangan mengaku pasti bila foto buram atau katalog ambigu. Jangan mengarang spesifikasi atau kecocokan untuk kendaraan/perangkat tertentu.
 - Untuk pertanyaan jumlah transaksi atau omzet hari ini, gunakan ringkasan penjualan dari konteks sesuai hak pengguna. Jangan mengira-ngira transaksi yang tidak ada di daftar terbaru.
 - Jangan menyebut angka harga dalam teks jawaban. Aplikasi akan menampilkan harga persis dari database.
@@ -182,15 +182,21 @@ async function findCatalogProducts(query: string, apiKey: string) {
     include: { category: { select: { name: true } } }, orderBy: { name: 'asc' }, take: 3001,
   });
   const fullCatalog = allProducts.map(catalogProduct);
+  const queryTerms = catalogSearchTerms(query);
+  const ranked = rankCatalogProducts(fullCatalog.filter((product) => respectsNumericAttributes(query, product)), queryTerms);
+  const spellingCandidates = strongSpellingCandidates(ranked, queryTerms.length)
+    .map((product) => ({ ...product, matchConfidence: 'medium' as const }));
   const fallback = () => {
     // Pencocokan huruf hanya menyarankan kandidat, tanpa membuat draf otomatis.
-    const ranked = rankCatalogProducts(fullCatalog.filter((product) => respectsNumericAttributes(query, product)), catalogSearchTerms(query));
     const highest = ranked[0]?.score ?? 0;
     return ranked.filter((entry) => entry.score >= highest * 0.8).slice(0, 8)
       .map(({ product }) => ({ ...product, matchConfidence: 'medium' as const }));
   };
   try {
     const semantic = await semanticCatalogSearch(query, fullCatalog, apiKey);
+    // Kandidat nama yang kuat tidak boleh hilang hanya karena model memilih
+    // kategori yang sama tetapi merek lain.
+    if (spellingCandidates.length) return spellingCandidates;
     if (!semantic.length) return fallback();
     const byId = new Map(fullCatalog.map((product) => [product.id, product]));
     return semantic.flatMap((match) => {
@@ -198,7 +204,7 @@ async function findCatalogProducts(query: string, apiKey: string) {
       return product ? [{ ...product, matchConfidence: match.confidence }] : [];
     });
   } catch {
-    return fallback();
+    return spellingCandidates.length ? spellingCandidates : fallback();
   }
 }
 

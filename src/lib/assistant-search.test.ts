@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { semanticCatalogSearch, validatedSemanticMatches } from './semantic-catalog';
-import { catalogSearchTerms } from './catalog-search';
+import { catalogSearchTerms, rankCatalogProducts, strongSpellingCandidates } from './catalog-search';
 import { validateProductImage } from './product-image';
 
 const products = [
@@ -49,4 +49,19 @@ test('semantic selection can inspect a product in a later catalog batch', async 
     assert.deepEqual(await semanticCatalogSearch('vehicle charging adapter', catalog, 'test-key'),
       [{ id: 501, confidence: 'high' }]);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test('a distinctive two-edit typo outranks products sharing only the category', () => {
+  const catalog = [
+    { name: 'SAMPOERNA', categoryName: 'Rokok', provider: null, validity: null },
+    { name: 'Gudang Garam', categoryName: 'Rokok', provider: null, validity: null },
+    { name: 'Djarum Super', categoryName: 'Rokok', provider: null, validity: null },
+    { name: 'Marlboro', categoryName: 'Rokok', provider: null, validity: null },
+  ];
+  const terms = catalogSearchTerms('rokok sampurna');
+  const ranked = rankCatalogProducts(catalog, terms);
+  assert.equal(ranked[0].product.name, 'SAMPOERNA');
+  assert.deepEqual(strongSpellingCandidates(ranked, terms.length).map((item) => item.name), ['SAMPOERNA']);
+  const generic = catalogSearchTerms('rokok');
+  assert.deepEqual(strongSpellingCandidates(rankCatalogProducts(catalog, generic), generic.length), []);
 });
