@@ -208,6 +208,26 @@ async function findCatalogProducts(query: string, apiKey: string) {
   }
 }
 
+async function productsFromOcr(ocrText: string) {
+  const terms = catalogSearchTerms(ocrText);
+  const text = ` ${terms.join(' ')} `;
+  if (text.length < 6) return { exact: [] as CatalogProduct[], likely: [] as CatalogProduct[] };
+  const products = await prisma.product.findMany({
+    include: { category: { select: { name: true } } },
+    orderBy: { name: 'asc' }, take: 3001,
+  });
+  const catalog = products.map(catalogProduct);
+  const exact = catalog.filter((product) => {
+    const name = catalogQueryKey(product.name);
+    return name.length >= 5 && text.includes(` ${name} `);
+  });
+  const ranked = rankCatalogProducts(catalog, terms);
+  const bestScore = ranked[0]?.score ?? 0;
+  const likely = ranked.filter((entry) => entry.matched >= 2 && entry.nameSimilarity >= 0.8 &&
+    entry.score >= bestScore * 0.85).slice(0, 5).map(({ product }) => product);
+  return { exact, likely };
+}
+
 export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Silakan masuk kembali.' }, { status: 401 });
@@ -215,7 +235,7 @@ export async function POST(request: Request) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) return NextResponse.json({ error: 'Asisten belum aktif. Owner perlu mengatur DEEPSEEK_API_KEY di Vercel.' }, { status: 503 });
 
-  let body: { messages?: unknown; image?: unknown };
+  let body: { messages?: unknown; image?: unknown; ocrText?: unknown };
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Pesan tidak terbaca.' }, { status: 400 }); }
   if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 12) {
     return NextResponse.json({ error: 'Percakapan tidak valid. Silakan mulai percakapan baru.' }, { status: 400 });
@@ -233,24 +253,49 @@ export async function POST(request: Request) {
   if (lastMessage?.role !== 'user') return NextResponse.json({ error: 'Kirim pesan baru untuk melanjutkan.' }, { status: 400 });
   const image = body.image === undefined ? null : validateProductImage(body.image);
   if (body.image !== undefined && !image) return NextResponse.json({ error: 'Foto harus JPG, PNG, WebP, atau GIF dan maksimal 2 MB.' }, { status: 400 });
+  const ocrText = image && typeof body.ocrText === 'string'
+    ? body.ocrText.slice(0, 400).replace(/[^\p{L}\p{N}\s+./-]/gu, ' ').replace(/\s+/g, ' ').trim()
+    : '';
 
   try {
     let imageDescription = '';
     let imageReadable = false;
+    let ocrCandidates: CatalogProduct[] = [];
     if (image) {
+      if (ocrText) {
+        const ocrMatches = await productsFromOcr(ocrText);
+        ocrCandidates = ocrMatches.likely;
+        if (lastMessage.content === 'Barang apa ini? Tolong cari di katalog.' && ocrMatches.exact.length === 1) {
+          return NextResponse.json({
+            message: 'Tulisan pada foto cocok dengan satu nama di katalog toko. Periksa nama barang di bawah sebelum memakai harganya.',
+            catalog: [{ ...ocrMatches.exact[0], matchConfidence: 'medium' }],
+            stockProposal: null, saleProposal: null, canFeedback: false,
+          });
+        }
+      }
       try {
-        const imageResult = await describeProductImage(image, apiKey);
+        const imageResult = await describeProductImage(image, apiKey, ocrText);
         imageDescription = imageResult.description;
         imageReadable = imageResult.readable;
       }
       catch (error) {
         console.error('Photo analysis failed:', error instanceof Error ? error.message : 'unknown error');
+        if (ocrCandidates.length && lastMessage.content === 'Barang apa ini? Tolong cari di katalog.') {
+          return NextResponse.json({
+            message: 'Teks pada label memberi beberapa kemungkinan dari katalog. Periksa nama dan varian barang di bawah.',
+            catalog: ocrCandidates.map((product) => ({ ...product, matchConfidence: 'medium' })),
+            stockProposal: null, saleProposal: null, canFeedback: false,
+          });
+        }
         return NextResponse.json({ error: 'Foto belum berhasil dianalisis. Coba lagi atau jelaskan barangnya lewat teks.' }, { status: 502 });
       }
       if (!imageReadable && lastMessage.content === 'Barang apa ini? Tolong cari di katalog.') {
         return NextResponse.json({
-          message: 'Saya belum bisa membaca ciri barang dari foto ini. Coba foto label atau kemasan lebih dekat dengan cahaya terang, atau ketik nama/merek yang terlihat.',
-          catalog: [], stockProposal: null, saleProposal: null, canFeedback: false,
+          message: ocrCandidates.length
+            ? 'Foto belum cukup jelas, tetapi teks pada label memberi beberapa kemungkinan dari katalog. Periksa nama dan varian barang di bawah.'
+            : 'Saya belum bisa membaca ciri barang dari foto ini. Coba foto label atau kemasan lebih dekat dengan cahaya terang, atau ketik nama/merek yang terlihat.',
+          catalog: ocrCandidates.map((product) => ({ ...product, matchConfidence: 'medium' })),
+          stockProposal: null, saleProposal: null, canFeedback: false,
         });
       }
     }
@@ -483,6 +528,10 @@ export async function POST(request: Request) {
       saleIssue = 'Catat penjualan dan cek stok dalam pesan terpisah agar masing-masing bisa diperiksa sebelum disimpan.';
     }
     if (saleProposal) catalog.clear();
+    if (image && !catalog.size && !saleProposal && !stockProposal && ocrCandidates.length) {
+      for (const product of ocrCandidates) catalog.set(product.id, { ...product, matchConfidence: 'medium' });
+      catalogSearchUsed = true;
+    }
 
     let message = assistantMessage.content?.trim() || 'Saya bisa bantu mencari harga, mencatat penjualan, mengoreksi penjualan hari ini, atau menyiapkan cek stok. Sebutkan barang dan jumlahnya.';
     if (catalogSearchUsed) {

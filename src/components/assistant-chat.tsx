@@ -71,6 +71,7 @@ export function AssistantChat({ role }: { role: string }) {
   const [feedbackDone, setFeedbackDone] = React.useState<string[]>([]);
   const [feedbackBusy, setFeedbackBusy] = React.useState<string | null>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
+  const photoTextRef = React.useRef<Promise<string> | null>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const savingRef = React.useRef<string | null>(null);
   const canRecordStock = role === 'karyawan';
@@ -84,18 +85,23 @@ export function AssistantChat({ role }: { role: string }) {
     if ((!content && !image) || busy) return;
     const actualContent = content || 'Barang apa ini? Tolong cari di katalog.';
     const sentImage = image;
+    const photoTextPromise = photoTextRef.current;
     const userLine: ChatLine = { id: crypto.randomUUID(), role: 'user', content: actualContent, image: sentImage || undefined };
     const next = [...lines, userLine];
     setLines(next);
     setText('');
     setImage(null);
+    photoTextRef.current = null;
     setBusy(true);
     setError('');
     try {
+      const ocrText = sentImage && photoTextPromise
+        ? await Promise.race([photoTextPromise, new Promise<string>((resolve) => setTimeout(() => resolve(''), 12_000))])
+        : '';
       const response = await fetch('/api/assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next.slice(-12).map(({ role: messageRole, content: messageContent }) => ({ role: messageRole, content: messageContent })), ...(sentImage ? { image: sentImage } : {}) }),
+        body: JSON.stringify({ messages: next.slice(-12).map(({ role: messageRole, content: messageContent }) => ({ role: messageRole, content: messageContent })), ...(sentImage ? { image: sentImage, ocrText } : {}) }),
       });
       const result = await response.json() as {
         message?: string;
@@ -251,9 +257,9 @@ export function AssistantChat({ role }: { role: string }) {
         {busy && <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Asisten sedang mencari...</div>}
         {error && <p role="alert" className="rounded-lg bg-destructive/10 p-2 text-xs text-destructive">{error}</p>}
       </div>
-      {image && <div className="flex items-center gap-2 border-t px-3 py-2 text-xs"><img src={image} alt="Foto siap dikirim" className="h-10 w-10 rounded object-cover" /><span className="flex-1">Foto siap dikirim. Pastikan tulisan pada label terlihat dekat dan terang.</span><button type="button" aria-label="Hapus foto" onClick={() => setImage(null)}><X className="h-4 w-4" /></button></div>}
+      {image && <div className="flex items-center gap-2 border-t px-3 py-2 text-xs"><img src={image} alt="Foto siap dikirim" className="h-10 w-10 rounded object-cover" /><span className="flex-1">Foto siap dikirim. Pastikan tulisan pada label terlihat dekat dan terang.</span><button type="button" aria-label="Hapus foto" onClick={() => { setImage(null); photoTextRef.current = null; }}><X className="h-4 w-4" /></button></div>}
       <form className="flex items-center gap-2 border-t bg-background p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
-        <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" aria-label="Pilih foto barang" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; try { setImage(await prepareImage(file)); setError(''); } catch (caught) { setError(caught instanceof Error ? caught.message : 'Foto gagal diproses.'); } event.target.value = ''; }} />
+        <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" aria-label="Pilih foto barang" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; try { setImage(await prepareImage(file)); photoTextRef.current = import('@/lib/browser-ocr').then(({ readPhotoText }) => readPhotoText(file)).catch(() => ''); setError(''); } catch (caught) { setError(caught instanceof Error ? caught.message : 'Foto gagal diproses.'); } event.target.value = ''; }} />
         <Button type="button" size="icon" variant="outline" aria-label="Tambahkan foto barang" disabled={busy} onClick={() => fileRef.current?.click()}><ImagePlus className="h-4 w-4" /></Button>
         <Input value={text} onChange={(event) => setText(event.target.value)} placeholder="Tanyakan dengan bahasa sehari-hari..." aria-label="Pesan untuk asisten" maxLength={700} disabled={busy} />
         <Button type="submit" size="icon" aria-label="Kirim pesan" disabled={busy || (!text.trim() && !image)}><Send className="h-4 w-4" /></Button>
