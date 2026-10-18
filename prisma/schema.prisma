@@ -61,6 +61,7 @@ model User {
   reviewedStockOpnames StockOpname[] @relation("StockOpnameReviewer")
   assistantFeedback AssistantFeedback[] @relation("AssistantFeedbackAuthor")
   reviewedAssistantFeedback AssistantFeedback[] @relation("AssistantFeedbackReviewer")
+  assistantMemories AssistantMemory[] @relation("AssistantMemoryAuthor")
 }
 
 // ============================================================================
@@ -153,6 +154,23 @@ model AssistantSearchEvent {
   createdAt   DateTime @default(now())
 
   @@index([queryKey, createdAt])
+  @@index([createdAt])
+}
+
+// Memori asisten yang disimpan sadar oleh owner agar asisten "belajar":
+// istilah khas toko, cara bicara/sapaan, dan preferensi/aturan toko.
+model AssistantMemory {
+  id          Int      @id @default(autoincrement())
+  kind        String   // SYNONYM | STYLE | PREFERENCE
+  term        String?  // istilah/istilah yang dipakai (terutama SYNONYM)
+  content     String   // penjelasan/makna/aturan
+  active      Boolean  @default(true)
+  createdById Int?
+  createdBy   User?    @relation("AssistantMemoryAuthor", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([kind, active])
   @@index([createdAt])
 }
 

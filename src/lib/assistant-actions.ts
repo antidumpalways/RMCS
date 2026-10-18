@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { getCurrentUser } from '@/lib/auth';
-import { actionRequiresOwner, isAssistantAction, formatIDR } from '@/lib/assistant-draft';
+import { actionRequiresOwner, isAssistantAction, formatIDR, isMemoryKind, MEMORY_KIND_LABELS } from '@/lib/assistant-draft';
 import {
   addDebtPayment, addStock, adjustStock, applyStockOpname, bulkUpdatePrices,
   closeShift, createDebt, deleteDebt, deleteProduct, deleteStockOpname,
@@ -167,6 +167,24 @@ async function shiftClose(payload: Record<string, unknown>) {
   return { ok: true as const, message: `Shift ditutup: ${result.salesCount} penjualan, ${result.servicesCount} jasa. Serah terima diperbarui.` };
 }
 
+async function memorySave(payload: Record<string, unknown>, userId: number) {
+  if (!isMemoryKind(payload.kind)) throw new Error('Jenis memori tidak dikenali.');
+  const content = optionalText(payload.content, 300);
+  if (!content) throw new Error('Isi memori wajib diisi.');
+  const term = optionalText(payload.term, 80);
+  if (payload.kind === 'SYNONYM' && !term) throw new Error('Istilah yang dipakai wajib diisi untuk sinonim.');
+  await prisma.assistantMemory.create({ data: { kind: payload.kind, term: term ?? null, content, createdById: userId } });
+  return { ok: true as const, message: `Diingat — ${MEMORY_KIND_LABELS[payload.kind]}: ${term ? `“${term}” = ` : ''}${content}` };
+}
+
+async function memoryForget(payload: Record<string, unknown>) {
+  const memoryId = positiveId(payload.memoryId);
+  const memory = await prisma.assistantMemory.findUnique({ where: { id: memoryId }, select: { term: true, content: true } });
+  if (!memory) throw new Error('Memori tidak ditemukan. Minta asisten menampilkan daftar memori.');
+  await prisma.assistantMemory.delete({ where: { id: memoryId } });
+  return { ok: true as const, message: `Memori dihapus: ${memory.term ? `“${memory.term}” = ` : ''}${memory.content}` };
+}
+
 // Menerapkan draf aksi asisten. Peran diverifikasi di server (bukan oleh AI).
 export async function applyAssistantDraft(input: { action?: unknown; payload?: unknown }) {
   const me = await getCurrentUser();
@@ -191,6 +209,8 @@ export async function applyAssistantDraft(input: { action?: unknown; payload?: u
     case 'expense.create': return expenseCreate(payload);
     case 'service.create': return serviceCreate(payload);
     case 'shift.close': return shiftClose(payload);
+    case 'memory.save': return memorySave(payload, me.id);
+    case 'memory.forget': return memoryForget(payload);
   }
   throw new Error('Aksi tidak dikenali. Minta asisten menyiapkan ulang.');
 }

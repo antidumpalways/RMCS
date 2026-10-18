@@ -53,7 +53,8 @@ type AssistantDraft = {
   action: 'catalog.delete' | 'price.bulk' | 'stock.in' | 'stock.adjust'
     | 'opname.record' | 'opname.apply' | 'opname.review' | 'opname.delete'
     | 'debt.create' | 'debt.pay' | 'debt.delete'
-    | 'expense.create' | 'service.create' | 'shift.close';
+    | 'expense.create' | 'service.create' | 'shift.close'
+    | 'memory.save' | 'memory.forget';
   title: string;
   lines: { label: string; value: string; emphasis?: boolean }[];
   payload: Record<string, unknown>;
@@ -316,6 +317,7 @@ export function AssistantChat({ role }: { role: string }) {
             {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau tambah barang baru ke katalog. Tolong tanya nama barang, kategori, harga jual, dan stoknya dulu sebelum menyiapkan draf.')}>Tambah barang</button>}
             <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau mencatat bon pelanggan. Tolong tanya nama pelanggan dan nominalnya dulu sebelum menyiapkan draf.')}>Catat bon</button>
             {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau mencatat pengeluaran toko. Tolong tanya nama dan nominal pengeluarannya dulu sebelum menyiapkan draf.')}>Catat pengeluaran</button>}
+            {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau kamu mengingat sesuatu. Tanya dulu apa yang perlu diingat dan jenisnya (istilah khas, cara bicara, atau aturan toko) sebelum menyiapkan draf.')}>Ingat sesuatu</button>}
             {canRecordStock && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat stok saat tutup toko. Tolong tanya barang dan jumlahnya dulu.')}>Catat stok</button>}
           </div>
         </div>}

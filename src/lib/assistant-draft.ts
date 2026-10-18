@@ -16,7 +16,9 @@ export type AssistantAction =
   | 'debt.delete'
   | 'expense.create'
   | 'service.create'
-  | 'shift.close';
+  | 'shift.close'
+  | 'memory.save'
+  | 'memory.forget';
 
 export type DraftLine = { label: string; value: string; emphasis?: boolean };
 
@@ -32,7 +34,21 @@ const ASSISTANT_ACTIONS: readonly AssistantAction[] = [
   'opname.record', 'opname.apply', 'opname.review', 'opname.delete',
   'debt.create', 'debt.pay', 'debt.delete',
   'expense.create', 'service.create', 'shift.close',
+  'memory.save', 'memory.forget',
 ];
+
+export const MEMORY_KINDS = ['SYNONYM', 'STYLE', 'PREFERENCE'] as const;
+export type MemoryKind = (typeof MEMORY_KINDS)[number];
+
+export function isMemoryKind(value: unknown): value is MemoryKind {
+  return typeof value === 'string' && (MEMORY_KINDS as readonly string[]).includes(value);
+}
+
+export const MEMORY_KIND_LABELS: Record<MemoryKind, string> = {
+  SYNONYM: 'Istilah/sinonim',
+  STYLE: 'Cara bicara & sapaan',
+  PREFERENCE: 'Preferensi & aturan toko',
+};
 
 export function isAssistantAction(value: unknown): value is AssistantAction {
   return typeof value === 'string' && (ASSISTANT_ACTIONS as readonly string[]).includes(value);
