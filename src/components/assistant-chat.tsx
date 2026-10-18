@@ -1,12 +1,13 @@
 'use client';
 
 import * as React from 'react';
-import { Bot, CheckCircle2, ImagePlus, Loader2, MessageCircle, Send, ShoppingBag, X } from 'lucide-react';
+import { Bot, CheckCircle2, ImagePlus, Loader2, MessageCircle, PackagePlus, Send, ShoppingBag, Sparkles, X } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { recordCartSale, recordShiftStockCheck, replaceSaleFromChat } from '@/lib/actions';
+import { applyCatalogDraft, recordCartSale, recordShiftStockCheck, replaceSaleFromChat } from '@/lib/actions';
+import { applyAssistantDraft } from '@/lib/assistant-actions';
 import { formatRupiah } from '@/lib/utils';
 
 type CatalogProduct = {
@@ -31,6 +32,32 @@ type SaleProposal = {
   items: { productId: number; name: string; qty: number; unitPrice: string }[];
   totalRevenue: string;
 };
+type CatalogProposal = {
+  kind: 'create' | 'update';
+  productId?: number;
+  expectedSignature?: string;
+  fields: {
+    name: string;
+    categoryId: number;
+    categoryName: string;
+    provider: string | null;
+    validity: string | null;
+    costPrice: string;
+    sellPrice: string;
+    stock: number;
+    minStock: number;
+  };
+  changes?: { label: string; from: string; to: string }[];
+};
+type AssistantDraft = {
+  action: 'catalog.delete' | 'price.bulk' | 'stock.in' | 'stock.adjust'
+    | 'opname.record' | 'opname.apply' | 'opname.review' | 'opname.delete'
+    | 'debt.create' | 'debt.pay' | 'debt.delete'
+    | 'expense.create' | 'service.create' | 'shift.close';
+  title: string;
+  lines: { label: string; value: string; emphasis?: boolean }[];
+  payload: Record<string, unknown>;
+};
 type ChatLine = {
   id: string;
   role: 'user' | 'assistant';
@@ -38,6 +65,8 @@ type ChatLine = {
   catalog?: CatalogProduct[];
   stockProposal?: StockProposal | null;
   saleProposal?: SaleProposal | null;
+  catalogProposal?: CatalogProposal | null;
+  draft?: AssistantDraft | null;
   image?: string;
   query?: string;
   hasImage?: boolean;
@@ -56,6 +85,10 @@ async function prepareImage(file: File) {
   const result = canvas.toDataURL('image/jpeg', 0.78);
   if (result.length > 2_800_000) throw new Error('Foto masih terlalu besar. Coba foto lain.');
   return result;
+}
+
+function formatCatalogValue(label: string, value: string) {
+  return label.startsWith('Harga') && /^\d+$/.test(value) ? formatRupiah(BigInt(value)) : value;
 }
 
 export function AssistantChat({ role }: { role: string }) {
@@ -108,6 +141,8 @@ export function AssistantChat({ role }: { role: string }) {
         catalog?: CatalogProduct[];
         stockProposal?: StockProposal | null;
         saleProposal?: SaleProposal | null;
+        catalogProposal?: CatalogProposal | null;
+        draft?: AssistantDraft | null;
         canFeedback?: boolean;
         error?: string;
       };
@@ -119,6 +154,8 @@ export function AssistantChat({ role }: { role: string }) {
         catalog: result.catalog,
         stockProposal: result.stockProposal,
         saleProposal: result.saleProposal,
+        catalogProposal: result.catalogProposal,
+        draft: result.draft,
         query: actualContent,
         hasImage: !!sentImage,
         canFeedback: result.canFeedback,
@@ -207,6 +244,62 @@ export function AssistantChat({ role }: { role: string }) {
     }
   };
 
+  const confirmCatalog = async (line: ChatLine, proposal: CatalogProposal) => {
+    if (savingRef.current) return;
+    savingRef.current = line.id;
+    setSavingId(line.id);
+    setError('');
+    try {
+      await applyCatalogDraft({
+        kind: proposal.kind,
+        productId: proposal.productId,
+        expectedSignature: proposal.expectedSignature,
+        fields: {
+          name: proposal.fields.name,
+          categoryId: proposal.fields.categoryId,
+          provider: proposal.fields.provider,
+          validity: proposal.fields.validity,
+          costPrice: proposal.fields.costPrice,
+          sellPrice: proposal.fields.sellPrice,
+          stock: proposal.fields.stock,
+          minStock: proposal.fields.minStock,
+        },
+      });
+      const confirmation = proposal.kind === 'create'
+        ? `Barang “${proposal.fields.name}” ditambahkan ke katalog.`
+        : `Perubahan “${proposal.fields.name}” diterapkan ke katalog.`;
+      setLines((current) => current.map((item) => item.id === line.id
+        ? { ...item, content: `${item.content}\n\n${confirmation}`, catalogProposal: null }
+        : item));
+      router.refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Perubahan katalog belum berhasil disimpan.');
+    } finally {
+      savingRef.current = null;
+      setSavingId(null);
+    }
+  };
+
+  const confirmDraft = async (line: ChatLine, value: AssistantDraft) => {
+    if (savingRef.current) return;
+    savingRef.current = line.id;
+    setSavingId(line.id);
+    setError('');
+    try {
+      const result = await applyAssistantDraft({ action: value.action, payload: value.payload });
+      const confirmation = result.message || 'Perubahan diterapkan.';
+      setLines((current) => current.map((item) => item.id === line.id
+        ? { ...item, content: `${item.content}\n\n${confirmation}`, draft: null }
+        : item));
+      router.refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Perubahan belum berhasil disimpan.');
+    } finally {
+      savingRef.current = null;
+      setSavingId(null);
+    }
+  };
+
   return <>
     {open && <section aria-label="Asisten R CELL" className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-3 z-50 flex h-[min(72dvh,620px)] w-[min(420px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl sm:right-6" role="dialog" aria-modal="false">
       <header className="flex items-center justify-between border-b bg-card px-4 py-3">
@@ -220,6 +313,9 @@ export function AssistantChat({ role }: { role: string }) {
             <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Berapa harga barang ...?')}>Cari harga</button>
             <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat penjualan hari ini. Tolong tanya barang dan jumlah yang terjual.')}>Catat penjualan</button>
             <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau koreksi penjualan terakhir. Tolong tanya perubahan yang benar sebelum menyiapkan draf.')}>Koreksi penjualan</button>
+            {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau tambah barang baru ke katalog. Tolong tanya nama barang, kategori, harga jual, dan stoknya dulu sebelum menyiapkan draf.')}>Tambah barang</button>}
+            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau mencatat bon pelanggan. Tolong tanya nama pelanggan dan nominalnya dulu sebelum menyiapkan draf.')}>Catat bon</button>
+            {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau mencatat pengeluaran toko. Tolong tanya nama dan nominal pengeluarannya dulu sebelum menyiapkan draf.')}>Catat pengeluaran</button>}
             {canRecordStock && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat stok saat tutup toko. Tolong tanya barang dan jumlahnya dulu.')}>Catat stok</button>}
           </div>
         </div>}
@@ -251,6 +347,31 @@ export function AssistantChat({ role }: { role: string }) {
             <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa semua barang dan jumlahnya. Database dan stok baru berubah setelah Anda menekan tombol ini.</p>
             <Button type="button" size="sm" className="mt-3 w-full" disabled={savingId !== null} onClick={() => void confirmSale(line, line.saleProposal!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> {line.saleProposal.kind === 'create' ? 'Konfirmasi penjualan' : 'Konfirmasi koreksi'}</>}
+            </Button>
+          </div>}
+          {line.catalogProposal && <div className="rounded-xl border border-primary/30 bg-card p-3 text-sm">
+            <p className="flex items-center gap-2 text-xs font-semibold"><PackagePlus className="h-4 w-4" /> {line.catalogProposal.kind === 'create' ? 'Draf barang baru' : `Draf perubahan “${line.catalogProposal.fields.name}”`}</p>
+            {line.catalogProposal.kind === 'update' ? <div className="mt-2 space-y-1">{line.catalogProposal.changes?.map((change) => <div key={change.label} className="text-xs"><span className="text-muted-foreground">{change.label}: </span><span className="text-muted-foreground line-through">{formatCatalogValue(change.label, change.from)}</span><span aria-hidden> → </span><strong>{formatCatalogValue(change.label, change.to)}</strong></div>)}</div> : <div className="mt-2 space-y-1 text-xs">
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">Nama</span><strong>{line.catalogProposal.fields.name}</strong></div>
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">Kategori</span><strong>{line.catalogProposal.fields.categoryName}</strong></div>
+              {line.catalogProposal.fields.provider && <div className="flex justify-between gap-3"><span className="text-muted-foreground">Provider</span><strong>{line.catalogProposal.fields.provider}</strong></div>}
+              {line.catalogProposal.fields.validity && <div className="flex justify-between gap-3"><span className="text-muted-foreground">Masa aktif</span><strong>{line.catalogProposal.fields.validity}</strong></div>}
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">Harga beli</span><span>{formatRupiah(BigInt(line.catalogProposal.fields.costPrice))}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">Harga jual</span><strong>{formatRupiah(BigInt(line.catalogProposal.fields.sellPrice))}</strong></div>
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">Stok</span><span>{line.catalogProposal.fields.stock}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">Stok minimal</span><span>{line.catalogProposal.fields.minStock}</span></div>
+            </div>}
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa nama, kategori, dan nilainya. Katalog baru berubah setelah Anda menekan tombol ini.</p>
+            <Button type="button" size="sm" className="mt-3 w-full" disabled={savingId !== null} onClick={() => void confirmCatalog(line, line.catalogProposal!)}>
+              {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> {line.catalogProposal.kind === 'create' ? 'Konfirmasi tambah barang' : 'Konfirmasi ubah barang'}</>}
+            </Button>
+          </div>}
+          {line.draft && <div className="rounded-xl border border-amber-300/60 bg-card p-3 text-sm">
+            <p className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="h-4 w-4 text-amber-600 dark:text-amber-400" /> {line.draft.title}</p>
+            <div className="mt-2 space-y-1 text-xs">{line.draft.lines.map((entry, index) => <div key={index} className="flex justify-between gap-3"><span className="text-muted-foreground">{entry.label}</span><strong className={entry.emphasis ? '' : 'font-medium'}>{entry.value}</strong></div>)}</div>
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa nilainya. Data baru berubah setelah Anda menekan tombol ini.</p>
+            <Button type="button" size="sm" className="mt-3 w-full" disabled={savingId !== null} onClick={() => void confirmDraft(line, line.draft!)}>
+              {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> Konfirmasi</>}
             </Button>
           </div>}
         </div>)}

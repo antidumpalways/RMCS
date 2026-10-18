@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma';
 import { toBigIntSafe } from '@/lib/utils';
 import { getCurrentUser } from '@/lib/auth';
 import { jakartaTodayBounds, saleSnapshotSignature } from '@/lib/sale-chat';
+import { catalogProductSignature } from '@/lib/catalog-chat';
 
 // ============================================================================
 // CATEGORIES
@@ -179,6 +180,135 @@ export async function deleteProduct(id: number) {
   await prisma.product.delete({ where: { id } });
   revalidatePath('/inventory');
   revalidatePath('/');
+}
+
+// ============================================================================
+// CATALOG CHANGES FROM ASSISTANT (khusus owner)
+// Menerapkan draf yang sudah dibuat asisten dan dikonfirmasi owner.
+// Tidak menyimpan apa pun sebelum konfirmasi.
+// ============================================================================
+const CATALOG_PRICE_MAX = 1_000_000_000_000; // 1 triliun rupiah
+
+function parseCatalogPrice(value: unknown) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0 || value > CATALOG_PRICE_MAX) return null;
+    return BigInt(value);
+  }
+  if (typeof value === 'string' && /^\d{1,13}$/.test(value)) {
+    const parsed = BigInt(value);
+    return parsed <= BigInt(CATALOG_PRICE_MAX) ? parsed : null;
+  }
+  return null;
+}
+
+// Kembalikan null untuk teks kosong, undefined bila bukan string atau terlalu panjang.
+function cleanCatalogText(value: unknown, maxLength: number) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.length <= maxLength ? trimmed : undefined;
+}
+
+export async function applyCatalogDraft(input: {
+  kind: 'create' | 'update';
+  productId?: number;
+  expectedSignature?: string;
+  fields?: {
+    name?: unknown;
+    categoryId?: unknown;
+    provider?: unknown;
+    validity?: unknown;
+    costPrice?: unknown;
+    sellPrice?: unknown;
+    stock?: unknown;
+    minStock?: unknown;
+  };
+}) {
+  const me = await getCurrentUser();
+  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat mengubah katalog dari asisten.');
+  if (!input || (input.kind !== 'create' && input.kind !== 'update')) throw new Error('Draf katalog tidak valid.');
+  const f = input.fields;
+  if (!f || typeof f.name !== 'string' || !f.name.trim() || f.name.trim().length > 120) {
+    throw new Error('Nama barang wajib diisi (maksimal 120 karakter).');
+  }
+  const name = f.name.trim();
+  if (!Number.isSafeInteger(f.categoryId) || (f.categoryId as number) <= 0) throw new Error('Kategori barang tidak valid.');
+  const categoryId = f.categoryId as number;
+  const provider = cleanCatalogText(f.provider, 60);
+  const validity = cleanCatalogText(f.validity, 60);
+  if (provider === undefined || validity === undefined) throw new Error('Data provider atau masa aktif terlalu panjang.');
+  const costPrice = parseCatalogPrice(f.costPrice);
+  const sellPrice = parseCatalogPrice(f.sellPrice);
+  if (costPrice === null || sellPrice === null) throw new Error('Harga beli atau harga jual tidak valid.');
+  const stock = f.stock === undefined ? 0 : f.stock;
+  const minStock = f.minStock === undefined ? 3 : f.minStock;
+  if (!Number.isSafeInteger(stock) || (stock as number) < 0 || (stock as number) > 1_000_000 ||
+      !Number.isSafeInteger(minStock) || (minStock as number) < 0 || (minStock as number) > 1_000_000) {
+    throw new Error('Jumlah stok atau stok minimal tidak valid.');
+  }
+  const stockValue = stock as number;
+  const minStockValue = minStock as number;
+
+  if (input.kind === 'create') {
+    const duplicate = await prisma.product.findFirst({
+      where: { name: { equals: name, mode: 'insensitive' } }, select: { id: true },
+    });
+    if (duplicate) throw new Error(`Barang “${name}” sudah ada di katalog. Gunakan ubah barang untuk mengubahnya.`);
+    const product = await prisma.$transaction(async (tx) => {
+      const category = await tx.category.findUnique({ where: { id: categoryId }, select: { id: true } });
+      if (!category) throw new Error('Kategori tidak ditemukan. Muat ulang lalu pilih kategori yang ada.');
+      const created = await tx.product.create({
+        data: { name, categoryId, provider: provider ?? null, validity: validity ?? null,
+          costPrice, sellPrice, stock: stockValue, minStock: minStockValue },
+        select: { id: true },
+      });
+      if (stockValue > 0) {
+        await tx.inventoryMovement.create({
+          data: { productId: created.id, type: 'IN', qty: stockValue, costAtTime: costPrice, note: 'Stok awal (via asisten)' },
+        });
+      }
+      return created;
+    });
+    for (const path of ['/', '/inventory', '/harga', '/transaksi', '/cek-stok']) revalidatePath(path);
+    return { ok: true as const, productId: product.id, kind: 'create' as const };
+  }
+
+  if (!Number.isSafeInteger(input.productId) || (input.productId as number) <= 0 ||
+      typeof input.expectedSignature !== 'string' || !/^[a-f0-9]{64}$/.test(input.expectedSignature)) {
+    throw new Error('Draf koreksi katalog tidak valid. Minta asisten menyiapkan ulang.');
+  }
+  const productId = input.productId as number;
+  const result = await prisma.$transaction(async (tx) => {
+    const product = await tx.product.findUnique({ where: { id: productId } });
+    if (!product) throw new Error('Barang tidak ditemukan di katalog.');
+    if (catalogProductSignature(product) !== input.expectedSignature) {
+      throw new Error('Barang ini berubah sejak draf dibuat. Minta asisten menyiapkan ulang.');
+    }
+    const category = await tx.category.findUnique({ where: { id: categoryId }, select: { id: true } });
+    if (!category) throw new Error('Kategori tidak ditemukan. Muat ulang lalu pilih kategori yang ada.');
+    if (name.toLowerCase() !== product.name.toLowerCase()) {
+      const duplicate = await tx.product.findFirst({
+        where: { name: { equals: name, mode: 'insensitive' }, id: { not: productId } }, select: { id: true },
+      });
+      if (duplicate) throw new Error(`Barang “${name}” sudah ada di katalog.`);
+    }
+    const stockDiff = stockValue - product.stock;
+    const updated = await tx.product.updateMany({
+      where: { id: productId, updatedAt: product.updatedAt },
+      data: { name, categoryId, provider: provider ?? null, validity: validity ?? null,
+        costPrice, sellPrice, minStock: minStockValue, ...(stockDiff !== 0 ? { stock: stockValue } : {}) },
+    });
+    if (updated.count !== 1) throw new Error('Barang ini berubah sejak draf dibuat. Minta asisten menyiapkan ulang.');
+    if (stockDiff !== 0) {
+      await tx.inventoryMovement.create({
+        data: { productId, type: 'ADJUST', qty: stockDiff, costAtTime: costPrice, note: 'Diubah owner lewat asisten', userId: me.id },
+      });
+    }
+    return { id: productId };
+  }, { timeout: 15_000 });
+  for (const path of ['/', '/inventory', '/harga', '/transaksi', '/cek-stok']) revalidatePath(path);
+  return { ok: true as const, productId: result.id, kind: 'update' as const };
 }
 
 // ============================================================================
