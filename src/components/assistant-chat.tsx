@@ -134,7 +134,7 @@ export function AssistantChat({ role }: { role: string }) {
       const response = await fetch('/api/assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next.slice(-12).map(({ role: messageRole, content: messageContent }) => ({ role: messageRole, content: messageContent })), ...(sentImage ? { image: sentImage, ocrText } : {}) }),
+        body: JSON.stringify({ messages: next.slice(-12).map(({ role: messageRole, content: messageContent }) => ({ role: messageRole, content: messageContent.slice(0, 700) })), ...(sentImage ? { image: sentImage, ocrText } : {}) }),
       });
       const result = await response.json() as {
         message?: string;
