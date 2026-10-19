@@ -75,6 +75,8 @@ const AUDIT_KIND_LABELS: Record<AuditFinding['kind'], string> = {
 const AUDIT_GROUP_ORDER: AuditFinding['kind'][] = ['name', 'provider', 'validity', 'subcategory', 'duplicate', 'zeroStock'];
 type AssistantDraft = {
   action: 'catalog.delete' | 'catalog.cleanup' | 'price.bulk' | 'stock.in' | 'stock.adjust'
+    | 'category.create' | 'category.rename' | 'category.delete'
+    | 'subcategory.create' | 'subcategory.rename' | 'subcategory.delete'
     | 'opname.record' | 'opname.apply' | 'opname.review' | 'opname.delete'
     | 'debt.create' | 'debt.pay' | 'debt.delete'
     | 'expense.create' | 'service.create' | 'shift.close'

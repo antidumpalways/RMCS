@@ -5,8 +5,9 @@ import { getCurrentUser } from '@/lib/auth';
 import { actionRequiresOwner, isAssistantAction, formatIDR, isMemoryKind, MEMORY_KIND_LABELS } from '@/lib/assistant-draft';
 import {
   addDebtPayment, addStock, adjustStock, applyCatalogCleanup, applyStockOpname, bulkUpdatePrices,
-  closeShift, createDebt, deleteDebt, deleteProduct, deleteStockOpname,
-  markStockOpnameReviewed, recordBiayaAdmin, recordExpense, recordStockOpname,
+  closeShift, createCategory, createDebt, createSubcategory, deleteCategory, deleteDebt,
+  deleteProduct, deleteStockOpname, deleteSubcategory, markStockOpnameReviewed, recordBiayaAdmin,
+  recordExpense, recordStockOpname, renameCategory, renameSubcategory,
 } from '@/lib/actions';
 import type { CatalogCleanupInput } from '@/lib/actions';
 
@@ -176,6 +177,70 @@ async function catalogCleanup(payload: Record<string, unknown>) {
   return { ok: true as const, message: `Rapikan katalog: ${result.updated} barang diperbarui.${extra}` };
 }
 
+async function categoryCreate(payload: Record<string, unknown>) {
+  const name = optionalText(payload.name, 60);
+  if (!name) throw new Error('Nama kategori wajib diisi.');
+  if (await prisma.category.findFirst({ where: { name: { equals: name, mode: 'insensitive' } }, select: { id: true } })) {
+    throw new Error(`Kategori “${name}” sudah ada.`);
+  }
+  await createCategory(name);
+  return { ok: true as const, message: `Kategori “${name}” ditambahkan.` };
+}
+
+async function categoryRename(payload: Record<string, unknown>) {
+  const id = positiveId(payload.categoryId);
+  const name = optionalText(payload.name, 60);
+  if (!name) throw new Error('Nama kategori baru wajib diisi.');
+  const category = await prisma.category.findUnique({ where: { id }, select: { name: true } });
+  if (!category) throw new Error('Kategori tidak ditemukan.');
+  if (await prisma.category.findFirst({ where: { name: { equals: name, mode: 'insensitive' }, id: { not: id } }, select: { id: true } })) {
+    throw new Error(`Kategori “${name}” sudah ada.`);
+  }
+  await renameCategory(id, name);
+  return { ok: true as const, message: `Kategori “${category.name}” diubah menjadi “${name}”.` };
+}
+
+async function categoryDelete(payload: Record<string, unknown>) {
+  const id = positiveId(payload.categoryId);
+  const category = await prisma.category.findUnique({ where: { id }, select: { name: true } });
+  if (!category) throw new Error('Kategori tidak ditemukan.');
+  const products = await prisma.product.count({ where: { categoryId: id } });
+  if (products > 0) throw new Error(`Kategori “${category.name}” masih dipakai ${products} barang. Pindahkan atau hapus barangnya dulu.`);
+  await deleteCategory(id);
+  return { ok: true as const, message: `Kategori “${category.name}” dihapus.` };
+}
+
+async function subcategoryCreate(payload: Record<string, unknown>) {
+  const categoryId = positiveId(payload.categoryId);
+  const name = optionalText(payload.name, 60);
+  if (!name) throw new Error('Nama subkategori wajib diisi.');
+  const category = await prisma.category.findUnique({ where: { id: categoryId }, select: { name: true } });
+  if (!category) throw new Error('Kategori tidak ditemukan.');
+  if (await prisma.subcategory.findFirst({ where: { categoryId, name: { equals: name, mode: 'insensitive' } }, select: { id: true } })) {
+    throw new Error(`Subkategori “${name}” sudah ada di kategori ${category.name}.`);
+  }
+  await createSubcategory(categoryId, name);
+  return { ok: true as const, message: `Subkategori “${name}” ditambahkan ke ${category.name}.` };
+}
+
+async function subcategoryRename(payload: Record<string, unknown>) {
+  const id = positiveId(payload.subcategoryId);
+  const name = optionalText(payload.name, 60);
+  if (!name) throw new Error('Nama subkategori baru wajib diisi.');
+  const subcategory = await prisma.subcategory.findUnique({ where: { id }, select: { name: true, category: { select: { name: true } } } });
+  if (!subcategory) throw new Error('Subkategori tidak ditemukan.');
+  await renameSubcategory(id, name);
+  return { ok: true as const, message: `Subkategori “${subcategory.name}” (${subcategory.category.name}) diubah menjadi “${name}”.` };
+}
+
+async function subcategoryDelete(payload: Record<string, unknown>) {
+  const id = positiveId(payload.subcategoryId);
+  const subcategory = await prisma.subcategory.findUnique({ where: { id }, select: { name: true } });
+  if (!subcategory) throw new Error('Subkategori tidak ditemukan.');
+  await deleteSubcategory(id);
+  return { ok: true as const, message: `Subkategori “${subcategory.name}” dihapus.` };
+}
+
 async function memorySave(payload: Record<string, unknown>, userId: number) {
   if (!isMemoryKind(payload.kind)) throw new Error('Jenis memori tidak dikenali.');
   const content = optionalText(payload.content, 300);
@@ -206,6 +271,12 @@ export async function applyAssistantDraft(input: { action?: unknown; payload?: u
   switch (action) {
     case 'catalog.delete': return deleteCatalogProduct(payload);
     case 'catalog.cleanup': return catalogCleanup(payload);
+    case 'category.create': return categoryCreate(payload);
+    case 'category.rename': return categoryRename(payload);
+    case 'category.delete': return categoryDelete(payload);
+    case 'subcategory.create': return subcategoryCreate(payload);
+    case 'subcategory.rename': return subcategoryRename(payload);
+    case 'subcategory.delete': return subcategoryDelete(payload);
     case 'price.bulk': return bulkPrice(payload);
     case 'stock.in': return stockIn(payload);
     case 'stock.adjust': return stockAdjust(payload);

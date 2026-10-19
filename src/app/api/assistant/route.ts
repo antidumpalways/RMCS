@@ -366,6 +366,67 @@ const tools = [
   {
     type: 'function',
     function: {
+      name: 'prepare_category_create',
+      description: 'HANYA owner. Siapkan draf TAMBAH kategori baru jika owner jelas memerintahkan. Tidak menyimpan apa pun sebelum owner menekan konfirmasi.',
+      parameters: { type: 'object', properties: { name: { type: 'string', description: 'Nama kategori baru.' } }, required: ['name'], additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'prepare_category_rename',
+      description: 'HANYA owner. Siapkan draf GANTI NAMA kategori yang sudah ada. Tidak menyimpan apa pun sebelum konfirmasi.',
+      parameters: { type: 'object', properties: {
+        categoryName: { type: 'string', description: 'Nama kategori yang ingin diganti.' },
+        newName: { type: 'string', description: 'Nama kategori baru.' },
+      }, required: ['categoryName', 'newName'], additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'prepare_category_delete',
+      description: 'HANYA owner. Siapkan draf HAPUS kategori. Hanya berhasil bila kategori belum dipakai barang. Tidak menyimpan apa pun sebelum konfirmasi.',
+      parameters: { type: 'object', properties: { categoryName: { type: 'string', description: 'Nama kategori yang ingin dihapus.' } }, required: ['categoryName'], additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'prepare_subcategory_create',
+      description: 'HANYA owner. Siapkan draf TAMBAH subkategori di dalam satu kategori. Tidak menyimpan apa pun sebelum konfirmasi.',
+      parameters: { type: 'object', properties: {
+        categoryName: { type: 'string', description: 'Nama kategori induk.' },
+        subcategoryName: { type: 'string', description: 'Nama subkategori baru.' },
+      }, required: ['categoryName', 'subcategoryName'], additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'prepare_subcategory_rename',
+      description: 'HANYA owner. Siapkan draf GANTI NAMA subkategori. Tidak menyimpan apa pun sebelum konfirmasi.',
+      parameters: { type: 'object', properties: {
+        categoryName: { type: 'string', description: 'Nama kategori induk.' },
+        subcategoryName: { type: 'string', description: 'Nama subkategori yang ingin diganti.' },
+        newName: { type: 'string', description: 'Nama subkategori baru.' },
+      }, required: ['categoryName', 'subcategoryName', 'newName'], additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'prepare_subcategory_delete',
+      description: 'HANYA owner. Siapkan draf HAPUS subkategori. Tidak menyimpan apa pun sebelum konfirmasi.',
+      parameters: { type: 'object', properties: {
+        categoryName: { type: 'string', description: 'Nama kategori induk.' },
+        subcategoryName: { type: 'string', description: 'Nama subkategori yang ingin dihapus.' },
+      }, required: ['categoryName', 'subcategoryName'], additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'prepare_catalog_audit',
       description: 'HANYA owner. Periksa katalog lalu siapkan perbaikan agar lebih rapi: nama barang (spasi/huruf), provider, masa aktif, kategori/subkategori, barang mirip (duplikat), dan stok 0. PAKAI INI saat owner minta merapikan/menyusun/mengedit katalog (mis. “rapikan seluruh katalog per kategori”) — JANGAN memakai search_products untuk maksud itu. Isi “categories” dengan nama kategori yang disebut owner (kalau ada), dan “focus” dengan aspek yang diminta owner (kalau disebut). Tidak menyimpan apa pun; perbaikan aman baru diterapkan setelah owner menekan konfirmasi. Duplikat dan stok 0 hanya dilaporkan untuk ditinjau owner.',
       parameters: {
@@ -425,7 +486,7 @@ ATURAN TEGAS:
 - Untuk penjualan baru, gunakan prepare_sale_create hanya setelah nama barang dan jumlah terjual jelas. Untuk koreksi, gunakan prepare_sale_edit hanya bila transaksi yang dimaksud jelas; daftar transaksi terbaru tersedia sebagai konteks. Kirim hanya barang yang berubah; barang lain otomatis dipertahankan. qty 0 berarti hapus barang dari transaksi. Jika ragu, tanya nomor transaksi atau barangnya.
 - Fungsi penjualan hanya menyiapkan draf. Jangan pernah berkata sudah mencatat atau mengubah penjualan. Database hanya berubah setelah pengguna memeriksa draf dan menekan tombol konfirmasi. Jangan memilih harga sendiri atau mengubah transaksi lain.
 - Selisih stok tetap menjadi catatan untuk owner. Jangan mengubah stok aplikasi, harga, transaksi, atau data lain di luar draf yang dikonfirmasi owner.
-- HANYA bila pengguna adalah owner: owner dapat meminta menambah atau mengubah barang katalog lewat prepare_catalog_create dan prepare_catalog_update. Selain itu owner juga dapat meminta: hapus barang (prepare_catalog_delete), ubah harga massal (prepare_price_bulk), barang masuk berikut modal (prepare_stock_in), koreksi stok (prepare_stock_adjust), mencatat/menerapkan/menandai/menghapus hasil opname (prepare_opname_record, prepare_opname_apply, prepare_opname_review, prepare_opname_delete), hapus bon (prepare_debt_delete), pengeluaran (prepare_expense), biaya admin/jasa (prepare_service), tutup shift/serah terima (prepare_shift_close), dan merapikan katalog (prepare_catalog_audit). Pakai fungsi-fungsi itu hanya bila owner dengan jelas memerintahkan dan nilainya sudah disebut. Jangan pernah bertindak atas inisiatif sendiri, mengarang harga/nilai, atau menebak; jika ada yang belum disebut, tanyakan dulu.
+- HANYA bila pengguna adalah owner: owner dapat meminta menambah atau mengubah barang katalog lewat prepare_catalog_create dan prepare_catalog_update. Selain itu owner juga dapat meminta: hapus barang (prepare_catalog_delete), ubah harga massal (prepare_price_bulk), barang masuk berikut modal (prepare_stock_in), koreksi stok (prepare_stock_adjust), mencatat/menerapkan/menandai/menghapus hasil opname (prepare_opname_record, prepare_opname_apply, prepare_opname_review, prepare_opname_delete), hapus bon (prepare_debt_delete), pengeluaran (prepare_expense), biaya admin/jasa (prepare_service), tutup shift/serah terima (prepare_shift_close), merapikan katalog (prepare_catalog_audit), serta mengelola kategori & subkategori: tambah/ganti nama/hapus kategori (prepare_category_create, prepare_category_rename, prepare_category_delete) dan tambah/ganti nama/hapus subkategori (prepare_subcategory_create, prepare_subcategory_rename, prepare_subcategory_delete). Kategori hanya bisa dihapus bila belum dipakai barang. Pakai fungsi-fungsi itu hanya bila owner dengan jelas memerintahkan dan nilainya sudah disebut. Jangan pernah bertindak atas inisiatif sendiri, mengarang harga/nilai, atau menebak; jika ada yang belum disebut, tanyakan dulu.
 - HANYA owner: owner dapat menyuruhmu MENGINGAT hal penting lewat prepare_memory (istilah khas toko, cara bicara/sapaan, preferensi/aturan toko) dan MELUPAKAN lewat prepare_memory_forget. Simpan hanya yang jelas disebut owner dan hanya setelah owner menekan konfirmasi. Gunakan “Memori owner” di konteks untuk menafsirkan perintah dengan tepat, tetapi jangan mengarang memori atau menampilkannya sebagai aturan baru bila tidak diminta. Bila owner bertanya memori apa yang kamu ingat, sebutkan dari daftar Memori owner (sertakan ID-nya).
 - Pengguna karyawan hanya boleh menyiapkan bon lewat prepare_debt_create dan prepare_debt_pay. Aksi owner lainnya tidak tersedia untuk karyawan; jangan mencoba memakainya dan arahkan ke owner.
 - Semua fungsi “prepare_…” hanya menyiapkan draf dan tidak menyimpan apa pun. Data baru berubah setelah pengguna memeriksa draf dan menekan tombol konfirmasi. Jangan berkata sudah menyimpan/mengubah/menghapus, dan jangan menjanjikan perubahan yang belum dikonfirmasi.
@@ -685,6 +746,8 @@ const GENERIC_TOOLS = new Set<string>([
   'prepare_opname_record', 'prepare_opname_apply', 'prepare_opname_review', 'prepare_opname_delete',
   'prepare_debt_create', 'prepare_debt_pay', 'prepare_debt_delete',
   'prepare_expense', 'prepare_service', 'prepare_shift_close',
+  'prepare_category_create', 'prepare_category_rename', 'prepare_category_delete',
+  'prepare_subcategory_create', 'prepare_subcategory_rename', 'prepare_subcategory_delete',
   'prepare_memory', 'prepare_memory_forget',
 ]);
 
@@ -694,7 +757,10 @@ const OWNER_ONLY_TOOLS = new Set<string>([
   'prepare_price_bulk', 'prepare_stock_in', 'prepare_stock_adjust',
   'prepare_opname_record', 'prepare_opname_apply', 'prepare_opname_review', 'prepare_opname_delete',
   'prepare_debt_delete', 'prepare_expense', 'prepare_service', 'prepare_shift_close',
-  'prepare_catalog_audit', 'prepare_memory', 'prepare_memory_forget',
+  'prepare_catalog_audit',
+  'prepare_category_create', 'prepare_category_rename', 'prepare_category_delete',
+  'prepare_subcategory_create', 'prepare_subcategory_rename', 'prepare_subcategory_delete',
+  'prepare_memory', 'prepare_memory_forget',
 ]);
 
 type GenericDraftResult = { draft: AssistantDraft | null; issue: string | null };
@@ -952,6 +1018,69 @@ async function buildGenericDraft(
     if (memory.term) lines.push({ label: 'Istilah', value: memory.term, emphasis: true });
     lines.push({ label: 'Diingat', value: memory.content });
     return { draft: { action: 'memory.forget', title: 'Draf lupa memori', lines, payload: { memoryId } }, issue: null };
+  }
+
+  if (tool === 'prepare_category_create') {
+    const name = typeof args.name === 'string' ? args.name.trim().slice(0, 60) : '';
+    if (!name) return issue('Sebutkan nama kategori baru.');
+    if (ctx.categories.some((entry) => entry.name.toLowerCase() === name.toLowerCase())) return issue(`Kategori “${name}” sudah ada.`);
+    lines.push({ label: 'Kategori baru', value: name, emphasis: true });
+    return { draft: { action: 'category.create', title: 'Draf tambah kategori', lines, payload: { name } }, issue: null };
+  }
+
+  if (tool.startsWith('prepare_category_') || tool.startsWith('prepare_subcategory_')) {
+    const categoryName = typeof args.categoryName === 'string' ? args.categoryName.trim().slice(0, 60) : '';
+    if (!categoryName) return issue('Sebutkan nama kategorinya.');
+    const category = ctx.categories.find((entry) => entry.name.toLowerCase() === categoryName.toLowerCase());
+    if (!category) {
+      const names = ctx.categories.map((entry) => entry.name);
+      return issue(names.length ? `Kategori “${categoryName}” belum ada. Kategori yang ada: ${names.join(', ')}.` : `Kategori “${categoryName}” belum ada.`);
+    }
+
+    if (tool === 'prepare_category_rename') {
+      const newName = typeof args.newName === 'string' ? args.newName.trim().slice(0, 60) : '';
+      if (!newName) return issue('Sebutkan nama kategori yang baru.');
+      if (ctx.categories.some((entry) => entry.name.toLowerCase() === newName.toLowerCase())) return issue(`Kategori “${newName}” sudah ada.`);
+      lines.push({ label: 'Kategori', value: category.name });
+      lines.push({ label: 'Nama baru', value: newName, emphasis: true });
+      return { draft: { action: 'category.rename', title: 'Draf ganti nama kategori', lines, payload: { categoryId: category.id, name: newName } }, issue: null };
+    }
+
+    if (tool === 'prepare_category_delete') {
+      lines.push({ label: 'Kategori', value: category.name, emphasis: true });
+      return { draft: { action: 'category.delete', title: 'Draf hapus kategori', lines, payload: { categoryId: category.id } }, issue: null };
+    }
+
+    const subcategoryName = typeof args.subcategoryName === 'string' ? args.subcategoryName.trim().slice(0, 60) : '';
+    if (!subcategoryName) return issue('Sebutkan nama subkategorinya.');
+    const subcategory = await prisma.subcategory.findFirst({
+      where: { categoryId: category.id, name: { equals: subcategoryName, mode: 'insensitive' } },
+      select: { id: true, name: true }, orderBy: { id: 'asc' },
+    });
+
+    if (tool === 'prepare_subcategory_create') {
+      if (subcategory) return issue(`Subkategori “${subcategory.name}” sudah ada di kategori ${category.name}.`);
+      lines.push({ label: 'Kategori', value: category.name });
+      lines.push({ label: 'Subkategori baru', value: subcategoryName, emphasis: true });
+      return { draft: { action: 'subcategory.create', title: 'Draf tambah subkategori', lines, payload: { categoryId: category.id, name: subcategoryName } }, issue: null };
+    }
+
+    if (!subcategory) return issue(`Subkategori “${subcategoryName}” tidak ada di kategori ${category.name}.`);
+
+    if (tool === 'prepare_subcategory_rename') {
+      const newName = typeof args.newName === 'string' ? args.newName.trim().slice(0, 60) : '';
+      if (!newName) return issue('Sebutkan nama subkategori yang baru.');
+      lines.push({ label: 'Kategori', value: category.name });
+      lines.push({ label: 'Subkategori', value: subcategory.name });
+      lines.push({ label: 'Nama baru', value: newName, emphasis: true });
+      return { draft: { action: 'subcategory.rename', title: 'Draf ganti nama subkategori', lines, payload: { subcategoryId: subcategory.id, name: newName } }, issue: null };
+    }
+
+    if (tool === 'prepare_subcategory_delete') {
+      lines.push({ label: 'Kategori', value: category.name });
+      lines.push({ label: 'Subkategori', value: subcategory.name, emphasis: true });
+      return { draft: { action: 'subcategory.delete', title: 'Draf hapus subkategori', lines, payload: { subcategoryId: subcategory.id } }, issue: null };
+    }
   }
 
   return issue('Perintah itu belum bisa saya siapkan.');

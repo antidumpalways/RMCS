@@ -17,6 +17,15 @@ export async function createCategory(name: string) {
   revalidatePath('/transaksi');
 }
 
+export async function renameCategory(id: number, name: string) {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Nama kategori wajib diisi.');
+  await prisma.category.update({ where: { id }, data: { name: trimmed } });
+  revalidatePath('/inventory');
+  revalidatePath('/transaksi');
+  revalidatePath('/harga');
+}
+
 export async function deleteCategory(id: number) {
   // CASCADE subcategory & product (pastikan tak ada history)
   await prisma.category.delete({ where: { id } });
@@ -51,6 +60,13 @@ export async function deleteLocation(id: number) {
 export async function createSubcategory(categoryId: number, name: string) {
   if (!name.trim()) return;
   await prisma.subcategory.create({ data: { categoryId, name: name.trim() } });
+  revalidatePath('/inventory');
+}
+
+export async function renameSubcategory(id: number, name: string) {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Nama subkategori wajib diisi.');
+  await prisma.subcategory.update({ where: { id }, data: { name: trimmed } });
   revalidatePath('/inventory');
 }
 
