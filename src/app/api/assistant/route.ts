@@ -10,6 +10,8 @@ import { catalogProductSignature } from '@/lib/catalog-chat';
 import type { CatalogChange, CatalogProposal } from '@/lib/catalog-chat';
 import { formatIDR, isMemoryKind, MEMORY_KIND_LABELS } from '@/lib/assistant-draft';
 import type { AssistantDraft } from '@/lib/assistant-draft';
+import { analyzeCatalog, findingsForKinds, cleanupsForKinds, AUDIT_KINDS } from '@/lib/catalog-audit';
+import type { AuditKind, CatalogAuditFinding } from '@/lib/catalog-audit';
 
 export const dynamic = 'force-dynamic';
 
@@ -364,6 +366,20 @@ const tools = [
   {
     type: 'function',
     function: {
+      name: 'prepare_catalog_audit',
+      description: 'HANYA owner. Periksa seluruh katalog lalu siapkan perbaikan agar lebih rapi: nama barang (spasi/huruf), provider, masa aktif, kategori/subkategori, barang mirip (duplikat), dan stok 0. PAKAI INI saat owner minta merapikan / menyusun / mengedit katalog secara menyeluruh — JANGAN memakai search_products untuk maksud itu. Tidak menyimpan apa pun; perbaikan aman baru diterapkan setelah owner menekan konfirmasi. Duplikat dan stok 0 hanya dilaporkan untuk ditinjau owner.',
+      parameters: {
+        type: 'object',
+        properties: {
+          focus: { type: 'string', enum: ['all', 'name', 'provider', 'validity', 'subcategory', 'duplicate', 'zeroStock'], description: 'Bagian yang dirapikan. all = semua.' },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'prepare_memory',
       description: 'HANYA owner. Simpan MEMORI agar asisten mengingat dan makin mengerti, hanya bila owner jelas menyuruh mengingat sesuatu. Jenis: SYNONYM (istilah khas toko dan maknanya), STYLE (cara bicara/sapaan yang disukai owner), PREFERENCE (preferensi atau aturan toko). Tidak menyimpan apa pun sebelum owner menekan konfirmasi. Jangan menebak; simpan hanya yang disebut owner.',
       parameters: {
@@ -397,6 +413,7 @@ ATURAN TEGAS:
 - Bantu mencari barang/harga/stok dari katalog, menyiapkan cek stok, mencatat penjualan hari ini, mengoreksi penjualan hari ini, dan — sesuai peran pengguna — menyiapkan draf perubahan katalog, stok, opname, bon, pengeluaran, biaya admin, dan tutup shift. Jawab pertanyaan umum dengan wajar, tetapi jangan mengarang data toko yang tidak tersedia lewat fungsi.
 - Jika pengguna bertanya apakah dirinya owner atau karyawan, jawab sesuai “Peran pengguna” di konteks, lalu jelaskan singkat tindakan yang boleh ia minta lewat asisten. Jangan mengarang atau menebak peran.
 - Untuk setiap pertanyaan harga, ketersediaan, barang serupa, foto barang, atau pesan yang hanya menyebut nama/ciri barang, WAJIB panggil search_products. Gunakan konteks percakapan dan deskripsi foto untuk menyusun query. Pertahankan ejaan pengguna pada nama/merek agar server dapat memeriksa typo terhadap katalog. Harga hanya berasal dari katalog. Jangan menebak, mengubah, atau mencari harga dari internet. Jangan menyebut modal atau keuntungan.
+- Bila owner minta MERAPIKAN, MENYUSUN, atau MENGEDIT katalog secara menyeluruh (bukan mencari satu barang), JANGAN memakai search_products dan JANGAN menampilkan isi katalog. Gunakan prepare_catalog_audit, lalu sampaikan temuannya dan siapkan draf perbaikan. Jangan mengarang temuan: semua temuan berasal dari server.
 - Foto hanya petunjuk pengenalan; jangan mengaku pasti bila foto buram atau katalog ambigu. Jangan mengarang spesifikasi atau kecocokan untuk kendaraan/perangkat tertentu.
 - Untuk pertanyaan jumlah transaksi atau omzet hari ini, gunakan ringkasan penjualan dari konteks sesuai hak pengguna. Jangan mengira-ngira transaksi yang tidak ada di daftar terbaru.
 - Jangan menyebut angka harga dalam teks jawaban. Aplikasi akan menampilkan harga persis dari database.
@@ -406,7 +423,7 @@ ATURAN TEGAS:
 - Untuk penjualan baru, gunakan prepare_sale_create hanya setelah nama barang dan jumlah terjual jelas. Untuk koreksi, gunakan prepare_sale_edit hanya bila transaksi yang dimaksud jelas; daftar transaksi terbaru tersedia sebagai konteks. Kirim hanya barang yang berubah; barang lain otomatis dipertahankan. qty 0 berarti hapus barang dari transaksi. Jika ragu, tanya nomor transaksi atau barangnya.
 - Fungsi penjualan hanya menyiapkan draf. Jangan pernah berkata sudah mencatat atau mengubah penjualan. Database hanya berubah setelah pengguna memeriksa draf dan menekan tombol konfirmasi. Jangan memilih harga sendiri atau mengubah transaksi lain.
 - Selisih stok tetap menjadi catatan untuk owner. Jangan mengubah stok aplikasi, harga, transaksi, atau data lain di luar draf yang dikonfirmasi owner.
-- HANYA bila pengguna adalah owner: owner dapat meminta menambah atau mengubah barang katalog lewat prepare_catalog_create dan prepare_catalog_update. Selain itu owner juga dapat meminta: hapus barang (prepare_catalog_delete), ubah harga massal (prepare_price_bulk), barang masuk berikut modal (prepare_stock_in), koreksi stok (prepare_stock_adjust), mencatat/menerapkan/menandai/menghapus hasil opname (prepare_opname_record, prepare_opname_apply, prepare_opname_review, prepare_opname_delete), hapus bon (prepare_debt_delete), pengeluaran (prepare_expense), biaya admin/jasa (prepare_service), dan tutup shift/serah terima (prepare_shift_close). Pakai fungsi-fungsi itu hanya bila owner dengan jelas memerintahkan dan nilainya sudah disebut. Jangan pernah bertindak atas inisiatif sendiri, mengarang harga/nilai, atau menebak; jika ada yang belum disebut, tanyakan dulu.
+- HANYA bila pengguna adalah owner: owner dapat meminta menambah atau mengubah barang katalog lewat prepare_catalog_create dan prepare_catalog_update. Selain itu owner juga dapat meminta: hapus barang (prepare_catalog_delete), ubah harga massal (prepare_price_bulk), barang masuk berikut modal (prepare_stock_in), koreksi stok (prepare_stock_adjust), mencatat/menerapkan/menandai/menghapus hasil opname (prepare_opname_record, prepare_opname_apply, prepare_opname_review, prepare_opname_delete), hapus bon (prepare_debt_delete), pengeluaran (prepare_expense), biaya admin/jasa (prepare_service), tutup shift/serah terima (prepare_shift_close), dan merapikan katalog (prepare_catalog_audit). Pakai fungsi-fungsi itu hanya bila owner dengan jelas memerintahkan dan nilainya sudah disebut. Jangan pernah bertindak atas inisiatif sendiri, mengarang harga/nilai, atau menebak; jika ada yang belum disebut, tanyakan dulu.
 - HANYA owner: owner dapat menyuruhmu MENGINGAT hal penting lewat prepare_memory (istilah khas toko, cara bicara/sapaan, preferensi/aturan toko) dan MELUPAKAN lewat prepare_memory_forget. Simpan hanya yang jelas disebut owner dan hanya setelah owner menekan konfirmasi. Gunakan “Memori owner” di konteks untuk menafsirkan perintah dengan tepat, tetapi jangan mengarang memori atau menampilkannya sebagai aturan baru bila tidak diminta. Bila owner bertanya memori apa yang kamu ingat, sebutkan dari daftar Memori owner (sertakan ID-nya).
 - Pengguna karyawan hanya boleh menyiapkan bon lewat prepare_debt_create dan prepare_debt_pay. Aksi owner lainnya tidak tersedia untuk karyawan; jangan mencoba memakainya dan arahkan ke owner.
 - Semua fungsi “prepare_…” hanya menyiapkan draf dan tidak menyimpan apa pun. Data baru berubah setelah pengguna memeriksa draf dan menekan tombol konfirmasi. Jangan berkata sudah menyimpan/mengubah/menghapus, dan jangan menjanjikan perubahan yang belum dikonfirmasi.
@@ -675,7 +692,7 @@ const OWNER_ONLY_TOOLS = new Set<string>([
   'prepare_price_bulk', 'prepare_stock_in', 'prepare_stock_adjust',
   'prepare_opname_record', 'prepare_opname_apply', 'prepare_opname_review', 'prepare_opname_delete',
   'prepare_debt_delete', 'prepare_expense', 'prepare_service', 'prepare_shift_close',
-  'prepare_memory', 'prepare_memory_forget',
+  'prepare_catalog_audit', 'prepare_memory', 'prepare_memory_forget',
 ]);
 
 type GenericDraftResult = { draft: AssistantDraft | null; issue: string | null };
@@ -1096,6 +1113,8 @@ export async function POST(request: Request) {
     let catalogIssue: string | null = null;
     let draft: AssistantDraft | null = null;
     let draftIssue: string | null = null;
+    let audit: CatalogAuditFinding[] | null = null;
+    let auditCounts: Partial<Record<AuditKind, number>> | null = null;
     let catalogSearchUsed = false;
     let searchQuery = '';
     for (const call of assistantMessage.tool_calls ?? []) {
@@ -1284,6 +1303,32 @@ export async function POST(request: Request) {
         if (built.issue) draftIssue = built.issue;
         if (built.draft) draft = built.draft;
       }
+
+      if (call.function.name === 'prepare_catalog_audit') {
+        if (user.role !== 'owner') {
+          draftIssue = 'Aksi ini hanya untuk owner.';
+          continue;
+        }
+        const focusRaw = args.focus;
+        const focus: AuditKind[] = focusRaw === undefined || focusRaw === 'all' || !(AUDIT_KINDS as readonly string[]).includes(focusRaw as string)
+          ? [...AUDIT_KINDS]
+          : [focusRaw as AuditKind];
+        const result = await analyzeCatalog();
+        audit = findingsForKinds(result, focus).slice(0, 40);
+        const counts: Partial<Record<AuditKind, number>> = {};
+        for (const kind of focus) counts[kind] = result.counts[kind];
+        auditCounts = counts;
+        const cleanups = cleanupsForKinds(result, focus).slice(0, 200);
+        if (cleanups.length) {
+          const groupBy = (kind: string) => cleanups.filter((cleanup) => cleanup.kind === kind).length;
+          const lines: AssistantDraft['lines'] = [];
+          if (groupBy('name')) lines.push({ label: 'Nama dirapikan', value: String(groupBy('name')), emphasis: true });
+          if (groupBy('provider')) lines.push({ label: 'Provider dirapikan', value: String(groupBy('provider')) });
+          if (groupBy('validity')) lines.push({ label: 'Masa aktif dilengkapi', value: String(groupBy('validity')) });
+          if (groupBy('subcategory')) lines.push({ label: 'Subkategori dilengkapi', value: String(groupBy('subcategory')) });
+          draft = { action: 'catalog.cleanup', title: 'Draf rapikan katalog', lines, payload: { operations: cleanups } };
+        }
+      }
     }
 
     if (!catalogProposal && !saleIssue && !saleProposal && !stockIssue && !stockProposal && image && !catalogSearchUsed) {
@@ -1305,7 +1350,7 @@ export async function POST(request: Request) {
       if (hadCatalog) catalogIssue = note;
       if (hadDraft) draftIssue = note;
     }
-    if (saleProposal || catalogProposal || draft) catalog.clear();
+    if (saleProposal || catalogProposal || draft || audit) catalog.clear();
     if (image && !catalog.size && !saleProposal && !stockProposal && !catalogProposal && ocrCandidates.length) {
       for (const product of ocrCandidates) catalog.set(product.id, { ...product, matchConfidence: 'medium' });
       catalogSearchUsed = true;
@@ -1352,6 +1397,12 @@ export async function POST(request: Request) {
     } else if (draftIssue) {
       message = draftIssue;
     }
+    if (audit) {
+      const total = Object.values(auditCounts ?? {}).reduce((sum, value) => sum + (value ?? 0), 0);
+      message = total
+        ? `Saya sudah memeriksa katalog: ada ${total} hal yang bisa dirapikan (lihat daftar di bawah).${draft ? ' Perbaikan aman sudah saya siapkan sebagai draf — tekan konfirmasi untuk menerapkan.' : ' Duplikat dan stok 0 hanya dilaporkan; sebutkan bila ingin saya siapkan draf hapus/gabung.'}`
+        : 'Katalog sudah terlihat rapi untuk bagian yang saya periksa. Tidak ada yang perlu dirapikan.';
+    }
     if (!saleProposal && !stockProposal && !catalogProposal && !draft && /\b(?:sudah|telah|berhasil)\s+(?:saya\s+)?(?:catat|dicatat|simpan|tersimpan|ubah|diubah|perbarui|diperbarui|tambah|ditambah|hapus|dihapus|tutup|ditutup)\b/i.test(message)) {
       message = 'Belum ada perubahan yang saya simpan. Sebutkan perintahnya untuk menyiapkan draf; database baru berubah setelah Anda menekan konfirmasi.';
     }
@@ -1380,8 +1431,11 @@ export async function POST(request: Request) {
       saleProposal: SaleProposal | null;
       catalogProposal: CatalogProposal | null;
       draft: AssistantDraft | null;
+      audit: CatalogAuditFinding[] | null;
+      auditCounts: Partial<Record<AuditKind, number>> | null;
       canFeedback: boolean;
-    } = { message, catalog: [...catalog.values()].slice(0, 12), stockProposal, saleProposal, catalogProposal, draft, canFeedback: catalogSearchUsed && !image };
+    } = { message, catalog: [...catalog.values()].slice(0, 12), stockProposal, saleProposal, catalogProposal, draft,
+      audit, auditCounts, canFeedback: catalogSearchUsed && !image };
     return NextResponse.json(payload);
   } catch (error) {
     console.error('Assistant request failed:', error instanceof Error ? error.message : 'unknown error');

@@ -311,6 +311,65 @@ export async function applyCatalogDraft(input: {
   return { ok: true as const, productId: result.id, kind: 'update' as const };
 }
 
+// Merapikan katalog dari hasil audit: nama, provider, masa aktif, subkategori.
+// Optimistic lock per barang; kegagalan sebagian dilewati, bukan dihentikan.
+export type CatalogCleanupInput = {
+  kind: 'name' | 'provider' | 'validity' | 'subcategory';
+  productId: number;
+  expectedUpdatedAt: string;
+  name?: string;
+  provider?: string;
+  validity?: string;
+  subcategoryId?: number;
+};
+
+export async function applyCatalogCleanup(operations: CatalogCleanupInput[]) {
+  const me = await getCurrentUser();
+  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat merapikan katalog dari asisten.');
+  if (!Array.isArray(operations) || operations.length < 1 || operations.length > 200) {
+    throw new Error('Tidak ada perbaikan yang diterapkan.');
+  }
+  const parsed = operations.map((op) => {
+    if (!op || !Number.isSafeInteger(op.productId) || op.productId <= 0 || typeof op.expectedUpdatedAt !== 'string') {
+      throw new Error('Draf rapikan tidak valid. Minta asisten menyiapkan ulang.');
+    }
+    const when = new Date(op.expectedUpdatedAt);
+    if (Number.isNaN(when.getTime())) throw new Error('Draf rapikan tidak valid. Minta asisten menyiapkan ulang.');
+    const data: { name?: string; provider?: string; validity?: string; subcategoryId?: number } = {};
+    if (op.kind === 'name') {
+      if (typeof op.name !== 'string' || !op.name.trim() || op.name.trim().length > 120) throw new Error('Nama baru tidak valid.');
+      data.name = op.name.trim();
+    } else if (op.kind === 'provider') {
+      const provider = cleanCatalogText(op.provider, 60);
+      if (!provider) throw new Error('Provider tidak valid.');
+      data.provider = provider;
+    } else if (op.kind === 'validity') {
+      const validity = cleanCatalogText(op.validity, 60);
+      if (!validity) throw new Error('Masa aktif tidak valid.');
+      data.validity = validity;
+    } else if (op.kind === 'subcategory') {
+      if (!Number.isSafeInteger(op.subcategoryId) || (op.subcategoryId as number) <= 0) throw new Error('Subkategori tidak valid.');
+      data.subcategoryId = op.subcategoryId as number;
+    } else {
+      throw new Error('Jenis perbaikan tidak dikenali.');
+    }
+    return { productId: op.productId, when, data };
+  });
+
+  const result = await prisma.$transaction(async (tx) => {
+    let updated = 0;
+    let skipped = 0;
+    for (const entry of parsed) {
+      const res = await tx.product.updateMany({ where: { id: entry.productId, updatedAt: entry.when }, data: entry.data });
+      if (res.count === 1) updated += 1;
+      else skipped += 1;
+    }
+    return { updated, skipped };
+  }, { timeout: 20_000 });
+  for (const path of ['/', '/inventory', '/harga', '/cek-stok']) revalidatePath(path);
+  return { ok: true as const, updated: result.updated, skipped: result.skipped };
+}
+
 // ============================================================================
 // INVENTORY IN (barang masuk)
 // Modal di-update ke harga beli terbaru (cost per unit saat ini)

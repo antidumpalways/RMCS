@@ -4,6 +4,7 @@
 
 export type AssistantAction =
   | 'catalog.delete'
+  | 'catalog.cleanup'
   | 'price.bulk'
   | 'stock.in'
   | 'stock.adjust'
@@ -30,7 +31,7 @@ export type AssistantDraft = {
 };
 
 const ASSISTANT_ACTIONS: readonly AssistantAction[] = [
-  'catalog.delete', 'price.bulk', 'stock.in', 'stock.adjust',
+  'catalog.delete', 'catalog.cleanup', 'price.bulk', 'stock.in', 'stock.adjust',
   'opname.record', 'opname.apply', 'opname.review', 'opname.delete',
   'debt.create', 'debt.pay', 'debt.delete',
   'expense.create', 'service.create', 'shift.close',

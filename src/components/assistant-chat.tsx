@@ -49,8 +49,20 @@ type CatalogProposal = {
   };
   changes?: { label: string; from: string; to: string }[];
 };
+type AuditFinding = {
+  kind: 'name' | 'provider' | 'validity' | 'subcategory' | 'duplicate' | 'zeroStock';
+  label: string;
+  detail: string;
+  productId?: number;
+  productIds?: number[];
+};
+const AUDIT_KIND_LABELS: Record<AuditFinding['kind'], string> = {
+  name: 'Nama barang', provider: 'Provider', validity: 'Masa aktif',
+  subcategory: 'Kategori/subkategori', duplicate: 'Barang mirip/duplikat', zeroStock: 'Stok 0',
+};
+const AUDIT_GROUP_ORDER: AuditFinding['kind'][] = ['name', 'provider', 'validity', 'subcategory', 'duplicate', 'zeroStock'];
 type AssistantDraft = {
-  action: 'catalog.delete' | 'price.bulk' | 'stock.in' | 'stock.adjust'
+  action: 'catalog.delete' | 'catalog.cleanup' | 'price.bulk' | 'stock.in' | 'stock.adjust'
     | 'opname.record' | 'opname.apply' | 'opname.review' | 'opname.delete'
     | 'debt.create' | 'debt.pay' | 'debt.delete'
     | 'expense.create' | 'service.create' | 'shift.close'
@@ -68,6 +80,8 @@ type ChatLine = {
   saleProposal?: SaleProposal | null;
   catalogProposal?: CatalogProposal | null;
   draft?: AssistantDraft | null;
+  audit?: AuditFinding[] | null;
+  auditCounts?: Partial<Record<AuditFinding['kind'], number>> | null;
   image?: string;
   query?: string;
   hasImage?: boolean;
@@ -144,6 +158,8 @@ export function AssistantChat({ role }: { role: string }) {
         saleProposal?: SaleProposal | null;
         catalogProposal?: CatalogProposal | null;
         draft?: AssistantDraft | null;
+        audit?: AuditFinding[] | null;
+        auditCounts?: Partial<Record<AuditFinding['kind'], number>> | null;
         canFeedback?: boolean;
         error?: string;
       };
@@ -157,6 +173,8 @@ export function AssistantChat({ role }: { role: string }) {
         saleProposal: result.saleProposal,
         catalogProposal: result.catalogProposal,
         draft: result.draft,
+        audit: result.audit,
+        auditCounts: result.auditCounts,
         query: actualContent,
         hasImage: !!sentImage,
         canFeedback: result.canFeedback,
@@ -317,6 +335,7 @@ export function AssistantChat({ role }: { role: string }) {
             {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau tambah barang baru ke katalog. Tolong tanya nama barang, kategori, harga jual, dan stoknya dulu sebelum menyiapkan draf.')}>Tambah barang</button>}
             <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau mencatat bon pelanggan. Tolong tanya nama pelanggan dan nominalnya dulu sebelum menyiapkan draf.')}>Catat bon</button>
             {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau mencatat pengeluaran toko. Tolong tanya nama dan nominal pengeluarannya dulu sebelum menyiapkan draf.')}>Catat pengeluaran</button>}
+            {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Tolong rapikan katalog: periksa nama barang, provider, masa aktif, dan kategori/subkategori, lalu siapkan perbaikannya.')}>Rapikan katalog</button>}
             {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau kamu mengingat sesuatu. Tanya dulu apa yang perlu diingat dan jenisnya (istilah khas, cara bicara, atau aturan toko) sebelum menyiapkan draf.')}>Ingat sesuatu</button>}
             {canRecordStock && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat stok saat tutup toko. Tolong tanya barang dan jumlahnya dulu.')}>Catat stok</button>}
           </div>
@@ -367,6 +386,13 @@ export function AssistantChat({ role }: { role: string }) {
             <Button type="button" size="sm" className="mt-3 w-full" disabled={savingId !== null} onClick={() => void confirmCatalog(line, line.catalogProposal!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> {line.catalogProposal.kind === 'create' ? 'Konfirmasi tambah barang' : 'Konfirmasi ubah barang'}</>}
             </Button>
+          </div>}
+          {!!line.audit?.length && <div className="rounded-xl border bg-card p-3 text-sm">
+            <p className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="h-4 w-4 text-primary" /> Hasil periksa katalog</p>
+            <div className="mt-2 space-y-2">{AUDIT_GROUP_ORDER.filter((kind) => line.audit!.some((finding) => finding.kind === kind)).map((kind) => <div key={kind}>
+              <p className="text-[11px] font-medium text-muted-foreground">{AUDIT_KIND_LABELS[kind]} · {line.auditCounts?.[kind] ?? line.audit!.filter((finding) => finding.kind === kind).length}</p>
+              <div className="mt-1 max-h-40 space-y-0.5 overflow-y-auto">{line.audit!.filter((finding) => finding.kind === kind).map((finding, index) => <div key={index} className="flex justify-between gap-3 text-xs"><span className="min-w-0 truncate">{finding.label}</span><span className="shrink-0 text-muted-foreground">{finding.detail}</span></div>)}</div>
+            </div>)}</div>
           </div>}
           {line.draft && <div className="rounded-xl border border-amber-300/60 bg-card p-3 text-sm">
             <p className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="h-4 w-4 text-amber-600 dark:text-amber-400" /> {line.draft.title}</p>

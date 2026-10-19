@@ -4,10 +4,11 @@ import { prisma } from '@/lib/prisma';
 import { getCurrentUser } from '@/lib/auth';
 import { actionRequiresOwner, isAssistantAction, formatIDR, isMemoryKind, MEMORY_KIND_LABELS } from '@/lib/assistant-draft';
 import {
-  addDebtPayment, addStock, adjustStock, applyStockOpname, bulkUpdatePrices,
+  addDebtPayment, addStock, adjustStock, applyCatalogCleanup, applyStockOpname, bulkUpdatePrices,
   closeShift, createDebt, deleteDebt, deleteProduct, deleteStockOpname,
   markStockOpnameReviewed, recordBiayaAdmin, recordExpense, recordStockOpname,
 } from '@/lib/actions';
+import type { CatalogCleanupInput } from '@/lib/actions';
 
 function priceValue(value: unknown): bigint {
   if (typeof value === 'number') {
@@ -167,6 +168,14 @@ async function shiftClose(payload: Record<string, unknown>) {
   return { ok: true as const, message: `Shift ditutup: ${result.salesCount} penjualan, ${result.servicesCount} jasa. Serah terima diperbarui.` };
 }
 
+async function catalogCleanup(payload: Record<string, unknown>) {
+  const operations = payload.operations;
+  if (!Array.isArray(operations) || operations.length < 1) throw new Error('Tidak ada perbaikan untuk diterapkan.');
+  const result = await applyCatalogCleanup(operations as CatalogCleanupInput[]);
+  const extra = result.skipped ? ` ${result.skipped} barang dilewati karena sudah berubah sejak draf dibuat.` : '';
+  return { ok: true as const, message: `Rapikan katalog: ${result.updated} barang diperbarui.${extra}` };
+}
+
 async function memorySave(payload: Record<string, unknown>, userId: number) {
   if (!isMemoryKind(payload.kind)) throw new Error('Jenis memori tidak dikenali.');
   const content = optionalText(payload.content, 300);
@@ -196,6 +205,7 @@ export async function applyAssistantDraft(input: { action?: unknown; payload?: u
 
   switch (action) {
     case 'catalog.delete': return deleteCatalogProduct(payload);
+    case 'catalog.cleanup': return catalogCleanup(payload);
     case 'price.bulk': return bulkPrice(payload);
     case 'stock.in': return stockIn(payload);
     case 'stock.adjust': return stockAdjust(payload);
