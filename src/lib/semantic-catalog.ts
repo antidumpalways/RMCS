@@ -42,7 +42,7 @@ async function searchBatch(query: string, products: SemanticProduct[], apiKey: s
     body: JSON.stringify({
       model: process.env.DEEPSEEK_MODEL || 'deepseek-flash',
       messages: [
-        { role: 'system', content: 'Cocokkan maksud pencarian barang ke daftar katalog. Pahami parafrasa, kegunaan, bahasa informal dan typo. Pilih hanya ID dari daftar. Jangan mengarang kompatibilitas, varian, atau atribut yang tidak tercantum. Jika tidak yakin, berikan beberapa kandidat dengan confidence medium/low atau daftar kosong. Jawab JSON saja: {"matches":[{"id":123,"confidence":"high"}]}. Maksimal 5 hasil.' },
+        { role: 'system', content: 'Cocokkan maksud pencarian barang ke daftar katalog. Pahami parafrasa, kegunaan, bahasa informal dan typo. Pilih hanya ID dari daftar. Jika query menyebut provider/merek tertentu, pilih HANYA barang dengan provider itu; jenis barang sama dari merek lain bukan kecocokan. Jangan mengarang kompatibilitas, varian, atau atribut yang tidak tercantum. Jika tidak yakin, berikan beberapa kandidat dengan confidence medium/low atau daftar kosong. Jawab JSON saja: {"matches":[{"id":123,"confidence":"high"}]}. Maksimal 5 hasil.' },
         { role: 'user', content: JSON.stringify({ query, catalog: products.map(({ id, name, categoryName, provider, validity }) => ({ id, name, categoryName, provider, validity })) }) },
       ],
       max_tokens: 300,

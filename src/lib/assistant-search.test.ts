@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { semanticCatalogSearch, validatedSemanticMatches } from './semantic-catalog';
-import { catalogSearchTerms, rankCatalogProducts, strongSpellingCandidates } from './catalog-search';
+import { catalogSearchTerms, matchedProviders, productMatchesProviders, rankCatalogProducts, strongSpellingCandidates } from './catalog-search';
 import { validateProductImage } from './product-image';
 
 const products = [
@@ -25,6 +25,20 @@ test('semantic matcher cannot substitute package size or validity', () => {
 test('invalid image content is rejected even with an image MIME type', () => {
   assert.equal(validateProductImage(`data:image/jpeg;base64,${Buffer.alloc(120).toString('base64')}`), null);
   assert.equal(validateProductImage('data:text/html;base64,PGgxPk5vPC9oMT4='), null);
+});
+
+test('a provider named in the query keeps results to that provider', () => {
+  const catalog = [
+    { name: 'SP TELKOMSEL', provider: 'Telkomsel', validity: null, categoryName: 'Kartu Perdana' },
+    { name: 'Paket Data 10GB Axis', provider: 'Axis', validity: '3 hari', categoryName: 'Voucher' },
+    { name: 'Paket Data 10GB Three', provider: 'Three', validity: '5 hari', categoryName: 'Voucher' },
+  ];
+  const terms = catalogSearchTerms('Telkomsel belum ada yang paket data kita');
+  const providers = matchedProviders(catalog, terms);
+  assert.deepEqual(providers, ['telkomsel']);
+  assert.deepEqual(catalog.filter((product) => productMatchesProviders(product, providers)).map((p) => p.name),
+    ['SP TELKOMSEL']);
+  assert.deepEqual(matchedProviders(catalog, catalogSearchTerms('paket data 10gb')), []);
 });
 
 test('normalization does not depend on a list of filler words or product synonyms', () => {

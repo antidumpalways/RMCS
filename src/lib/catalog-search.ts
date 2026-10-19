@@ -77,6 +77,24 @@ export function rankCatalogProducts<T extends SearchableProduct>(products: T[], 
   }).sort((a, b) => b.score - a.score || b.matched - a.matched || a.product.name.localeCompare(b.product.name));
 }
 
+// Provider yang disebut jelas di query (token utuh yang memang dipakai sebagai
+// nama provider di katalog). Dipakai agar pencarian seperti “Telkomsel paket
+// data” tidak mencampur barang provider lain.
+export function matchedProviders<T extends SearchableProduct>(products: T[], terms: string[]) {
+  const providerTokens = new Set<string>();
+  for (const product of products) {
+    if (!product.provider) continue;
+    for (const token of catalogSearchTerms(product.provider)) providerTokens.add(token);
+  }
+  return [...new Set(terms.filter((term) => term.length >= 2 && providerTokens.has(term)))];
+}
+
+export function productMatchesProviders(product: SearchableProduct, providers: string[]) {
+  if (!providers.length) return true;
+  const tokens = new Set(catalogSearchTerms([product.provider ?? '', product.name].join(' ')));
+  return providers.some((provider) => tokens.has(provider));
+}
+
 export function strongSpellingCandidates<T>(ranked: { product: T; score: number; matched: number; nameSimilarity: number }[], queryTermCount: number) {
   const best = ranked[0];
   if (!best || best.nameSimilarity < 0.7 || best.matched < Math.min(2, queryTermCount)) return [];

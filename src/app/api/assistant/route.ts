@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import type { Prisma } from '@prisma/client';
 import { getCurrentUser } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { catalogQueryKey, catalogSearchTerms, rankCatalogProducts, strongSpellingCandidates } from '@/lib/catalog-search';
+import { catalogQueryKey, catalogSearchTerms, matchedProviders, productMatchesProviders, rankCatalogProducts, strongSpellingCandidates } from '@/lib/catalog-search';
 import { respectsNumericAttributes, semanticCatalogSearch } from '@/lib/semantic-catalog';
 import { describeProductImage, validateProductImage } from '@/lib/product-image';
 import { jakartaTodayBounds, saleSnapshotSignature } from '@/lib/sale-chat';
@@ -544,7 +544,12 @@ async function findCatalogProducts(query: string, apiKey: string) {
   });
   const fullCatalog = allProducts.map(catalogProduct);
   const queryTerms = catalogSearchTerms(query);
-  const ranked = rankCatalogProducts(fullCatalog.filter((product) => respectsNumericAttributes(query, product)), queryTerms);
+  // Bila pengguna menyebut nama provider, batasi kandidat ke provider itu agar
+  // hasil tidak mencampur merek lain (mis. tanya Telkomsel tetapi muncul Axis).
+  const providers = matchedProviders(fullCatalog, queryTerms);
+  const candidates = fullCatalog.filter((product) =>
+    respectsNumericAttributes(query, product) && productMatchesProviders(product, providers));
+  const ranked = rankCatalogProducts(candidates, queryTerms);
   const spellingCandidates = strongSpellingCandidates(ranked, queryTerms.length)
     .map((product) => ({ ...product, matchConfidence: 'medium' as const }));
   const fallback = () => {
@@ -554,12 +559,12 @@ async function findCatalogProducts(query: string, apiKey: string) {
       .map(({ product }) => ({ ...product, matchConfidence: 'medium' as const }));
   };
   try {
-    const semantic = await semanticCatalogSearch(query, fullCatalog, apiKey);
+    const semantic = await semanticCatalogSearch(query, candidates, apiKey);
     // Kandidat nama yang kuat tidak boleh hilang hanya karena model memilih
     // kategori yang sama tetapi merek lain.
     if (spellingCandidates.length) return spellingCandidates;
     if (!semantic.length) return fallback();
-    const byId = new Map(fullCatalog.map((product) => [product.id, product]));
+    const byId = new Map(candidates.map((product) => [product.id, product]));
     return semantic.flatMap((match) => {
       const product = byId.get(match.id);
       return product ? [{ ...product, matchConfidence: match.confidence }] : [];
