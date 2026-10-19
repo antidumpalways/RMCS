@@ -367,11 +367,12 @@ const tools = [
     type: 'function',
     function: {
       name: 'prepare_catalog_audit',
-      description: 'HANYA owner. Periksa seluruh katalog lalu siapkan perbaikan agar lebih rapi: nama barang (spasi/huruf), provider, masa aktif, kategori/subkategori, barang mirip (duplikat), dan stok 0. PAKAI INI saat owner minta merapikan / menyusun / mengedit katalog secara menyeluruh — JANGAN memakai search_products untuk maksud itu. Tidak menyimpan apa pun; perbaikan aman baru diterapkan setelah owner menekan konfirmasi. Duplikat dan stok 0 hanya dilaporkan untuk ditinjau owner.',
+      description: 'HANYA owner. Periksa katalog lalu siapkan perbaikan agar lebih rapi: nama barang (spasi/huruf), provider, masa aktif, kategori/subkategori, barang mirip (duplikat), dan stok 0. PAKAI INI saat owner minta merapikan/menyusun/mengedit katalog (mis. “rapikan seluruh katalog per kategori”) — JANGAN memakai search_products untuk maksud itu. Isi “categories” dengan nama kategori yang disebut owner (kalau ada), dan “focus” dengan aspek yang diminta owner (kalau disebut). Tidak menyimpan apa pun; perbaikan aman baru diterapkan setelah owner menekan konfirmasi. Duplikat dan stok 0 hanya dilaporkan untuk ditinjau owner.',
       parameters: {
         type: 'object',
         properties: {
-          focus: { type: 'string', enum: ['all', 'name', 'provider', 'validity', 'subcategory', 'duplicate', 'zeroStock'], description: 'Bagian yang dirapikan. all = semua.' },
+          focus: { type: 'array', items: { type: 'string', enum: ['name', 'provider', 'validity', 'subcategory', 'duplicate', 'zeroStock'] }, description: 'Aspek yang dirapikan. Kosongkan untuk semua aspek.' },
+          categories: { type: 'array', items: { type: 'string' }, description: 'Nama kategori yang dirapikan, mis. ["Voucher","Pulsa"]. Kosongkan untuk seluruh katalog.' },
         },
         additionalProperties: false,
       },
@@ -409,11 +410,12 @@ const tools = [
 
 const systemPrompt = `Kamu adalah asisten kerja R CELL untuk owner dan karyawan. Jawab singkat, ramah, dan mudah dipahami dalam bahasa Indonesia.
 ATURAN TEGAS:
+- Pengguna berbicara bebas. kamu harus memetakan maksudnya ke fungsi dan parameter yang tepat sendiri; pengguna tidak perlu memakai kata kunci tertentu. Kalau maksudnya jelas, lakukan. Tanya hanya bila benar-benar ambigu atau nilai wajib belum disebut.
 - Pahami pertanyaan bebas dalam bahasa sehari-hari, termasuk typo ringan, singkatan, dan urutan kata yang berbeda. Jika maksud atau barangnya belum pasti, tanyakan bagian yang perlu diperjelas.
 - Bantu mencari barang/harga/stok dari katalog, menyiapkan cek stok, mencatat penjualan hari ini, mengoreksi penjualan hari ini, dan — sesuai peran pengguna — menyiapkan draf perubahan katalog, stok, opname, bon, pengeluaran, biaya admin, dan tutup shift. Jawab pertanyaan umum dengan wajar, tetapi jangan mengarang data toko yang tidak tersedia lewat fungsi.
 - Jika pengguna bertanya apakah dirinya owner atau karyawan, jawab sesuai “Peran pengguna” di konteks, lalu jelaskan singkat tindakan yang boleh ia minta lewat asisten. Jangan mengarang atau menebak peran.
 - Untuk setiap pertanyaan harga, ketersediaan, barang serupa, foto barang, atau pesan yang hanya menyebut nama/ciri barang, WAJIB panggil search_products. Gunakan konteks percakapan dan deskripsi foto untuk menyusun query. Pertahankan ejaan pengguna pada nama/merek agar server dapat memeriksa typo terhadap katalog. Harga hanya berasal dari katalog. Jangan menebak, mengubah, atau mencari harga dari internet. Jangan menyebut modal atau keuntungan.
-- Bila owner minta MERAPIKAN, MENYUSUN, atau MENGEDIT katalog secara menyeluruh (bukan mencari satu barang), JANGAN memakai search_products dan JANGAN menampilkan isi katalog. Gunakan prepare_catalog_audit, lalu sampaikan temuannya dan siapkan draf perbaikan. Jangan mengarang temuan: semua temuan berasal dari server.
+- Bila owner minta MERAPIKAN, MENYUSUN, atau MENGEDIT katalog (bukan mencari satu barang), JANGAN memakai search_products dan JANGAN menampilkan isi katalog. Gunakan prepare_catalog_audit, lalu sampaikan temuannya dan siapkan draf perbaikan. Pahami cakupannya dari ucapan owner: bila ia menyebut kategori tertentu, isi “categories”; bila ia menyebut aspek tertentu (nama/provider/masa aktif/kategori/duplikat/stok), isi “focus”. Bila hanya “rapikan katalog”, biarkan keduanya kosong (seluruh katalog, semua aspek). Jangan mengarang temuan: semua temuan berasal dari server.
 - Foto hanya petunjuk pengenalan; jangan mengaku pasti bila foto buram atau katalog ambigu. Jangan mengarang spesifikasi atau kecocokan untuk kendaraan/perangkat tertentu.
 - Untuk pertanyaan jumlah transaksi atau omzet hari ini, gunakan ringkasan penjualan dari konteks sesuai hak pengguna. Jangan mengira-ngira transaksi yang tidak ada di daftar terbaru.
 - Jangan menyebut angka harga dalam teks jawaban. Aplikasi akan menampilkan harga persis dari database.
@@ -1115,6 +1117,7 @@ export async function POST(request: Request) {
     let draftIssue: string | null = null;
     let audit: CatalogAuditFinding[] | null = null;
     let auditCounts: Partial<Record<AuditKind, number>> | null = null;
+    let auditScope: string[] = [];
     let catalogSearchUsed = false;
     let searchQuery = '';
     for (const call of assistantMessage.tool_calls ?? []) {
@@ -1310,15 +1313,19 @@ export async function POST(request: Request) {
           continue;
         }
         const focusRaw = args.focus;
-        const focus: AuditKind[] = focusRaw === undefined || focusRaw === 'all' || !(AUDIT_KINDS as readonly string[]).includes(focusRaw as string)
-          ? [...AUDIT_KINDS]
-          : [focusRaw as AuditKind];
-        const result = await analyzeCatalog();
-        audit = findingsForKinds(result, focus).slice(0, 40);
+        const focusList = Array.isArray(focusRaw) ? focusRaw : typeof focusRaw === 'string' ? [focusRaw] : [];
+        const focus = focusList.filter((kind): kind is AuditKind => (AUDIT_KINDS as readonly string[]).includes(kind as string));
+        const selected = focus.length ? focus : [...AUDIT_KINDS];
+        const categoryNames = Array.isArray(args.categories)
+          ? args.categories.filter((name): name is string => typeof name === 'string').map((name) => name.trim()).filter(Boolean).slice(0, 50)
+          : [];
+        auditScope = categoryNames;
+        const result = await analyzeCatalog({ categoryNames });
+        audit = findingsForKinds(result, selected).slice(0, 80);
         const counts: Partial<Record<AuditKind, number>> = {};
-        for (const kind of focus) counts[kind] = result.counts[kind];
+        for (const kind of selected) counts[kind] = result.counts[kind];
         auditCounts = counts;
-        const cleanups = cleanupsForKinds(result, focus).slice(0, 200);
+        const cleanups = cleanupsForKinds(result, selected).slice(0, 200);
         if (cleanups.length) {
           const groupBy = (kind: string) => cleanups.filter((cleanup) => cleanup.kind === kind).length;
           const lines: AssistantDraft['lines'] = [];
@@ -1398,10 +1405,11 @@ export async function POST(request: Request) {
       message = draftIssue;
     }
     if (audit) {
+      const scopeLabel = auditScope.length ? `kategori ${auditScope.join(', ')}` : 'seluruh katalog';
       const total = Object.values(auditCounts ?? {}).reduce((sum, value) => sum + (value ?? 0), 0);
       message = total
-        ? `Saya sudah memeriksa katalog: ada ${total} hal yang bisa dirapikan (lihat daftar di bawah).${draft ? ' Perbaikan aman sudah saya siapkan sebagai draf — tekan konfirmasi untuk menerapkan.' : ' Duplikat dan stok 0 hanya dilaporkan; sebutkan bila ingin saya siapkan draf hapus/gabung.'}`
-        : 'Katalog sudah terlihat rapi untuk bagian yang saya periksa. Tidak ada yang perlu dirapikan.';
+        ? `Saya sudah memeriksa ${scopeLabel}: ada ${total} hal yang bisa dirapikan (lihat daftar di bawah).${draft ? ' Perbaikan aman sudah saya siapkan sebagai draf — tekan konfirmasi untuk menerapkan.' : ' Duplikat dan stok 0 hanya dilaporkan; sebutkan bila ingin saya siapkan draf hapus/gabung.'}`
+        : `${scopeLabel[0].toUpperCase()}${scopeLabel.slice(1)} sudah rapi. Tidak ada yang perlu dirapikan.`;
     }
     if (!saleProposal && !stockProposal && !catalogProposal && !draft && /\b(?:sudah|telah|berhasil)\s+(?:saya\s+)?(?:catat|dicatat|simpan|tersimpan|ubah|diubah|perbarui|diperbarui|tambah|ditambah|hapus|dihapus|tutup|ditutup)\b/i.test(message)) {
       message = 'Belum ada perubahan yang saya simpan. Sebutkan perintahnya untuk menyiapkan draf; database baru berubah setelah Anda menekan konfirmasi.';

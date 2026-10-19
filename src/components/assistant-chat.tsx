@@ -53,9 +53,21 @@ type AuditFinding = {
   kind: 'name' | 'provider' | 'validity' | 'subcategory' | 'duplicate' | 'zeroStock';
   label: string;
   detail: string;
+  category?: string;
   productId?: number;
   productIds?: number[];
 };
+
+function groupAuditByCategory(findings: AuditFinding[]) {
+  const groups = new Map<string, AuditFinding[]>();
+  for (const finding of findings) {
+    const key = finding.category ?? 'Tanpa kategori';
+    const list = groups.get(key) ?? [];
+    list.push(finding);
+    groups.set(key, list);
+  }
+  return [...groups.entries()];
+}
 const AUDIT_KIND_LABELS: Record<AuditFinding['kind'], string> = {
   name: 'Nama barang', provider: 'Provider', validity: 'Masa aktif',
   subcategory: 'Kategori/subkategori', duplicate: 'Barang mirip/duplikat', zeroStock: 'Stok 0',
@@ -389,9 +401,10 @@ export function AssistantChat({ role }: { role: string }) {
           </div>}
           {!!line.audit?.length && <div className="rounded-xl border bg-card p-3 text-sm">
             <p className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="h-4 w-4 text-primary" /> Hasil periksa katalog</p>
-            <div className="mt-2 space-y-2">{AUDIT_GROUP_ORDER.filter((kind) => line.audit!.some((finding) => finding.kind === kind)).map((kind) => <div key={kind}>
-              <p className="text-[11px] font-medium text-muted-foreground">{AUDIT_KIND_LABELS[kind]} · {line.auditCounts?.[kind] ?? line.audit!.filter((finding) => finding.kind === kind).length}</p>
-              <div className="mt-1 max-h-40 space-y-0.5 overflow-y-auto">{line.audit!.filter((finding) => finding.kind === kind).map((finding, index) => <div key={index} className="flex justify-between gap-3 text-xs"><span className="min-w-0 truncate">{finding.label}</span><span className="shrink-0 text-muted-foreground">{finding.detail}</span></div>)}</div>
+            <div className="mt-2 flex flex-wrap gap-1">{AUDIT_GROUP_ORDER.filter((kind) => (line.auditCounts?.[kind] ?? line.audit!.filter((finding) => finding.kind === kind).length) > 0).map((kind) => <span key={kind} className="rounded-full bg-muted px-2 py-0.5 text-[11px]">{AUDIT_KIND_LABELS[kind]} {line.auditCounts?.[kind] ?? line.audit!.filter((finding) => finding.kind === kind).length}</span>)}</div>
+            <div className="mt-2 max-h-64 space-y-3 overflow-y-auto">{groupAuditByCategory(line.audit!).map(([category, items]) => <div key={category}>
+              <p className="text-[11px] font-semibold text-foreground">{category}</p>
+              <div className="mt-1 space-y-0.5">{items.map((finding, index) => <div key={index} className="flex justify-between gap-3 text-xs"><span className="min-w-0 truncate"><span className="text-muted-foreground">{AUDIT_KIND_LABELS[finding.kind]}: </span>{finding.label}</span><span className="shrink-0 text-muted-foreground">{finding.detail}</span></div>)}</div>
             </div>)}</div>
           </div>}
           {line.draft && <div className="rounded-xl border border-amber-300/60 bg-card p-3 text-sm">
