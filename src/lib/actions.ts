@@ -6,6 +6,15 @@ import { toBigIntSafe } from '@/lib/utils';
 import { getCurrentUser } from '@/lib/auth';
 import { jakartaTodayBounds, saleSnapshotSignature } from '@/lib/sale-chat';
 import { catalogProductSignature } from '@/lib/catalog-chat';
+import { cashOnHandAt } from '@/lib/automation';
+
+function optionalCash(value: string | number | null | undefined): bigint | null {
+  if (value === null || value === undefined) return null;
+  const digits = String(value).replace(/[^\d]/g, '');
+  if (!digits) return null;
+  const amount = BigInt(digits);
+  return amount >= 0n && amount <= 1_000_000_000_000n ? amount : null;
+}
 
 // ============================================================================
 // CATEGORIES
@@ -535,7 +544,12 @@ export async function deleteDebt(id: number) {
 // TUTUP SHIFT (End-of-Shift Report)
 // Hitung ringkasan transaksi dari shift yang sedang berjalan & simpan snapshot
 // ============================================================================
-export async function closeShift(note?: string) {
+export async function closeShift(input: {
+  note?: string | null;
+  openingCash?: string | number | null;
+  actualCash?: string | number | null;
+} = {}) {
+  const note = input.note ?? undefined;
   const me = await getCurrentUser();
   if (!me) throw new Error('Tidak ada user');
   const shiftName = me.shift;
@@ -549,7 +563,7 @@ export async function closeShift(note?: string) {
   const shiftStart = todayStart;
   const shiftEnd = now;
 
-  const [sales, services, expenses, stockChecks] = await Promise.all([
+  const [sales, services, expenses, debtPayments, stockChecks] = await Promise.all([
     prisma.saleTransaction.findMany({
       where: {
         createdAt: { gte: shiftStart, lte: shiftEnd },
@@ -568,6 +582,13 @@ export async function closeShift(note?: string) {
         ...(me.id ? { userId: me.id } : {}),
       },
     }),
+    prisma.debtPayment.aggregate({
+      where: {
+        createdAt: { gte: shiftStart, lte: shiftEnd },
+        ...(me.id ? { userId: me.id } : {}),
+      },
+      _sum: { amount: true },
+    }),
     prisma.stockOpname.findMany({
       where: {
         userId: me.id,
@@ -582,6 +603,13 @@ export async function closeShift(note?: string) {
   const salesProfit = sales.reduce((a, s) => a + s.totalProfit, 0n);
   const servicesProfit = services.reduce((a, s) => a + s.profit, 0n);
   const expensesTotal = expenses.reduce((a, e) => a + e.amount, 0n);
+  const debtTotal = debtPayments._sum.amount ?? 0n;
+  const openingCash = optionalCash(input.openingCash) ?? await cashOnHandAt(shiftStart);
+  const cashIn = salesRevenue + servicesProfit + debtTotal;
+  const cashOut = expensesTotal;
+  const expectedCash = openingCash + cashIn - cashOut;
+  const actualCash = optionalCash(input.actualCash);
+  const cashDifference = actualCash === null ? null : actualCash - expectedCash;
   const openingStockCount = stockChecks.filter((item) => item.note === 'Cek stok buka shift').length;
   const closingStockCount = stockChecks.filter((item) => item.note === 'Cek stok tutup shift').length;
   const stockDiscrepancyCount = stockChecks.filter((item) => item.diff !== 0 && item.reviewStatus === 'PENDING').length;
@@ -597,6 +625,12 @@ export async function closeShift(note?: string) {
       servicesCount: services.length,
       servicesProfit,
       expensesTotal,
+      openingCash,
+      cashIn,
+      cashOut,
+      expectedCash,
+      actualCash,
+      cashDifference,
       openingStockCount,
       closingStockCount,
       stockDiscrepancyCount,
@@ -615,6 +649,12 @@ export async function closeShift(note?: string) {
     servicesCount: services.length,
     servicesProfit,
     expensesTotal,
+    openingCash: Number(openingCash),
+    cashIn: Number(cashIn),
+    cashOut: Number(cashOut),
+    expectedCash: Number(expectedCash),
+    actualCash: actualCash === null ? null : Number(actualCash),
+    cashDifference: cashDifference === null ? null : Number(cashDifference),
     openingStockCount,
     closingStockCount,
     stockDiscrepancyCount,

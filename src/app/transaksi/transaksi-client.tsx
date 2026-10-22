@@ -14,9 +14,9 @@ type Sale = { id: number; createdAt: string; totalRevenue: number; totalProfit: 
 type Service = { id: number; createdAt: string; count: number; profit: number; userShift: string | null; userName: string | null };
 type Expense = { id: number; createdAt: string; name: string; amount: number; userShift: string | null; userName: string | null };
 type Summary = { totalRevenue: bigint; totalProfit: bigint; serviceRevenue: bigint; serviceProfit: bigint; serviceCount: number; totalExpense: bigint; salesCount: number; servicesCount: number; expensesCount: number };
-type Props = { isKaryawan: boolean; hasClosingStockCheck: boolean; userId: number; date: string; shift: string | null; summary: Summary; products: SaleProduct[]; sales: Sale[]; services: Service[]; expenses: Expense[] };
+type Props = { isKaryawan: boolean; hasClosingStockCheck: boolean; shiftCash: { openingCash: number; cashIn: number; cashOut: number; expectedCash: number }; userId: number; date: string; shift: string | null; summary: Summary; products: SaleProduct[]; sales: Sale[]; services: Service[]; expenses: Expense[] };
 
-export function TransaksiClient({ isKaryawan, hasClosingStockCheck, userId, date, shift, summary, products, sales, services, expenses }: Props) {
+export function TransaksiClient({ isKaryawan, hasClosingStockCheck, shiftCash, userId, date, shift, summary, products, sales, services, expenses }: Props) {
   const router = useRouter();
   const [filterOpen, setFilterOpen] = React.useState(false);
   const today = toDateInputLocal();
@@ -48,6 +48,6 @@ export function TransaksiClient({ isKaryawan, hasClosingStockCheck, userId, date
         return <div key={item.key} className="flex items-start gap-3 py-4"><span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-xl', item.type === 'expense' ? 'bg-orange-500/10 text-orange-600 dark:text-orange-400' : 'bg-primary/10 text-primary')}><Icon className="h-4 w-4" /></span><div className="min-w-0 flex-1"><div className="mb-1 flex flex-wrap items-center gap-1.5"><span className="text-[11px] text-muted-foreground">{item.subtitle}</span><ShiftBadge userShift={item.userShift} userName={item.userName} /></div><p className="break-words text-sm font-medium leading-relaxed">{item.title}</p><p className="mt-1 text-xs text-muted-foreground">{formatDateTimeID(item.date)}</p>{!isKaryawan && <p className={cn('mt-2 text-sm font-semibold', item.type === 'expense' ? 'text-orange-600 dark:text-orange-400' : 'text-primary')}>{item.type === 'expense' ? '− ' : ''}{formatRupiah(item.amount)}</p>}</div></div>;
       })}</div> : <div className="rounded-2xl border border-dashed p-8 text-center"><History className="mx-auto mb-3 h-8 w-8 text-muted-foreground/60" /><p className="text-sm font-semibold">Belum ada catatan</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{date === today ? isKaryawan ? 'Catat penjualan pertama di atas.' : 'Catat transaksi pertama di atas.' : 'Pilih tanggal lain untuk melihat aktivitas toko.'}</p></div>}
     </section>
-    {isKaryawan && <FinishShift hasClosingStockCheck={hasClosingStockCheck} />}
+          {isKaryawan && <FinishShift hasClosingStockCheck={hasClosingStockCheck} shiftCash={shiftCash} />}
   </div>;
 }

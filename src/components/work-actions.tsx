@@ -69,28 +69,51 @@ export function WorkEntry({ kind }: { kind: 'admin' | 'expense' }) {
   </Dialog>;
 }
 
-export function FinishShift({ hasClosingStockCheck }: { hasClosingStockCheck: boolean }) {
+export function FinishShift({ hasClosingStockCheck, shiftCash }: {
+  hasClosingStockCheck: boolean;
+  shiftCash: { openingCash: number; cashIn: number; cashOut: number; expectedCash: number };
+}) {
   const router = useRouter();
   const [open, setOpen] = React.useState(false);
   const [note, setNote] = React.useState('');
+  const [actual, setActual] = React.useState('');
   const [pending, setPending] = React.useState(false);
   const pendingRef = React.useRef(false);
   const [error, setError] = React.useState('');
   const [result, setResult] = React.useState<{
     salesCount: number;
     servicesCount: number;
+    openingCash: number;
+    cashIn: number;
+    cashOut: number;
+    expectedCash: number;
+    actualCash: number | null;
+    cashDifference: number | null;
     openingStockCount: number;
     closingStockCount: number;
     stockDiscrepancyCount: number;
     note: string;
   } | null>(null);
   const noteId = React.useId();
+  const actualId = React.useId();
+  const actualNumber = actual === '' ? null : Number(actual);
+  const actualValid = actualNumber !== null && Number.isSafeInteger(actualNumber) && actualNumber >= 0;
+  const difference = actualNumber === null ? null : actualNumber - shiftCash.expectedCash;
+  const signed = (value: number) => `${value > 0 ? '+' : value < 0 ? '-' : ''}${formatRupiah(Math.abs(value))}`;
   return <Dialog open={open} onOpenChange={(value) => { if (!pendingRef.current) { setOpen(value); if (!value) { setResult(null); setError(''); } } }}>
     <button onClick={() => setOpen(true)} className="flex min-h-16 w-full items-center gap-3 rounded-2xl border border-dashed bg-muted/30 p-4 text-left hover:bg-muted/60"><Moon className="h-5 w-5 shrink-0 text-muted-foreground" /><span className="flex-1"><span className="block text-sm font-semibold">Selesai Shift</span><span className="block text-xs text-muted-foreground">Simpan rekap & catatan serah terima</span></span><ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" /></button>
     <DialogContent>
       <DialogHeader><DialogTitle>{result ? 'Rekap shift tersimpan' : 'Selesai untuk hari ini?'}</DialogTitle><DialogDescription>{result ? 'Terima kasih! Catatan kerja kamu sudah disimpan.' : 'Simpan rekap transaksi hari ini dan titipkan catatan untuk shift berikutnya.'}</DialogDescription></DialogHeader>
       {result ? <div className="space-y-4">
         <div className="rounded-2xl bg-primary/10 p-5 text-center"><CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-primary" /><p className="font-semibold">Serah terima tersimpan</p><p className="mt-1 text-xs text-muted-foreground">Ringkasan shift sudah dicatat untuk owner.</p></div>
+        <div className="rounded-xl border bg-card p-3 text-sm">
+          <div className="flex justify-between gap-3"><span className="text-muted-foreground">Kas awal</span><span>{formatRupiah(result.openingCash)}</span></div>
+          <div className="mt-1 flex justify-between gap-3"><span className="text-muted-foreground">Uang masuk</span><span className="text-emerald-600 dark:text-emerald-400">+ {formatRupiah(result.cashIn)}</span></div>
+          <div className="mt-1 flex justify-between gap-3"><span className="text-muted-foreground">Uang keluar</span><span className="text-orange-600 dark:text-orange-400">− {formatRupiah(result.cashOut)}</span></div>
+          <div className="mt-2 flex justify-between gap-3 border-t pt-2 font-semibold"><span>Seharusnya</span><span>{formatRupiah(result.expectedCash)}</span></div>
+          <div className="mt-1 flex justify-between gap-3"><span className="text-muted-foreground">Kas fisik</span><span className="font-semibold">{result.actualCash === null ? '—' : formatRupiah(result.actualCash)}</span></div>
+          <div className="mt-1 flex justify-between gap-3"><span className="text-muted-foreground">Selisih</span><strong className={!result.cashDifference ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>{result.cashDifference === null ? '—' : signed(result.cashDifference)}</strong></div>
+        </div>
         <div className="grid grid-cols-2 gap-2 text-sm">
           <div className="rounded-xl border bg-card p-3"><span className="block text-xs text-muted-foreground">Penjualan</span><strong>{result.salesCount}</strong> transaksi</div>
           <div className="rounded-xl border bg-card p-3"><span className="block text-xs text-muted-foreground">Rekap jasa</span><strong>{result.servicesCount}</strong> transaksi</div>
@@ -107,13 +130,19 @@ export function FinishShift({ hasClosingStockCheck }: { hasClosingStockCheck: bo
         </div>
       </div> : <form className="space-y-4" onSubmit={async (event) => {
         event.preventDefault();
-        if (pendingRef.current) return;
+        if (pendingRef.current || !actualValid) return;
         pendingRef.current = true; setPending(true); setError('');
         try {
-          const summary = await closeShift(note);
+          const summary = await closeShift({ note, actualCash: actualNumber });
           setResult({
             salesCount: summary.salesCount,
             servicesCount: summary.servicesCount,
+            openingCash: summary.openingCash,
+            cashIn: summary.cashIn,
+            cashOut: summary.cashOut,
+            expectedCash: summary.expectedCash,
+            actualCash: summary.actualCash,
+            cashDifference: summary.cashDifference,
             openingStockCount: summary.openingStockCount,
             closingStockCount: summary.closingStockCount,
             stockDiscrepancyCount: summary.stockDiscrepancyCount,
@@ -123,11 +152,20 @@ export function FinishShift({ hasClosingStockCheck }: { hasClosingStockCheck: bo
         } catch { setError('Rekap belum tersimpan. Silakan coba lagi.'); }
         finally { pendingRef.current = false; setPending(false); }
       }}>
+        <div className="rounded-xl border bg-card p-3 text-sm">
+          <div className="flex justify-between gap-3"><span className="text-muted-foreground">Kas awal</span><span>{formatRupiah(shiftCash.openingCash)}</span></div>
+          <div className="mt-1 flex justify-between gap-3"><span className="text-muted-foreground">Uang masuk</span><span className="text-emerald-600 dark:text-emerald-400">+ {formatRupiah(shiftCash.cashIn)}</span></div>
+          <div className="mt-1 flex justify-between gap-3"><span className="text-muted-foreground">Uang keluar</span><span className="text-orange-600 dark:text-orange-400">− {formatRupiah(shiftCash.cashOut)}</span></div>
+          <div className="mt-2 flex justify-between gap-3 border-t pt-2 font-semibold"><span>Kas seharusnya</span><span>{formatRupiah(shiftCash.expectedCash)}</span></div>
+        </div>
+        <div className="space-y-2"><Label htmlFor={actualId}>Kas fisik (hitung uang di laci)</Label><div className="relative"><span className="absolute left-3 top-3 text-muted-foreground">Rp</span><Input id={actualId} type="text" inputMode="numeric" pattern="[0-9]+" placeholder="0" value={actual} onChange={(e) => setActual(e.target.value.replace(/\D/g, ''))} className="h-12 pl-10 text-lg font-semibold" disabled={pending} /></div>
+          {difference !== null && <p className={`text-sm font-medium ${difference === 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>{difference === 0 ? 'Kas sesuai ✓' : `Selisih ${signed(difference)}`}</p>}
+        </div>
         <div className="space-y-2"><Label htmlFor={noteId}>Catatan untuk shift berikutnya <span className="font-normal text-muted-foreground">(opsional)</span></Label><Textarea id={noteId} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Contoh: voucher XL tinggal sedikit, tolong cek rak depan." rows={4} maxLength={1000} disabled={pending} /></div>
         {!hasClosingStockCheck && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300"><p className="font-medium">Cek stok tutup shift belum dicatat.</p><p className="mt-1 text-xs">Sebaiknya cocokkan stok dengan catatan manual sebelum serah terima.</p><Link href="/cek-stok?mode=tutup" onClick={() => setOpen(false)} className="mt-2 inline-flex min-h-10 items-center font-semibold underline underline-offset-4">Cek stok sekarang</Link></div>}
         <p className="text-xs leading-relaxed text-muted-foreground">Rekap berisi penjualan, biaya admin, dan pengeluaran yang kamu catat hari ini.</p>
         {error && <p role="alert" className="rounded-xl bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
-        <Button type="submit" size="lg" className="w-full rounded-xl" disabled={pending}>{pending ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : 'Simpan Rekap Shift'}</Button>
+        <Button type="submit" size="lg" className="w-full rounded-xl" disabled={pending || !actualValid}>{pending ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : 'Simpan Rekap Shift'}</Button>
       </form>}
     </DialogContent>
   </Dialog>;

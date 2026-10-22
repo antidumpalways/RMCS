@@ -165,8 +165,13 @@ async function serviceCreate(payload: Record<string, unknown>) {
 }
 
 async function shiftClose(payload: Record<string, unknown>) {
-  const result = await closeShift(optionalText(payload.note, 500));
-  return { ok: true as const, message: `Shift ditutup: ${result.salesCount} penjualan, ${result.servicesCount} jasa. Serah terima diperbarui.` };
+  const actualCash = payload.actualCash === undefined || payload.actualCash === null ? null : Number(payload.actualCash);
+  if (actualCash !== null && (!Number.isSafeInteger(actualCash) || actualCash < 0)) throw new Error('Kas fisik tidak valid.');
+  const result = await closeShift({ note: optionalText(payload.note, 500), actualCash });
+  const cash = result.cashDifference === null
+    ? `Kas seharusnya ${formatIDR(BigInt(result.expectedCash))}.`
+    : `Kas seharusnya ${formatIDR(BigInt(result.expectedCash))}, fisik ${formatIDR(BigInt(result.actualCash ?? 0))}, selisih ${formatIDR(BigInt(result.cashDifference))}.`;
+  return { ok: true as const, message: `Shift ditutup: ${result.salesCount} penjualan, ${result.servicesCount} jasa. ${cash} Serah terima diperbarui.` };
 }
 
 async function catalogCleanup(payload: Record<string, unknown>) {

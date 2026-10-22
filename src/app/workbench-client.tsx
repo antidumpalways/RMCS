@@ -7,11 +7,12 @@ import { WorkEntry, FinishShift } from '@/components/work-actions';
 
 type RecentSale = { id: number; createdAt: string; items: { name: string; qty: number }[] };
 
-export function WorkbenchClient({ username, userId, shift, hasClosingStockCheck, products, popularIds, recentSales }: {
+export function WorkbenchClient({ username, userId, shift, hasClosingStockCheck, shiftCash, products, popularIds, recentSales }: {
   username: string;
   userId: number;
   shift: string | null;
   hasClosingStockCheck: boolean;
+  shiftCash: { openingCash: number; cashIn: number; cashOut: number; expectedCash: number };
   products: SaleProduct[];
   popularIds: number[];
   recentSales: RecentSale[];
@@ -63,6 +64,6 @@ export function WorkbenchClient({ username, userId, shift, hasClosingStockCheck,
     <section aria-labelledby="recent-sales"><div className="mb-3 flex items-center justify-between gap-2"><h2 id="recent-sales" className="text-sm font-semibold">Terakhir kamu catat</h2><Link href="/transaksi" className="inline-flex min-h-11 items-center gap-1 text-xs font-medium text-primary">Riwayat <ArrowRight className="h-3.5 w-3.5" /></Link></div>
       {recentSales.length ? <div className="divide-y rounded-2xl border bg-card px-4">{recentSales.map((sale) => <div key={sale.id} className="flex items-start gap-3 py-3.5"><span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"><ShoppingBag className="h-4 w-4" /></span><div className="min-w-0 flex-1"><p className="text-sm font-medium leading-relaxed">{sale.items.map((item) => `${item.name} × ${item.qty}`).join(', ')}</p><p className="mt-1 text-xs text-muted-foreground">Penjualan #{sale.id} · {new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' }).format(new Date(sale.createdAt))}</p></div><span className="mt-1 text-xs font-medium text-primary">Tercatat ✓</span></div>)}</div> : <div className="rounded-2xl border border-dashed p-6 text-center"><History className="mx-auto mb-2 h-7 w-7 text-muted-foreground/60" /><p className="text-sm font-medium">Siap untuk penjualan pertama?</p><p className="mt-1 text-xs text-muted-foreground">Transaksi yang kamu catat akan muncul di sini.</p></div>}
     </section>
-    <FinishShift hasClosingStockCheck={hasClosingStockCheck} />
+    <FinishShift hasClosingStockCheck={hasClosingStockCheck} shiftCash={shiftCash} />
   </div>;
 }

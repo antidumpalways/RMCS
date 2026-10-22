@@ -170,6 +170,45 @@ export async function computeCash() {
   );
 }
 
+// Posisi kas toko pada suatu waktu (sebelum tanggal tersebut), dipakai sebagai
+// kas awal shift. Sama seperti computeCash tetapi dibatasi waktu.
+export async function cashOnHandAt(date: Date) {
+  const s = await ensureSettings();
+  const where = { createdAt: { lt: date } };
+  const [sales, serviceProfit, debtPayments, expenses] = await Promise.all([
+    prisma.saleTransaction.aggregate({ where, _sum: { totalRevenue: true } }),
+    prisma.serviceTransaction.aggregate({ where, _sum: { profit: true } }),
+    prisma.debtPayment.aggregate({ where, _sum: { amount: true } }),
+    prisma.expense.aggregate({ where, _sum: { amount: true } }),
+  ]);
+  return (
+    s.cashInitial +
+    (sales._sum.totalRevenue ?? 0n) +
+    (serviceProfit._sum.profit ?? 0n) +
+    (debtPayments._sum.amount ?? 0n) -
+    (expenses._sum.amount ?? 0n)
+  );
+}
+
+// Rekap kas tanggung jawab satu karyawan dalam rentang shift.
+export async function computeShiftCash(userId: number, from: Date, to: Date) {
+  const openingCash = await cashOnHandAt(from);
+  const where = { createdAt: { gte: from, lte: to }, userId };
+  const [sales, services, debtPayments, expenses] = await Promise.all([
+    prisma.saleTransaction.aggregate({ where, _sum: { totalRevenue: true } }),
+    prisma.serviceTransaction.aggregate({ where, _sum: { profit: true } }),
+    prisma.debtPayment.aggregate({ where, _sum: { amount: true } }),
+    prisma.expense.aggregate({ where, _sum: { amount: true } }),
+  ]);
+  const salesRevenue = sales._sum.totalRevenue ?? 0n;
+  const servicesProfit = services._sum.profit ?? 0n;
+  const debtTotal = debtPayments._sum.amount ?? 0n;
+  const expensesTotal = expenses._sum.amount ?? 0n;
+  const cashIn = salesRevenue + servicesProfit + debtTotal;
+  return { openingCash, salesRevenue, servicesProfit, debtTotal, expensesTotal, cashIn, cashOut: expensesTotal,
+    expectedCash: openingCash + cashIn - expensesTotal };
+}
+
 // ============================================================================
 // DASHBOARD
 // ============================================================================

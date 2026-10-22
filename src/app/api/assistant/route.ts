@@ -355,10 +355,13 @@ const tools = [
     type: 'function',
     function: {
       name: 'prepare_shift_close',
-      description: 'HANYA owner. Siapkan draf TUTUP SHIFT dan serah terima jika owner jelas memerintahkan. Tidak menyimpan apa pun sebelum konfirmasi.',
+      description: 'HANYA owner. Siapkan draf TUTUP SHIFT dan serah terima jika owner jelas memerintahkan. Bila owner menyebut kas fisik hasil hitung, isi actualCash. Tidak menyimpan apa pun sebelum konfirmasi.',
       parameters: {
         type: 'object',
-        properties: { note: { type: 'string', description: 'Catatan serah terima bila ada.' } },
+        properties: {
+          note: { type: 'string', description: 'Catatan serah terima bila ada.' },
+          actualCash: { type: 'number', description: 'Kas fisik di laci (rupiah) bila owner menyebutkannya.' },
+        },
         additionalProperties: false,
       },
     },
@@ -486,7 +489,7 @@ ATURAN TEGAS:
 - Untuk penjualan baru, gunakan prepare_sale_create hanya setelah nama barang dan jumlah terjual jelas. Untuk koreksi, gunakan prepare_sale_edit hanya bila transaksi yang dimaksud jelas; daftar transaksi terbaru tersedia sebagai konteks. Kirim hanya barang yang berubah; barang lain otomatis dipertahankan. qty 0 berarti hapus barang dari transaksi. Jika ragu, tanya nomor transaksi atau barangnya.
 - Fungsi penjualan hanya menyiapkan draf. Jangan pernah berkata sudah mencatat atau mengubah penjualan. Database hanya berubah setelah pengguna memeriksa draf dan menekan tombol konfirmasi. Jangan memilih harga sendiri atau mengubah transaksi lain.
 - Selisih stok tetap menjadi catatan untuk owner. Jangan mengubah stok aplikasi, harga, transaksi, atau data lain di luar draf yang dikonfirmasi owner.
-- HANYA bila pengguna adalah owner: owner dapat meminta menambah atau mengubah barang katalog lewat prepare_catalog_create dan prepare_catalog_update. Selain itu owner juga dapat meminta: hapus barang (prepare_catalog_delete), ubah harga massal (prepare_price_bulk), barang masuk berikut modal (prepare_stock_in), koreksi stok (prepare_stock_adjust), mencatat/menerapkan/menandai/menghapus hasil opname (prepare_opname_record, prepare_opname_apply, prepare_opname_review, prepare_opname_delete), hapus bon (prepare_debt_delete), pengeluaran (prepare_expense), biaya admin/jasa (prepare_service), tutup shift/serah terima (prepare_shift_close), merapikan katalog (prepare_catalog_audit), serta mengelola kategori & subkategori: tambah/ganti nama/hapus kategori (prepare_category_create, prepare_category_rename, prepare_category_delete) dan tambah/ganti nama/hapus subkategori (prepare_subcategory_create, prepare_subcategory_rename, prepare_subcategory_delete). Kategori hanya bisa dihapus bila belum dipakai barang. Pakai fungsi-fungsi itu hanya bila owner dengan jelas memerintahkan dan nilainya sudah disebut. Jangan pernah bertindak atas inisiatif sendiri, mengarang harga/nilai, atau menebak; jika ada yang belum disebut, tanyakan dulu.
+- HANYA bila pengguna adalah owner: owner dapat meminta menambah atau mengubah barang katalog lewat prepare_catalog_create dan prepare_catalog_update. Selain itu owner juga dapat meminta: hapus barang (prepare_catalog_delete), ubah harga massal (prepare_price_bulk), barang masuk berikut modal (prepare_stock_in), koreksi stok (prepare_stock_adjust), mencatat/menerapkan/menandai/menghapus hasil opname (prepare_opname_record, prepare_opname_apply, prepare_opname_review, prepare_opname_delete), hapus bon (prepare_debt_delete), pengeluaran (prepare_expense), biaya admin/jasa (prepare_service), tutup shift/serah terima (prepare_shift_close; isi actualCash bila owner menyebut kas fisik hasil hitung), merapikan katalog (prepare_catalog_audit), serta mengelola kategori & subkategori: tambah/ganti nama/hapus kategori (prepare_category_create, prepare_category_rename, prepare_category_delete) dan tambah/ganti nama/hapus subkategori (prepare_subcategory_create, prepare_subcategory_rename, prepare_subcategory_delete). Kategori hanya bisa dihapus bila belum dipakai barang. Pakai fungsi-fungsi itu hanya bila owner dengan jelas memerintahkan dan nilainya sudah disebut. Jangan pernah bertindak atas inisiatif sendiri, mengarang harga/nilai, atau menebak; jika ada yang belum disebut, tanyakan dulu.
 - HANYA owner: owner dapat menyuruhmu MENGINGAT hal penting lewat prepare_memory (istilah khas toko, cara bicara/sapaan, preferensi/aturan toko) dan MELUPAKAN lewat prepare_memory_forget. Simpan hanya yang jelas disebut owner dan hanya setelah owner menekan konfirmasi. Gunakan “Memori owner” di konteks untuk menafsirkan perintah dengan tepat, tetapi jangan mengarang memori atau menampilkannya sebagai aturan baru bila tidak diminta. Bila owner bertanya memori apa yang kamu ingat, sebutkan dari daftar Memori owner (sertakan ID-nya).
 - Pengguna karyawan hanya boleh menyiapkan bon lewat prepare_debt_create dan prepare_debt_pay. Aksi owner lainnya tidak tersedia untuk karyawan; jangan mencoba memakainya dan arahkan ke owner.
 - Semua fungsi “prepare_…” hanya menyiapkan draf dan tidak menyimpan apa pun. Data baru berubah setelah pengguna memeriksa draf dan menekan tombol konfirmasi. Jangan berkata sudah menyimpan/mengubah/menghapus, dan jangan menjanjikan perubahan yang belum dikonfirmasi.
@@ -995,6 +998,14 @@ async function buildGenericDraft(
     const payload: Record<string, unknown> = {};
     if (note.value) payload.note = note.value;
     lines.push({ label: 'Catatan', value: note.value ?? '—' });
+    if (args.actualCash !== undefined) {
+      const actual = args.actualCash;
+      if (typeof actual !== 'number' || !Number.isSafeInteger(actual) || actual < 0 || actual > 1_000_000_000_000) {
+        return issue('Kas fisik yang disebut belum berupa angka rupiah yang jelas.');
+      }
+      payload.actualCash = actual;
+      lines.push({ label: 'Kas fisik', value: formatIDR(BigInt(actual)) });
+    }
     return { draft: { action: 'shift.close', title: 'Draf tutup shift', lines, payload }, issue: null };
   }
 

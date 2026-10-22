@@ -3,6 +3,7 @@ import { TransaksiClient } from './transaksi-client';
 import { prisma } from '@/lib/prisma';
 import { endOfDay, startOfDay, toDateInputLocal } from '@/lib/utils';
 import { requireUser } from '@/lib/guard';
+import { computeShiftCash } from '@/lib/automation';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +24,7 @@ export default async function TransaksiPage({
     ? { createdAt: { gte: dayStart, lte: dayEnd }, user: { shift: shiftFilter } }
     : { createdAt: { gte: dayStart, lte: dayEnd } };
 
-  const [products, sales, services, expenses, closingChecks] = await Promise.all([
+  const [products, sales, services, expenses, closingChecks, shiftCash] = await Promise.all([
     prisma.product.findMany({
       where: { stock: { gt: 0 } },
       include: { category: true, subcategory: true },
@@ -49,6 +50,9 @@ export default async function TransaksiPage({
           where: { userId: me.id, createdAt: { gte: startOfDay() }, note: 'Cek stok tutup shift' },
         })
       : Promise.resolve(1),
+    me.role === 'karyawan'
+      ? computeShiftCash(me.id, startOfDay(), new Date())
+      : Promise.resolve({ openingCash: 0n, cashIn: 0n, cashOut: 0n, expectedCash: 0n }),
   ]);
 
   // Hitung ringkasan harian otomatis
@@ -78,6 +82,7 @@ export default async function TransaksiPage({
         userId={me.id}
         isKaryawan={me.role === 'karyawan'}
         hasClosingStockCheck={closingChecks > 0}
+        shiftCash={{ openingCash: Number(shiftCash.openingCash), cashIn: Number(shiftCash.cashIn), cashOut: Number(shiftCash.cashOut), expectedCash: Number(shiftCash.expectedCash) }}
         date={dateStr}
         shift={shiftFilter}
         summary={{

@@ -247,6 +247,12 @@ model ShiftClosure {
   servicesCount Int      @default(0)
   servicesProfit BigInt  @default(0)
   expensesTotal BigInt   @default(0)
+  openingCash   BigInt   @default(0) // kas seharusnya di awal shift
+  cashIn        BigInt   @default(0) // uang masuk selama shift (penjualan + jasa + bon)
+  cashOut       BigInt   @default(0) // uang keluar selama shift (pengeluaran)
+  expectedCash  BigInt   @default(0) // openingCash + cashIn - cashOut
+  actualCash    BigInt?  // kas fisik hasil hitung karyawan
+  cashDifference BigInt? // actualCash - expectedCash
   openingStockCount Int  @default(0)
   closingStockCount Int  @default(0)
   stockDiscrepancyCount Int @default(0)
