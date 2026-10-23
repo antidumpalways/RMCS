@@ -7,7 +7,7 @@ import {
   addDebtPayment, addStock, adjustStock, applyCatalogCleanup, applyStockOpname, bulkUpdatePrices,
   closeShift, createCategory, createDebt, createSubcategory, deleteCategory, deleteDebt,
   deleteProduct, deleteStockOpname, deleteSubcategory, markStockOpnameReviewed, recordBiayaAdmin,
-  recordExpense, recordStockOpname, renameCategory, renameSubcategory,
+  recordExpense, recordSaleReturn, recordStockOpname, renameCategory, renameSubcategory,
 } from '@/lib/actions';
 import type { CatalogCleanupInput } from '@/lib/actions';
 
@@ -174,6 +174,25 @@ async function shiftClose(payload: Record<string, unknown>) {
   return { ok: true as const, message: `Shift ditutup: ${result.salesCount} penjualan, ${result.servicesCount} jasa. ${cash} Serah terima diperbarui.` };
 }
 
+async function saleReturn(payload: Record<string, unknown>) {
+  const saleId = positiveId(payload.saleId);
+  const rawItems = payload.items;
+  if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > 100) {
+    throw new Error('Tidak ada barang retur yang valid.');
+  }
+  const items = rawItems.map((raw) => {
+    const entry = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const productId = positiveId(entry.productId);
+    const qty = entry.qty;
+    if (!Number.isSafeInteger(qty) || (qty as number) <= 0 || (qty as number) > 1_000_000) {
+      throw new Error('Jumlah barang retur tidak valid.');
+    }
+    return { productId, qty: qty as number };
+  });
+  const result = await recordSaleReturn({ saleId, items, reason: optionalText(payload.reason, 200) });
+  return { ok: true as const, message: `Retur penjualan #${saleId} dicatat. Dana kembali ${formatIDR(-result.refund)}; stok barang diretur bertambah.` };
+}
+
 async function catalogCleanup(payload: Record<string, unknown>) {
   const operations = payload.operations;
   if (!Array.isArray(operations) || operations.length < 1) throw new Error('Tidak ada perbaikan untuk diterapkan.');
@@ -282,6 +301,7 @@ export async function applyAssistantDraft(input: { action?: unknown; payload?: u
     case 'subcategory.create': return subcategoryCreate(payload);
     case 'subcategory.rename': return subcategoryRename(payload);
     case 'subcategory.delete': return subcategoryDelete(payload);
+    case 'sale.return': return saleReturn(payload);
     case 'price.bulk': return bulkPrice(payload);
     case 'stock.in': return stockIn(payload);
     case 'stock.adjust': return stockAdjust(payload);

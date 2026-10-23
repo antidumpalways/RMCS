@@ -6,7 +6,14 @@ import { toBigIntSafe } from '@/lib/utils';
 import { getCurrentUser } from '@/lib/auth';
 import { jakartaTodayBounds, saleSnapshotSignature } from '@/lib/sale-chat';
 import { catalogProductSignature } from '@/lib/catalog-chat';
-import { cashOnHandAt } from '@/lib/automation';
+import { shiftOpening } from '@/lib/automation';
+
+// Aksi yang hanya boleh dijalankan owner. Ditegakkan di server, bukan hanya UI.
+async function requireOwner() {
+  const me = await getCurrentUser();
+  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat melakukan ini.');
+  return me;
+}
 
 function optionalCash(value: string | number | null | undefined): bigint | null {
   if (value === null || value === undefined) return null;
@@ -20,6 +27,7 @@ function optionalCash(value: string | number | null | undefined): bigint | null 
 // CATEGORIES
 // ============================================================================
 export async function createCategory(name: string) {
+  await requireOwner();
   if (!name.trim()) return;
   await prisma.category.create({ data: { name: name.trim() } });
   revalidatePath('/inventory');
@@ -27,6 +35,7 @@ export async function createCategory(name: string) {
 }
 
 export async function renameCategory(id: number, name: string) {
+  await requireOwner();
   const trimmed = name.trim();
   if (!trimmed) throw new Error('Nama kategori wajib diisi.');
   await prisma.category.update({ where: { id }, data: { name: trimmed } });
@@ -36,6 +45,7 @@ export async function renameCategory(id: number, name: string) {
 }
 
 export async function deleteCategory(id: number) {
+  await requireOwner();
   // CASCADE subcategory & product (pastikan tak ada history)
   await prisma.category.delete({ where: { id } });
   revalidatePath('/inventory');
@@ -45,6 +55,7 @@ export async function deleteCategory(id: number) {
 // LOCATIONS - custom (admin CRUD)
 // ============================================================================
 export async function createLocation(name: string) {
+  await requireOwner();
   if (!name.trim()) throw new Error('Nama lokasi wajib diisi');
   // sortOrder = max + 1
   const last = await prisma.location.findFirst({ orderBy: { sortOrder: 'desc' } });
@@ -56,6 +67,7 @@ export async function createLocation(name: string) {
 }
 
 export async function deleteLocation(id: number) {
+  await requireOwner();
   // SetNull on product.locationId (sudah di schema)
   await prisma.location.delete({ where: { id } });
   revalidatePath('/pengaturan');
@@ -67,12 +79,14 @@ export async function deleteLocation(id: number) {
 // SUBCATEGORIES
 // ============================================================================
 export async function createSubcategory(categoryId: number, name: string) {
+  await requireOwner();
   if (!name.trim()) return;
   await prisma.subcategory.create({ data: { categoryId, name: name.trim() } });
   revalidatePath('/inventory');
 }
 
 export async function renameSubcategory(id: number, name: string) {
+  await requireOwner();
   const trimmed = name.trim();
   if (!trimmed) throw new Error('Nama subkategori wajib diisi.');
   await prisma.subcategory.update({ where: { id }, data: { name: trimmed } });
@@ -80,6 +94,7 @@ export async function renameSubcategory(id: number, name: string) {
 }
 
 export async function deleteSubcategory(id: number) {
+  await requireOwner();
   await prisma.subcategory.delete({ where: { id } });
   revalidatePath('/inventory');
 }
@@ -99,6 +114,7 @@ export async function createProduct(data: {
   stock: number;
   minStock: number;
 }) {
+  await requireOwner();
   const product = await prisma.product.create({
     data: {
       name: data.name.trim(),
@@ -144,6 +160,7 @@ export async function updateProduct(
     minStock: number;
   }
 ) {
+  await requireOwner();
   await prisma.product.update({
     where: { id },
     data: {
@@ -172,9 +189,9 @@ export async function adjustStock(data: {
   newStock: number;
   note: string;
 }) {
+  const me = await requireOwner();
   if (data.newStock < 0) throw new Error('Stok tidak boleh negatif');
   if (!data.note.trim()) throw new Error('Catatan koreksi wajib diisi');
-  const me = await getCurrentUser();
   await prisma.$transaction(async (tx) => {
     const product = await tx.product.findUniqueOrThrow({ where: { id: data.productId } });
     const diff = data.newStock - product.stock;
@@ -202,6 +219,7 @@ export async function adjustStock(data: {
 }
 
 export async function deleteProduct(id: number) {
+  await requireOwner();
   await prisma.product.delete({ where: { id } });
   revalidatePath('/inventory');
   revalidatePath('/');
@@ -406,8 +424,8 @@ export async function addStock(data: {
   supplier?: string;
   note?: string;
 }) {
+  const me = await requireOwner();
   if (data.qty <= 0) return;
-  const me = await getCurrentUser();
   const costPerUnit = toBigIntSafe(data.costPerUnit);
   if (costPerUnit < 0n) throw new Error('Harga beli tidak boleh negatif');
   await prisma.$transaction(async (tx) => {
@@ -447,6 +465,7 @@ export async function bulkUpdatePrices(data: {
   marginPercent: number;
   scope: 'all' | 'category' | 'subcategory';
 }) {
+  await requireOwner();
   if (data.marginPercent < 0 || data.marginPercent > 1000) {
     throw new Error('Margin harus 0-1000%');
   }
@@ -536,6 +555,7 @@ export async function addDebtPayment(data: { debtId: number; amount: number | st
 }
 
 export async function deleteDebt(id: number) {
+  await requireOwner();
   await prisma.debt.delete({ where: { id } });
   revalidatePath('/piutang');
 }
@@ -556,11 +576,10 @@ export async function closeShift(input: {
   if (!shiftName) {
     // user tanpa shift (mis. admin) -> pakai "all" sebagai label
   }
-  // Tentukan range waktu shift
+  // Tentukan range waktu shift (lanjutan dari penutupan shift sebelumnya)
   const now = new Date();
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-  const shiftStart = todayStart;
+  const opening = await shiftOpening(now);
+  const shiftStart = opening.start;
   const shiftEnd = now;
 
   const [sales, services, expenses, debtPayments, stockChecks] = await Promise.all([
@@ -604,7 +623,7 @@ export async function closeShift(input: {
   const servicesProfit = services.reduce((a, s) => a + s.profit, 0n);
   const expensesTotal = expenses.reduce((a, e) => a + e.amount, 0n);
   const debtTotal = debtPayments._sum.amount ?? 0n;
-  const openingCash = optionalCash(input.openingCash) ?? await cashOnHandAt(shiftStart);
+  const openingCash = optionalCash(input.openingCash) ?? opening.openingCash;
   const cashIn = salesRevenue + servicesProfit + debtTotal;
   const cashOut = expensesTotal;
   const expectedCash = openingCash + cashIn - cashOut;
@@ -857,6 +876,90 @@ export async function recordCartSale(items: { productId: number; qty: number }[]
   }
 }
 
+// Retur barang: boleh lintas shift. Stok kembali, omzet/kas/profit dikurangi
+// lewat transaksi bernilai negatif yang tertaut ke penjualan asal.
+export async function recordSaleReturn(input: {
+  saleId: number;
+  items: { productId: number; qty: number }[];
+  reason?: string | null;
+}) {
+  const me = await getCurrentUser();
+  if (!me) throw new Error('Sesi berakhir. Silakan masuk kembali.');
+  if (!Number.isSafeInteger(input.saleId) || input.saleId <= 0) {
+    throw new Error('Penjualan asal tidak valid. Minta asisten menyiapkan ulang.');
+  }
+  if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > 100) {
+    throw new Error('Pilih 1–100 jenis barang untuk diretur.');
+  }
+  const quantities = new Map<number, number>();
+  for (const item of input.items) {
+    if (!item || !Number.isSafeInteger(item.productId) || item.productId <= 0 ||
+        !Number.isSafeInteger(item.qty) || item.qty <= 0 || item.qty > 1_000_000) {
+      throw new Error('Jumlah barang retur harus berupa angka bulat yang valid.');
+    }
+    const qty = (quantities.get(item.productId) ?? 0) + item.qty;
+    if (qty > 1_000_000) throw new Error('Jumlah barang retur terlalu besar.');
+    quantities.set(item.productId, qty);
+  }
+  const result = await prisma.$transaction(async (tx) => {
+    // Kunci penjualan asal agar dua retur bersamaan tidak melebihi jumlah terjual.
+    await tx.$queryRaw`SELECT "id" FROM "SaleTransaction" WHERE "id" = ${input.saleId} FOR UPDATE`;
+    const sale = await tx.saleTransaction.findUnique({ where: { id: input.saleId }, include: { items: true } });
+    if (!sale || sale.kind !== 'SALE') throw new Error('Penjualan asal tidak ditemukan.');
+    const priorReturns = await tx.saleTransaction.findMany({
+      where: { returnOfId: sale.id, kind: 'RETURN' },
+      include: { items: true },
+    });
+    const alreadyReturned = new Map<number, number>();
+    for (const ret of priorReturns) {
+      for (const item of ret.items) {
+        alreadyReturned.set(item.productId, (alreadyReturned.get(item.productId) ?? 0) + Math.abs(item.qty));
+      }
+    }
+    const sold = new Map(sale.items.map((item) => [item.productId, item]));
+    const lines: { productId: number; qty: number; priceAtSale: bigint; costAtSale: bigint; revenue: bigint; profit: bigint }[] = [];
+    let totalRevenue = 0n;
+    let totalProfit = 0n;
+    for (const [productId, qty] of quantities) {
+      const item = sold.get(productId);
+      if (!item) throw new Error('Ada barang yang tidak ada di penjualan asal.');
+      const remaining = item.qty - (alreadyReturned.get(productId) ?? 0);
+      if (qty > remaining) {
+        throw new Error(`Jumlah retur melebihi sisa yang bisa diretur (sisa ${Math.max(remaining, 0)}).`);
+      }
+      const refund = item.priceAtSale * BigInt(qty);
+      const profitReversal = (item.priceAtSale - item.costAtSale) * BigInt(qty);
+      totalRevenue -= refund;
+      totalProfit -= profitReversal;
+      await tx.product.update({ where: { id: productId }, data: { stock: { increment: qty } } });
+      await tx.inventoryMovement.create({
+        data: {
+          productId,
+          type: 'RETURN',
+          qty,
+          costAtTime: item.costAtSale,
+          note: input.reason?.trim() ? `Retur: ${input.reason.trim()}` : 'Retur penjualan',
+          userId: me.id,
+        },
+      });
+      lines.push({
+        productId,
+        qty: -qty,
+        priceAtSale: item.priceAtSale,
+        costAtSale: item.costAtSale,
+        revenue: -refund,
+        profit: -profitReversal,
+      });
+    }
+    return tx.saleTransaction.create({
+      data: { kind: 'RETURN', returnOfId: sale.id, userId: me.id, totalRevenue, totalProfit, items: { create: lines } },
+      select: { id: true, totalRevenue: true },
+    });
+  });
+  for (const path of ['/', '/transaksi', '/inventory', '/harga', '/laporan']) revalidatePath(path);
+  return { success: true as const, returnId: result.id, refund: result.totalRevenue };
+}
+
 export async function replaceSaleFromChat(input: {
   saleId: number;
   expectedSignature: string;
@@ -883,7 +986,7 @@ export async function replaceSaleFromChat(input: {
     // Kunci header agar dua koreksi atas penjualan yang sama tidak saling menimpa.
     await tx.$queryRaw`SELECT "id" FROM "SaleTransaction" WHERE "id" = ${input.saleId} FOR UPDATE`;
     const sale = await tx.saleTransaction.findUnique({ where: { id: input.saleId }, include: { items: true } });
-    if (!sale) throw new Error('Penjualan tidak ditemukan.');
+    if (!sale || sale.kind !== 'SALE') throw new Error('Penjualan tidak ditemukan.');
     if (me.role !== 'owner' && sale.userId !== me.id) throw new Error('Anda hanya bisa mengoreksi penjualan sendiri.');
     const { start, end } = jakartaTodayBounds();
     if (sale.createdAt < start || sale.createdAt >= end) throw new Error('Chat hanya bisa mengoreksi penjualan hari ini.');
@@ -1031,6 +1134,7 @@ export async function updateSettings(data: {
   balanceInitial: number | string;
   theme: string;
 }) {
+  await requireOwner();
   await prisma.settings.upsert({
     where: { id: 1 },
     update: {

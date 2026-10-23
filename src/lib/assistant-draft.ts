@@ -11,6 +11,7 @@ export type AssistantAction =
   | 'subcategory.create'
   | 'subcategory.rename'
   | 'subcategory.delete'
+  | 'sale.return'
   | 'price.bulk'
   | 'stock.in'
   | 'stock.adjust'
@@ -40,7 +41,7 @@ const ASSISTANT_ACTIONS: readonly AssistantAction[] = [
   'catalog.delete', 'catalog.cleanup',
   'category.create', 'category.rename', 'category.delete',
   'subcategory.create', 'subcategory.rename', 'subcategory.delete',
-  'price.bulk', 'stock.in', 'stock.adjust',
+  'sale.return', 'price.bulk', 'stock.in', 'stock.adjust',
   'opname.record', 'opname.apply', 'opname.review', 'opname.delete',
   'debt.create', 'debt.pay', 'debt.delete',
   'expense.create', 'service.create', 'shift.close',
@@ -64,8 +65,9 @@ export function isAssistantAction(value: unknown): value is AssistantAction {
   return typeof value === 'string' && (ASSISTANT_ACTIONS as readonly string[]).includes(value);
 }
 
-// Karyawan hanya boleh menyiapkan/menjalankan aksi bon; sisanya khusus owner.
-export const EMPLOYEE_ALLOWED_ACTIONS: readonly AssistantAction[] = ['debt.create', 'debt.pay'];
+// Karyawan boleh mencatat bon, pembayaran bon, dan retur barang (termasuk
+// lintas shift); sisanya khusus owner.
+export const EMPLOYEE_ALLOWED_ACTIONS: readonly AssistantAction[] = ['debt.create', 'debt.pay', 'sale.return'];
 
 export function actionRequiresOwner(action: AssistantAction) {
   return !EMPLOYEE_ALLOWED_ACTIONS.includes(action);

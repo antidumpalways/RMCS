@@ -190,9 +190,30 @@ export async function cashOnHandAt(date: Date) {
   );
 }
 
+// Awal shift: bila shift sebelumnya sudah ditutup dengan kas fisik, lanjutkan
+// dari angka itu (bukan dari posisi kas jam 00:00) agar shift 1 -> shift 2 nyambung.
+export async function shiftOpening(now: Date = new Date()) {
+  const todayStart = startOfDay(now);
+  const previous = await prisma.shiftClosure.findFirst({
+    where: { closedAt: { lte: now }, actualCash: { not: null } },
+    orderBy: [{ closedAt: 'desc' }, { id: 'desc' }],
+    select: { closedAt: true, actualCash: true },
+  });
+  const actual = previous?.actualCash ?? null;
+  if (!previous || actual === null) {
+    return { start: todayStart, openingCash: await cashOnHandAt(todayStart) };
+  }
+  const start = previous.closedAt > todayStart ? previous.closedAt : todayStart;
+  const gap = start > previous.closedAt
+    ? await cashOnHandAt(start) - await cashOnHandAt(previous.closedAt)
+    : 0n;
+  return { start, openingCash: actual + gap };
+}
+
 // Rekap kas tanggung jawab satu karyawan dalam rentang shift.
-export async function computeShiftCash(userId: number, from: Date, to: Date) {
-  const openingCash = await cashOnHandAt(from);
+export async function computeShiftCash(userId: number, now: Date = new Date()) {
+  const { start: from, openingCash } = await shiftOpening(now);
+  const to = now;
   const where = { createdAt: { gte: from, lte: to }, userId };
   const [sales, services, debtPayments, expenses] = await Promise.all([
     prisma.saleTransaction.aggregate({ where, _sum: { totalRevenue: true } }),

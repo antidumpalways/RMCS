@@ -292,8 +292,12 @@ model StockOpname {
 // ============================================================================
 model SaleTransaction {
   id        Int        @id @default(autoincrement())
+  kind      String     @default("SALE") // SALE | RETURN (retur mengurangi omzet & kas)
   totalRevenue BigInt  @default(0) // Omzet (sum sellPrice * qty)
   totalProfit  BigInt  @default(0) // Profit (sum (sellPrice-costPrice) * qty)
+  returnOfId   Int?
+  returnOf     SaleTransaction?  @relation("SaleReturns", fields: [returnOfId], references: [id], onDelete: SetNull)
+  returns      SaleTransaction[] @relation("SaleReturns")
   userId       Int?
   user         User?     @relation(fields: [userId], references: [id])
   createdAt    DateTime @default(now())
@@ -301,6 +305,7 @@ model SaleTransaction {
 
   @@index([createdAt])
   @@index([userId])
+  @@index([returnOfId])
 }
 
 model SaleItem {

@@ -51,7 +51,7 @@ export default async function TransaksiPage({
         })
       : Promise.resolve(1),
     me.role === 'karyawan'
-      ? computeShiftCash(me.id, startOfDay(), new Date())
+      ? computeShiftCash(me.id)
       : Promise.resolve({ openingCash: 0n, cashIn: 0n, cashOut: 0n, expectedCash: 0n }),
   ]);
 
@@ -92,7 +92,7 @@ export default async function TransaksiPage({
           serviceProfit,
           serviceCount,
           totalExpense,
-          salesCount: sales.length,
+          salesCount: sales.filter((s) => s.kind === 'SALE').length,
           servicesCount: services.length,
           expensesCount: expenses.length,
         }}
@@ -110,6 +110,7 @@ export default async function TransaksiPage({
         }))}
         sales={sales.map((s) => ({
           id: s.id,
+          kind: s.kind === 'RETURN' ? ('RETURN' as const) : ('SALE' as const),
           createdAt: s.createdAt.toISOString(),
           totalRevenue: Number(s.totalRevenue),
           totalProfit: Number(s.totalProfit),

@@ -10,7 +10,7 @@ import { WorkEntry, FinishShift } from '@/components/work-actions';
 import { ShiftBadge } from '@/components/shift-badge';
 import { cn, formatRupiah, formatDateTimeID, toDateInputLocal } from '@/lib/utils';
 
-type Sale = { id: number; createdAt: string; totalRevenue: number; totalProfit: number; userShift: string | null; userName: string | null; items: { productName: string; qty: number; priceAtSale: number }[] };
+type Sale = { id: number; kind: 'SALE' | 'RETURN'; createdAt: string; totalRevenue: number; totalProfit: number; userShift: string | null; userName: string | null; items: { productName: string; qty: number; priceAtSale: number }[] };
 type Service = { id: number; createdAt: string; count: number; profit: number; userShift: string | null; userName: string | null };
 type Expense = { id: number; createdAt: string; name: string; amount: number; userShift: string | null; userName: string | null };
 type Summary = { totalRevenue: bigint; totalProfit: bigint; serviceRevenue: bigint; serviceProfit: bigint; serviceCount: number; totalExpense: bigint; salesCount: number; servicesCount: number; expensesCount: number };
@@ -27,7 +27,7 @@ export function TransaksiClient({ isKaryawan, hasClosingStockCheck, shiftCash, u
     router.push(`/transaksi?${params}`);
   };
   const activity = [
-    ...sales.map((sale) => ({ key: `sale-${sale.id}`, type: 'sale' as const, title: sale.items.map((item) => `${item.productName} × ${item.qty}`).join(', '), subtitle: 'Penjualan', date: sale.createdAt, amount: sale.totalRevenue, userName: sale.userName, userShift: sale.userShift })),
+    ...sales.map((sale) => ({ key: `sale-${sale.id}`, type: sale.kind === 'RETURN' ? 'expense' as const : 'sale' as const, title: sale.items.map((item) => `${item.productName} × ${Math.abs(item.qty)}`).join(', '), subtitle: sale.kind === 'RETURN' ? 'Retur' : 'Penjualan', date: sale.createdAt, amount: sale.kind === 'RETURN' ? Math.abs(sale.totalRevenue) : sale.totalRevenue, userName: sale.userName, userShift: sale.userShift })),
     ...services.map((service) => ({ key: `service-${service.id}`, type: 'service' as const, title: `${service.count} transaksi jasa`, subtitle: 'Biaya admin', date: service.createdAt, amount: service.profit, userName: service.userName, userShift: service.userShift })),
     ...expenses.map((expense) => ({ key: `expense-${expense.id}`, type: 'expense' as const, title: expense.name, subtitle: 'Pengeluaran', date: expense.createdAt, amount: expense.amount, userName: expense.userName, userShift: expense.userShift })),
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());

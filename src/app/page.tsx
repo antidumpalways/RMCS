@@ -26,7 +26,7 @@ export default async function HomePage() {
       prisma.stockOpname.count({
         where: { userId: me.id, createdAt: { gte: startOfDay() }, note: 'Cek stok tutup shift' },
       }),
-      computeShiftCash(me.id, startOfDay(), new Date()),
+      computeShiftCash(me.id),
     ]);
     return <><AppHeader user={me} /><WorkbenchClient
       username={me.username} userId={me.id} shift={me.shift}
@@ -37,12 +37,16 @@ export default async function HomePage() {
       recentSales={recentSales.map((sale) => ({ id: sale.id, createdAt: sale.createdAt.toISOString(), items: sale.items.map((item) => ({ name: item.product.name, qty: item.qty })) }))}
     /></>;
   }
-  const data = await computeDashboard().catch(() => null);
+  const [data, pendingOpname] = await Promise.all([
+    computeDashboard().catch(() => null),
+    prisma.stockOpname.count({ where: { diff: { not: 0 }, reviewStatus: 'PENDING' } }).catch(() => 0),
+  ]);
   return (
     <>
       <AppHeader user={me} />
       <DashboardClient
         isKaryawan={false}
+        pendingOpname={pendingOpname}
         data={
           data ?? {
             totalModal: 0n,

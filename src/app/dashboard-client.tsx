@@ -12,6 +12,7 @@ import {
   TrendingUp,
   TrendingDown,
   AlertTriangle,
+  ClipboardCheck,
   ShoppingBag,
   CheckCircle2,
   XCircle,
@@ -35,6 +36,7 @@ const SalesChart = dynamic(
 type Props = {
   data: DashboardSummary;
   isKaryawan: boolean;
+  pendingOpname?: number;
 };
 
 function StatCard({
@@ -77,7 +79,7 @@ function MaskedValue({ isKaryawan, value }: { isKaryawan: boolean; value: number
   );
 }
 
-export function DashboardClient({ data, isKaryawan }: Props) {
+export function DashboardClient({ data, isKaryawan, pendingOpname = 0 }: Props) {
   const totalSaldo = data.cash + data.totalSaldo;
 
   const chartData = data.grafikPenjualan.map((g) => ({
@@ -95,6 +97,30 @@ export function DashboardClient({ data, isKaryawan }: Props) {
         <h1 className="text-xl font-bold">Dashboard</h1>
         <p className="text-xs text-muted-foreground">Read-only • Otomatis dihitung sistem</p>
       </div>
+
+      {/* ALERT OPNAME - selisih stok dari karyawan yang belum ditinjau owner */}
+      {!isKaryawan && pendingOpname > 0 && (
+        <Link href="/opname">
+          <Card className="cursor-pointer border-amber-300 bg-amber-50 transition-colors hover:bg-amber-100 dark:border-amber-900 dark:bg-amber-950/30">
+            <CardContent className="flex items-center justify-between p-3">
+              <div className="flex items-center gap-2">
+                <ClipboardCheck className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+                <div>
+                  <div className="text-sm font-bold text-amber-700 dark:text-amber-300">
+                    {pendingOpname} selisih opname belum ditinjau
+                  </div>
+                  <div className="text-[10px] text-amber-600/80 dark:text-amber-400/80">
+                    Dilaporkan karyawan saat cek stok shift
+                  </div>
+                </div>
+              </div>
+              <span className="rounded-full bg-amber-600 px-2.5 py-0.5 text-xs font-bold text-white">
+                Tinjau →
+              </span>
+            </CardContent>
+          </Card>
+        </Link>
+      )}
 
       {/* ALERT STOK - tampil untuk semua role (info operasional) */}
       {(hasOut || hasLow) && (
