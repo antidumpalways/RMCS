@@ -122,18 +122,6 @@ function formatCatalogValue(label: string, value: string) {
   return label.startsWith('Harga') && /^\d+$/.test(value) ? formatRupiah(BigInt(value)) : value;
 }
 
-function saleQuantityFromQuery(query: string): number | null {
-  if (!/\b(?:laku|jual|terjual|kejual)\b/i.test(query)) return null;
-  if (query.length > 180 || /[\n;,]|\s+dan\s+/i.test(query) ||
-      [...query.matchAll(/\b(?:laku|jual|terjual|kejual)\b/gi)].length !== 1) return null;
-  const withUnit = [...query.matchAll(/\b(\d{1,7})\s*(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\b|\b(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\s*(\d{1,7})\b/gi)];
-  const matches = withUnit.length ? withUnit
-    : [...query.matchAll(/\b(?:laku|jual|terjual|kejual)\s+(\d{1,7})\b(?!\s*(?:ribu|rb|rupiah|rp)\b)/gi)];
-  if (matches.length !== 1) return null;
-  const qty = Number(matches[0][1] ?? matches[0][2]);
-  return Number.isSafeInteger(qty) && qty > 0 ? qty : null;
-}
-
 export function AssistantChat({ role, userId }: { role: string; userId: number }) {
   const router = useRouter();
   const [text, setText] = React.useState('');
@@ -211,7 +199,6 @@ export function AssistantChat({ role, userId }: { role: string; userId: number }
     const userLine: ChatLine = { id: crypto.randomUUID(), role: 'user', content: actualContent, image: sentImage || undefined };
     const next = [...lines, userLine];
     const pendingDraft = lines.some((line) => line.saleProposal || line.stockProposal || line.catalogProposal || line.draft);
-    const keepPendingDraft = pendingDraft && /^(?:betul|betul\s+itu|benar|iya|ya|yap|oke|ok|sip|cocok|itu\s+yang\s+benar)[.!\s]*$/i.test(actualContent);
     setLines(next);
     setText('');
     setImage(null);
@@ -237,10 +224,11 @@ export function AssistantChat({ role, userId }: { role: string; userId: number }
         audit?: AuditFinding[] | null;
         auditCounts?: Partial<Record<AuditFinding['kind'], number>> | null;
         canFeedback?: boolean;
+        preserveDraft?: boolean;
         error?: string;
       };
       if (!response.ok) throw new Error(result.error || 'Asisten sedang tidak tersedia.');
-      setLines((current) => [...current.map((line) => keepPendingDraft ||
+      setLines((current) => [...current.map((line) => result.preserveDraft ||
           (!line.saleProposal && !line.stockProposal && !line.catalogProposal && !line.draft) ? line : {
             ...line,
             content: `${line.content}\n\nDraf ini sudah digantikan. Tulis lagi jika masih ingin menjalankannya.`,
@@ -436,7 +424,7 @@ export function AssistantChat({ role, userId }: { role: string; userId: number }
             <p className="mt-1 text-xs text-muted-foreground">{[product.categoryName, product.provider, product.validity].filter(Boolean).join(' · ')}</p>
             <div className="mt-2 flex items-center justify-between gap-2"><strong className="text-primary">{formatRupiah(BigInt(product.sellPrice))}</strong><span className="text-xs text-muted-foreground">Stok {product.stock}</span></div>
             {product.matchConfidence !== 'exact' && <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">Kemungkinan cocok — periksa nama dan varian.</p>}
-            {line.query && saleQuantityFromQuery(line.query) && <Button type="button" size="sm" variant="outline" className="mt-3 min-h-11 w-full" disabled={busy || savingId !== null} onClick={() => void send(`Laku ${product.name} ${saleQuantityFromQuery(line.query!)} pcs`)}>Pakai untuk draf penjualan</Button>}
+            {line.query && <Button type="button" size="sm" variant="outline" className="mt-3 min-h-11 w-full" disabled={busy || savingId !== null} onClick={() => void send(`Barang yang saya maksud ${product.name}. Lanjutkan permintaan saya: ${line.query}`)}>Pilih barang ini</Button>}
             {line.query && !line.hasImage && !feedbackDone.includes(line.id) && <button type="button" className="mt-2 block text-xs text-primary underline" disabled={feedbackBusy !== null} onClick={() => void submitFeedback(line, product.id)}>Laporkan kecocokan ke owner</button>}
           </article>)}</div>}
           {line.canFeedback && line.query && !line.hasImage && (feedbackDone.includes(line.id)
