@@ -203,12 +203,14 @@ export function AssistantChat({ role, userId }: { role: string; userId: number }
 
   const send = async (value = text) => {
     const content = value.trim();
-    if ((!content && !image) || busy) return;
+    if ((!content && !image) || busy || savingRef.current) return;
     const actualContent = content || 'Barang apa ini? Tolong cari di katalog.';
     const sentImage = image;
     const photoTextPromise = photoTextRef.current;
     const userLine: ChatLine = { id: crypto.randomUUID(), role: 'user', content: actualContent, image: sentImage || undefined };
     const next = [...lines, userLine];
+    const pendingDraft = lines.some((line) => line.saleProposal || line.stockProposal || line.catalogProposal || line.draft);
+    const keepPendingDraft = pendingDraft && /^(?:betul|betul\s+itu|benar|iya|ya|yap|oke|ok|sip|cocok|itu\s+yang\s+benar)[.!\s]*$/i.test(actualContent);
     setLines(next);
     setText('');
     setImage(null);
@@ -222,7 +224,7 @@ export function AssistantChat({ role, userId }: { role: string; userId: number }
       const response = await fetch('/api/assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next.slice(-12).map(({ role: messageRole, content: messageContent }) => ({ role: messageRole, content: messageContent.slice(0, messageRole === 'user' ? 6000 : 2000) })), ...(sentImage ? { image: sentImage, ocrText } : {}) }),
+        body: JSON.stringify({ messages: next.slice(-12).map(({ role: messageRole, content: messageContent }) => ({ role: messageRole, content: messageContent.slice(0, messageRole === 'user' ? 6000 : 2000) })), pendingDraft, ...(sentImage ? { image: sentImage, ocrText } : {}) }),
       });
       const result = await response.json() as {
         message?: string;
@@ -237,7 +239,12 @@ export function AssistantChat({ role, userId }: { role: string; userId: number }
         error?: string;
       };
       if (!response.ok) throw new Error(result.error || 'Asisten sedang tidak tersedia.');
-      setLines((current) => [...current, {
+      setLines((current) => [...current.map((line) => keepPendingDraft ||
+          (!line.saleProposal && !line.stockProposal && !line.catalogProposal && !line.draft) ? line : {
+            ...line,
+            content: `${line.content}\n\nDraf ini sudah digantikan. Tulis lagi jika masih ingin menjalankannya.`,
+            saleProposal: null, stockProposal: null, catalogProposal: null, draft: null,
+          }), {
         id: crypto.randomUUID(),
         role: 'assistant',
         content: result.message || 'Saya belum bisa membantu untuk pertanyaan itu.',
@@ -438,7 +445,7 @@ export function AssistantChat({ role, userId }: { role: string; userId: number }
             <p className="text-xs font-semibold">Periksa draf cek stok {line.stockProposal.phase === 'buka' ? 'saat buka' : 'saat tutup'}</p>
             <div className="mt-2 max-h-44 space-y-1 overflow-y-auto">{line.stockProposal.items.map((item) => <div key={item.productId} className="flex justify-between gap-3 text-sm"><span className="min-w-0 truncate">{item.productName}</span><strong className="shrink-0">{item.physicalStock}</strong></div>)}</div>
             <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Cek nama barang dan jumlahnya. Hasil akan disimpan sebagai catatan; selisih tetap menunggu owner.</p>
-            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={savingId !== null} onClick={() => void confirmStock(line, line.stockProposal!)}>
+            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={busy || savingId !== null} onClick={() => void confirmStock(line, line.stockProposal!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> Simpan hasil hitung</>}
             </Button>
           </div>}
@@ -448,7 +455,7 @@ export function AssistantChat({ role, userId }: { role: string; userId: number }
             <div className="mt-2 space-y-2">{line.saleProposal.items.map((item) => <div key={item.productId} className="flex justify-between gap-3 text-sm"><span>{item.name} × {item.qty}<span className="block text-xs text-muted-foreground">Sisa stok {item.stockAfter} · laba {formatRupiah(BigInt(item.profit))}</span></span><span className="shrink-0 font-medium">{formatRupiah(BigInt(item.unitPrice) * BigInt(item.qty))}</span></div>)}</div>
             <div className="mt-2 space-y-1 border-t pt-2 text-right"><p className="font-semibold">Omzet {formatRupiah(BigInt(line.saleProposal.totalRevenue))}</p><p className="font-semibold text-emerald-700 dark:text-emerald-400">Perkiraan laba {formatRupiah(BigInt(line.saleProposal.totalProfit))} · margin {line.saleProposal.marginPercent}%</p></div>
             <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa semua barang dan jumlahnya. Setelah konfirmasi, stok berkurang dan omzet serta laba tercatat.</p>
-            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={savingId !== null} onClick={() => void confirmSale(line, line.saleProposal!)}>
+            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={busy || savingId !== null} onClick={() => void confirmSale(line, line.saleProposal!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> {line.saleProposal.kind === 'create' ? 'Konfirmasi penjualan' : 'Konfirmasi koreksi'}</>}
             </Button>
           </div>}
@@ -465,7 +472,7 @@ export function AssistantChat({ role, userId }: { role: string; userId: number }
               <div className="flex justify-between gap-3"><span className="text-muted-foreground">Stok minimal</span><span>{line.catalogProposal.fields.minStock}</span></div>
             </div>}
             <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa nama, kategori, dan nilainya. Katalog baru berubah setelah Anda menekan tombol ini.</p>
-            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={savingId !== null} onClick={() => void confirmCatalog(line, line.catalogProposal!)}>
+            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={busy || savingId !== null} onClick={() => void confirmCatalog(line, line.catalogProposal!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> {line.catalogProposal.kind === 'create' ? 'Konfirmasi tambah barang' : 'Konfirmasi ubah barang'}</>}
             </Button>
           </div>}
@@ -481,7 +488,7 @@ export function AssistantChat({ role, userId }: { role: string; userId: number }
             <p className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="h-4 w-4 text-amber-600 dark:text-amber-400" /> {line.draft.title}</p>
             <div className="mt-2 space-y-1 text-sm">{line.draft.lines.map((entry, index) => <div key={index} className="flex justify-between gap-3"><span className="text-muted-foreground">{entry.label}</span><strong className={entry.emphasis ? '' : 'font-medium'}>{entry.value}</strong></div>)}</div>
             <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa nilainya. Data baru berubah setelah Anda menekan tombol ini.</p>
-            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={savingId !== null} onClick={() => void confirmDraft(line, line.draft!)}>
+            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={busy || savingId !== null} onClick={() => void confirmDraft(line, line.draft!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> Konfirmasi</>}
             </Button>
           </div>}

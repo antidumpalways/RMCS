@@ -48,6 +48,10 @@ function explicitSoldItems(content: string): { productName: string; qty: number 
   const normalized = content.normalize('NFKC').replace(/\s+/g, ' ').trim();
   if (!/\b(?:laku|terjual|kejual|sold|jual)\b/i.test(normalized) ||
       /\b(?:mau|ingin|akan|rencana|bisa|boleh)\s+(?:di)?jual\b/i.test(normalized)) return null;
+  // A separator or repeated sale phrase can indicate more than one item,
+  // including when only one of the quantities has a unit such as "pcs".
+  if (/[,;\n]|\b(?:dan|serta)\b/i.test(content) ||
+      [...normalized.matchAll(/\b(?:laku|terjual|kejual|sold|jual)\b/gi)].length !== 1) return null;
   const withUnit = [...normalized.matchAll(/\b(\d{1,7})\s*(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\b|\b(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\s*(\d{1,7})\b/gi)];
   const qtyMatches = withUnit.length ? withUnit
     : [...normalized.matchAll(/\b(?:laku|terjual|kejual|jual|sold)\s+(\d{1,7})\b(?!\s*(?:ribu|rb|rupiah|rp)\b)/gi)];
@@ -1324,7 +1328,7 @@ export async function POST(request: Request) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) return NextResponse.json({ error: 'Asisten belum aktif. Owner perlu mengatur DEEPSEEK_API_KEY di Vercel.' }, { status: 503 });
 
-  let body: { messages?: unknown; image?: unknown; ocrText?: unknown };
+  let body: { messages?: unknown; image?: unknown; ocrText?: unknown; pendingDraft?: unknown };
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Pesan tidak terbaca.' }, { status: 400 }); }
   if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 12) {
     return NextResponse.json({ error: 'Percakapan tidak valid. Silakan mulai percakapan baru.' }, { status: 400 });
@@ -1343,6 +1347,9 @@ export async function POST(request: Request) {
   }
   const lastMessage = messages[messages.length - 1];
   if (lastMessage?.role !== 'user') return NextResponse.json({ error: 'Kirim pesan baru untuk melanjutkan.' }, { status: 400 });
+  if (body.pendingDraft === true && isAffirmative(lastMessage.content)) {
+    return NextResponse.json({ message: 'Betul, silakan periksa draf di atas lalu tekan tombol konfirmasi untuk menyimpan. Belum ada data yang berubah.' });
+  }
   const image = body.image === undefined ? null : validateProductImage(body.image);
   if (body.image !== undefined && !image) return NextResponse.json({ error: 'Foto harus JPG, PNG, WebP, atau GIF dan maksimal 2 MB.' }, { status: 400 });
   const ocrText = image && typeof body.ocrText === 'string'
@@ -1520,14 +1527,37 @@ export async function POST(request: Request) {
     let catalogSearchUsed = false;
     let searchQuery = '';
     const previousUserMessage = [...messages.slice(0, -1)].reverse().find((entry) => entry.role === 'user');
-    const priorSaleNote = isAffirmative(lastMessage.content) && previousUserMessage && explicitSoldItems(previousUserMessage.content)
+    const previousAssistantMessage = messages[messages.length - 2];
+    const wasChoosingProduct = previousAssistantMessage?.role === 'assistant' &&
+      /(?:menemukan barang|menemukan beberapa barang|kemungkinan ini barang|belum cocok dengan yakin|cocok dengan beberapa barang)/i.test(previousAssistantMessage.content);
+    const priorSaleNote = isAffirmative(lastMessage.content) && wasChoosingProduct &&
+      previousUserMessage && explicitSoldItems(previousUserMessage.content)
       ? previousUserMessage
       : undefined;
     const explicitSaleItems = explicitSoldItems(lastMessage.content) ??
       (priorSaleNote ? explicitSoldItems(priorSaleNote.content) : null);
-    const effectiveToolCalls = explicitSaleItems
+    let effectiveToolCalls = explicitSaleItems
       ? [{ id: 'explicit-sold-note', function: { name: 'prepare_sale_create', arguments: JSON.stringify({ items: explicitSaleItems }) } }]
       : assistantMessage.tool_calls ?? [];
+    const actionCalls = effectiveToolCalls.filter((call) => call.function.name !== 'search_products');
+    if (actionCalls.length > 1) {
+      if (actionCalls.every((call) => call.function.name === 'prepare_sale_create')) {
+        try {
+          const saleItems = actionCalls.flatMap((call) => {
+            const args: unknown = JSON.parse(call.function.arguments);
+            if (!args || typeof args !== 'object' || !('items' in args) || !Array.isArray(args.items)) {
+              throw new Error('Incomplete sale items');
+            }
+            return args.items;
+          });
+          effectiveToolCalls = [{ id: 'combined-sale-note', function: { name: 'prepare_sale_create', arguments: JSON.stringify({ items: saleItems }) } }];
+        } catch {
+          return NextResponse.json({ message: 'Saya belum bisa membaca seluruh daftar penjualan. Tulis lagi barang dan jumlahnya agar tidak ada yang terlewat.' });
+        }
+      } else {
+        return NextResponse.json({ message: 'Saya menangkap beberapa tindakan sekaligus. Sebutkan satu tindakan dulu supaya drafnya bisa diperiksa dengan jelas.' });
+      }
+    }
     for (const call of effectiveToolCalls) {
       let args: Record<string, unknown>;
       try {
@@ -1671,8 +1701,16 @@ export async function POST(request: Request) {
             break;
           }
           if (changedIds.has(product.id)) {
-            saleIssue = `Barang “${product.name}” disebut berulang. Gabungkan jumlahnya dalam satu item.`;
-            break;
+            const existing = resolved.find((entry) => entry.productId === product.id);
+            if (editing || !existing || existing.qty + item.qty > product.stock) {
+              saleIssue = editing
+                ? `Barang “${product.name}” disebut berulang dalam koreksi. Sebutkan jumlah akhirnya sekali saja.`
+                : `Stok ${product.name} tidak cukup untuk seluruh jumlah yang disebut.`;
+              break;
+            }
+            existing.qty += item.qty;
+            existing.stockAfter = product.stock - existing.qty;
+            continue;
           }
           changedIds.add(product.id);
           const oldItem = oldSale?.items.find((entry) => entry.productId === product.id);
