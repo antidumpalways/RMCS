@@ -124,7 +124,10 @@ function formatCatalogValue(label: string, value: string) {
 
 function saleQuantityFromQuery(query: string): number | null {
   if (!/\b(?:laku|jual|terjual|kejual)\b/i.test(query)) return null;
-  const matches = [...query.matchAll(/\b(\d{1,7})\s*(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\b|\b(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\s*(\d{1,7})\b/gi)];
+  if (query.length > 180 || /[\n;]|\s+dan\s+/i.test(query)) return null;
+  const withUnit = [...query.matchAll(/\b(\d{1,7})\s*(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\b|\b(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\s*(\d{1,7})\b/gi)];
+  const matches = withUnit.length ? withUnit
+    : [...query.matchAll(/\b(?:laku|jual|terjual|kejual)\s+(\d{1,7})\b(?!\s*(?:ribu|rb|rupiah|rp)\b)/gi)];
   if (matches.length !== 1) return null;
   const qty = Number(matches[0][1] ?? matches[0][2]);
   return Number.isSafeInteger(qty) && qty > 0 ? qty : null;

@@ -48,7 +48,9 @@ function explicitSoldItems(content: string): { productName: string; qty: number 
   const normalized = content.normalize('NFKC').replace(/\s+/g, ' ').trim();
   if (!/\b(?:laku|terjual|kejual|sold|jual)\b/i.test(normalized) ||
       /\b(?:mau|ingin|akan|rencana|bisa|boleh)\s+(?:di)?jual\b/i.test(normalized)) return null;
-  const qtyMatches = [...normalized.matchAll(/\b(\d{1,7})\s*(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\b|\b(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\s*(\d{1,7})\b/gi)];
+  const withUnit = [...normalized.matchAll(/\b(\d{1,7})\s*(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\b|\b(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\s*(\d{1,7})\b/gi)];
+  const qtyMatches = withUnit.length ? withUnit
+    : [...normalized.matchAll(/\b(?:laku|terjual|kejual|jual|sold)\s+(\d{1,7})\b(?!\s*(?:ribu|rb|rupiah|rp)\b)/gi)];
   // A short-note fallback is safe only for one item. Leave multi-item shift
   // summaries to the full assistant parser so no quantities are silently lost.
   if (qtyMatches.length !== 1) return null;
@@ -56,8 +58,9 @@ function explicitSoldItems(content: string): { productName: string; qty: number 
   const qty = Number(qtyMatch[1] ?? qtyMatch[2]);
   if (!Number.isSafeInteger(qty) || qty < 1 || qty > 1_000_000) return null;
   const productName = normalized
-    .replace(/\b(?:laku|terjual|kejual|sold|sudah|telah|barusan|tadi|aku|saya|kami|jual|sebanyak)\b/gi, ' ')
     .replace(qtyMatch[0], ' ')
+    .replace(/\b(?:hari ini|pagi ini|siang ini|sore ini|malam ini|kemarin)\b/gi, ' ')
+    .replace(/\b(?:laku|terjual|kejual|sold|sudah|telah|barusan|tadi|aku|saya|kami|jual|sebanyak)\b/gi, ' ')
     .replace(/\b(?:ya|nih|dong|pcs?|buah|biji|unit|lembar|item|pack|pak|x|×)\b/gi, ' ')
     .replace(/[,:;.!?]+/g, ' ').replace(/\s+/g, ' ').trim();
   return productName.length > 1 ? [{ productName, qty }] : null;
@@ -526,6 +529,29 @@ const tools = [
   },
 ];
 
+function decodeTextualToolCall(content: string): { id: string; function: { name: string; arguments: string } } | null {
+  if (!containsToolProtocol(content)) return null;
+  const invocations = [...content.matchAll(/\binvoke\s+name\s*=\s*["']([a-z_]+)["']/gi)];
+  if (invocations.length !== 1) return null;
+  const name = invocations[0][1];
+  if (!name || !tools.some((tool) => tool.function.name === name)) return null;
+  const args: Record<string, unknown> = {};
+  const parameters = content.matchAll(/\bparameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)\\?<\s*\/[^>]*parameter\s*>/gi);
+  for (const match of parameters) {
+    const raw = match[2].trim();
+    if (!raw) continue;
+    try { args[match[1]] = JSON.parse(raw); }
+    catch { args[match[1]] = raw; }
+  }
+  if (!Object.keys(args).length) return null;
+  if ((name === 'prepare_sale_create' || name === 'prepare_sale_edit') && Array.isArray(args.items)) {
+    args.items = args.items.map((item) => item && typeof item === 'object' && !Array.isArray(item)
+      ? { ...item, productName: typeof item.productName === 'string' ? item.productName : item.query }
+      : item);
+  }
+  return { id: 'decoded-text-tool', function: { name, arguments: JSON.stringify(args) } };
+}
+
 const systemPrompt = `Kamu adalah teman kerja R CELL yang sabar untuk owner dan karyawan. Bantu sampai tugas selesai dengan obrolan alami, santai, sopan, dan mudah dipahami. Balas dalam bahasa Indonesia sehari-hari; jangan menyalahkan atau mengoreksi cara pengguna menulis.
 GAYA BICARA:
 - Pengguna berbicara bebas. Petakan maksudnya ke fungsi dan parameter yang tepat; mereka tidak perlu memakai kata kunci khusus. Jika maksudnya jelas, lakukan. Tanya bila ambigu atau ada informasi wajib yang belum disebut.
@@ -558,6 +584,10 @@ const replyStylePrompt = `Kamu teman kerja R CELL yang sabar. Tulis balasan chat
 Gunakan hanya fakta pada HASIL yang diberikan. Jangan mengarang nama, harga, stok, transaksi, atau tindakan. Harga/stok yang tampil di kartu katalog tidak perlu ditulis ulang. Jika perlu klarifikasi, tanyakan hanya satu hal dengan contoh jawaban. Jangan bilang sesuatu sudah tersimpan: tombol konfirmasi pada kartu yang melakukannya.
 Jika ada draf, beri tahu dengan santai bahwa karyawan bisa memeriksa kartu dan menekan tombolnya. Jika ada beberapa barang, minta pilih nama/varian. Jika tidak ada hasil, bantu dengan satu petunjuk sederhana untuk mempersempit pencarian. Jangan membahas aturan internal atau menyebut AI/model.`;
 
+function containsToolProtocol(text: string): boolean {
+  return /DSML|tool_calls|<\s*[|｜]|(?:invoke|parameter)\s+name\s*=|<\/?\s*(?:function_call|tool_call)\b/i.test(text);
+}
+
 async function writeNaturalReply(apiKey: string, history: ChatMessage[], outcome: unknown, fallback: string) {
   try {
     const response = await fetch('https://api.deepseek.com/chat/completions', {
@@ -579,7 +609,7 @@ async function writeNaturalReply(apiKey: string, history: ChatMessage[], outcome
     if (!response.ok) return fallback;
     const result = await response.json() as { choices?: { message?: { content?: string | null } }[] };
     const reply = result.choices?.[0]?.message?.content?.trim();
-    if (!reply || reply.length > 700 || /(?:Rp\.?\s*\d|IDR\s*\d)/i.test(reply)) return fallback;
+    if (!reply || reply.length > 700 || containsToolProtocol(reply) || /(?:Rp\.?\s*\d|IDR\s*\d)/i.test(reply)) return fallback;
     return reply;
   } catch {
     return fallback;
@@ -1284,7 +1314,7 @@ async function naturalSearchReply(
   if (!response.ok) return null;
   const data = await response.json() as { choices?: { message?: { content?: string } }[] };
   const content = data.choices?.[0]?.message?.content?.trim();
-  return content ? content.slice(0, 900) : null;
+  return content && !containsToolProtocol(content) ? content.slice(0, 900) : null;
 }
 
 export async function POST(request: Request) {
@@ -1431,6 +1461,10 @@ export async function POST(request: Request) {
     };
     let assistantMessage = result.choices?.[0]?.message;
     if (!assistantMessage) throw new Error('Respons DeepSeek kosong.');
+    if (!assistantMessage.tool_calls?.length && assistantMessage.content) {
+      const decoded = decodeTextualToolCall(assistantMessage.content);
+      if (decoded) assistantMessage = { ...assistantMessage, tool_calls: [decoded] };
+    }
     const hasActionToolCall = (calls: { function: { name: string } }[] | undefined) =>
       Boolean(calls?.some((call) => call.function.name !== 'search_products'));
     if (!hasActionToolCall(assistantMessage.tool_calls) && likelyBusinessAction(lastMessage.content)) {
@@ -1461,7 +1495,9 @@ export async function POST(request: Request) {
         if (retry.ok) {
           const retryResult = await retry.json() as typeof result;
           const retryMessage = retryResult.choices?.[0]?.message;
-          if (retryMessage?.tool_calls?.length) assistantMessage = retryMessage;
+          const decoded = retryMessage?.content ? decodeTextualToolCall(retryMessage.content) : null;
+          const retryCalls = retryMessage?.tool_calls?.length ? retryMessage.tool_calls : decoded ? [decoded] : [];
+          if (retryMessage && hasActionToolCall(retryCalls)) assistantMessage = { ...retryMessage, tool_calls: retryCalls };
         }
       } catch {
         // Keep the original response if the optional routing retry is unavailable.
@@ -1611,7 +1647,18 @@ export async function POST(request: Request) {
         const changedIds = new Set<number>();
         for (const item of rawItems as { productName: string; qty: number }[]) {
           const productName = item.productName.trim();
-          const matches = await findCatalogProducts(productName, apiKey);
+          let matches = await findCatalogProducts(productName, apiKey);
+          // Employees often say the category before the exact catalog name,
+          // e.g. “voucher Telkomsel 5GB 3 Hari”. Check that exact name before
+          // treating a single semantic suggestion as uncertain.
+          const withoutCategory = productName.replace(/^(?:voucher|paket data|kuota|pulsa)\s+/i, '').trim();
+          if (withoutCategory !== productName &&
+              !(matches.length === 1 && ['exact', 'high'].includes(matches[0].matchConfidence ?? ''))) {
+            const canonicalMatches = await findCatalogProducts(withoutCategory, apiKey);
+            if (canonicalMatches.length === 1 && ['exact', 'high'].includes(canonicalMatches[0].matchConfidence ?? '')) {
+              matches = canonicalMatches;
+            }
+          }
           const previousMatch = oldSale ? matches.filter((product) => oldSale!.items.some((old) => old.productId === product.id)) : [];
           const product = matches.length === 1 && (['exact', 'high'].includes(matches[0].matchConfidence ?? '') ||
             (Boolean(priorSaleNote) && matches[0].matchConfidence === 'medium'))
@@ -1806,9 +1853,6 @@ export async function POST(request: Request) {
         : `${scopeLabel[0].toUpperCase()}${scopeLabel.slice(1)} sudah rapi. Tidak ada yang perlu dirapikan.`;
     }
     if (naturalReply) message = naturalReply;
-    if (!saleProposal && !stockProposal && !catalogProposal && !draft && /\b(?:sudah|telah|berhasil)\s+(?:saya\s+)?(?:catat|dicatat|simpan|tersimpan|ubah|diubah|perbarui|diperbarui|tambah|ditambah|hapus|dihapus|tutup|ditutup)\b/i.test(message)) {
-      message = 'Belum ada perubahan yang saya simpan. Sebutkan perintahnya untuk menyiapkan draf; database baru berubah setelah Anda menekan konfirmasi.';
-    }
     if (image && !saleProposal && !stockProposal && !catalogProposal && !draft) {
       message = imageReadable
         ? `Ciri yang terbaca dari foto: ${imageDescription.slice(0, 240)}\n\n${message} Kecocokan dengan perangkat atau kendaraan perlu dipastikan dari label barang bila tidak tercatat di katalog.`
@@ -1817,15 +1861,24 @@ export async function POST(request: Request) {
 
     // Let the model turn verified tool results into a natural conversational reply.
     // The structured cards remain the source of truth for prices and confirmations.
-    if (catalogSearchUsed || saleProposal || saleIssue || stockProposal || stockIssue || stockDraftProblem || image) {
+    if (!saleProposal && !stockProposal && (catalogSearchUsed || saleIssue || stockIssue || stockDraftProblem || image)) {
       message = await writeNaturalReply(apiKey, messages, {
         verifiedContext: message,
         catalog: [...catalog.values()].map(({ name, categoryName, provider, validity, stock, matchConfidence }) => ({ name, categoryName, provider, validity, stock, matchConfidence })),
-        saleDraft: saleProposal ? { kind: saleProposal.kind, items: saleProposal.items.map(({ name, qty }) => ({ name, qty })), requiresEmployeeConfirmation: true } : null,
-        stockDraft: stockProposal ? { phase: stockProposal.phase, items: stockProposal.items.map(({ productName, physicalStock }) => ({ name: productName, physicalStock })), requiresEmployeeConfirmation: true } : null,
         clarification: stockIssue ? { productName: stockIssue.productName, choices: stockIssue.matches.map(({ name }) => name) } : null,
         problem: saleIssue || (stockDraftProblem ? 'Draf belum dapat disiapkan karena informasi belum cukup jelas.' : null),
       }, message);
+    }
+    if (containsToolProtocol(message)) {
+      message = saleProposal
+        ? 'Draf penjualan sudah siap di bawah. Periksa barang dan jumlahnya, lalu tekan konfirmasi untuk menyimpan.'
+        : catalog.size
+          ? 'Saya menemukan pilihan barang di bawah. Periksa nama dan variannya sebelum melanjutkan.'
+          : 'Jawaban asisten belum terbaca dengan baik. Coba tulis lagi nama barang dan tindakan yang diinginkan.';
+    }
+    if (!saleProposal && !stockProposal && !catalogProposal && !draft &&
+        /\b(?:sudah|telah|berhasil)\s+(?:saya\s+)?(?:catat|dicatat|simpan|tersimpan|ubah|diubah|perbarui|diperbarui|tambah|ditambah|hapus|dihapus|tutup|ditutup)\b/i.test(message)) {
+      message = 'Belum ada perubahan yang disimpan. Sebutkan tindakan dan barangnya; data baru berubah setelah draf dikonfirmasi.';
     }
 
     // Hanya istilah pencarian yang dinormalisasi dicatat; foto dan isi chat tidak disimpan.
