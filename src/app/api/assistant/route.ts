@@ -69,8 +69,8 @@ function isAffirmative(content: string): boolean {
 
 function likelyBusinessAction(content: string): boolean {
   const text = content.trim();
-  if (!text || /\b(?:bagaimana|gimana|caranya|cara|apa\s+itu|kenapa|mengapa|contoh)\b/i.test(text)) return false;
-  return /\b(?:tolong|bantu|coba|langsung|sekarang|ya|dong|please|bisa|mohon)?\s*(?:tambah(?:kan|in)?|buat(?:kan|in)?|catat|simpan|hapus|hilangkan|ubah|edit|ganti|naikkan|turunkan|masuk(?:kan|in)?|keluar(?:kan|in)?|kurang(?:i|in)?|retur|tukar|tutup|buka|cek|hitung|terjual|kejual|laku|jual|bayar|lunasi|ingat|lupakan|rapikan|susun|periksa|opname|stok\s+masuk|barang\s+masuk|stok\s+kurang)\b/i.test(text);
+  if (!text || /\b(?:bagaimana|gimana)\s+(?:cara|caranya)|^\s*(?:cara|caranya|apa\s+itu|kenapa|mengapa|contoh)\b/i.test(text)) return false;
+  return /\b(?:tolong|bantu|coba|langsung|sekarang|ya|dong|please|bisa|mohon)?\s*(?:tambah(?:kan|in)?|buat(?:kan|in)?|catat|simpan|hapus|hilangkan|delete|remove|ubah|edit|update|ganti|set(?:el)?|atur|naikkan|turunkan|masuk(?:kan|in)?|keluar(?:kan|in)?|kurang(?:i|in)?|sesuaikan|koreksi|retur|refund|tukar|tutup|buka|cek|hitung|terjual|kejual|laku|jual|bayar|lunasi|ingat|lupakan|rapikan|susun|bersihkan|pindah(?:kan)?|gabung(?:kan)?|merge|periksa|opname|restock|terima\s+barang|stok\s+masuk|barang\s+masuk|stok\s+kurang|stok\s+(?:jadi|menjadi)|harga\s+(?:jadi|menjadi))\b/i.test(text);
 }
 
 const tools = [
@@ -1439,6 +1439,9 @@ export async function POST(request: Request) {
       // Retry once with a required tool call; the normal server validation and
       // confirmation card still decide whether anything can be saved.
       try {
+        // A business action must never fall back into the product-search tool.
+        // That exact tool selection caused commands to stop after showing a match.
+        const actionTools = availableTools.filter((entry) => entry.function.name !== 'search_products');
         const retry = await fetch('https://api.deepseek.com/chat/completions', {
           method: 'POST',
           headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -1448,7 +1451,7 @@ export async function POST(request: Request) {
               { role: 'system', content: contextSystem },
               ...messages.slice(0, -1),
               { role: 'user', content: userMessageContent }],
-            tools: availableTools,
+            tools: actionTools,
             tool_choice: 'required',
             max_tokens: 700,
             stream: false,
@@ -1458,7 +1461,7 @@ export async function POST(request: Request) {
         if (retry.ok) {
           const retryResult = await retry.json() as typeof result;
           const retryMessage = retryResult.choices?.[0]?.message;
-          if (retryMessage?.tool_calls?.length && hasActionToolCall(retryMessage.tool_calls)) assistantMessage = retryMessage;
+          if (retryMessage?.tool_calls?.length) assistantMessage = retryMessage;
         }
       } catch {
         // Keep the original response if the optional routing retry is unavailable.
