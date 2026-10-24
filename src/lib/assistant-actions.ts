@@ -2,7 +2,9 @@
 
 import { prisma } from '@/lib/prisma';
 import { getCurrentUser } from '@/lib/auth';
-import { actionRequiresOwner, isAssistantAction, formatIDR, isMemoryKind, MEMORY_KIND_LABELS } from '@/lib/assistant-draft';
+import { isAssistantAction, formatIDR, isMemoryKind, MEMORY_KIND_LABELS } from '@/lib/assistant-draft';
+import { applyCatalogDraft, recordShiftStockCheck, replaceSaleFromChat } from '@/lib/actions';
+import { withAssistantAuthorization } from '@/lib/assistant-authorization';
 import {
   addDebtPayment, addStock, adjustStock, applyCatalogCleanup, applyStockOpname, bulkUpdatePrices,
   closeShift, createCategory, createDebt, createSubcategory, deleteCategory, deleteDebt,
@@ -289,34 +291,55 @@ export async function applyAssistantDraft(input: { action?: unknown; payload?: u
   if (!me) throw new Error('Sesi berakhir. Silakan masuk kembali.');
   if (!input || !isAssistantAction(input.action)) throw new Error('Draf tidak dikenali. Minta asisten menyiapkan ulang.');
   const action = input.action;
-  if (actionRequiresOwner(action) && me.role !== 'owner') throw new Error('Aksi ini hanya untuk owner.');
   const payload = payloadRecord(input.payload);
 
-  switch (action) {
-    case 'catalog.delete': return deleteCatalogProduct(payload);
-    case 'catalog.cleanup': return catalogCleanup(payload);
-    case 'category.create': return categoryCreate(payload);
-    case 'category.rename': return categoryRename(payload);
-    case 'category.delete': return categoryDelete(payload);
-    case 'subcategory.create': return subcategoryCreate(payload);
-    case 'subcategory.rename': return subcategoryRename(payload);
-    case 'subcategory.delete': return subcategoryDelete(payload);
-    case 'sale.return': return saleReturn(payload);
-    case 'price.bulk': return bulkPrice(payload);
-    case 'stock.in': return stockIn(payload);
-    case 'stock.adjust': return stockAdjust(payload);
-    case 'opname.record': return opnameRecord(payload);
-    case 'opname.apply': return opnameAction(payload, 'apply');
-    case 'opname.review': return opnameAction(payload, 'review');
-    case 'opname.delete': return opnameAction(payload, 'delete');
-    case 'debt.create': return debtCreate(payload);
-    case 'debt.pay': return debtPay(payload);
-    case 'debt.delete': return debtDelete(payload);
-    case 'expense.create': return expenseCreate(payload);
-    case 'service.create': return serviceCreate(payload);
-    case 'shift.close': return shiftClose(payload);
-    case 'memory.save': return memorySave(payload, me.id);
-    case 'memory.forget': return memoryForget(payload);
-  }
-  throw new Error('Aksi tidak dikenali. Minta asisten menyiapkan ulang.');
+  return withAssistantAuthorization(async () => {
+    switch (action) {
+      case 'catalog.delete': return deleteCatalogProduct(payload);
+      case 'catalog.cleanup': return catalogCleanup(payload);
+      case 'category.create': return categoryCreate(payload);
+      case 'category.rename': return categoryRename(payload);
+      case 'category.delete': return categoryDelete(payload);
+      case 'subcategory.create': return subcategoryCreate(payload);
+      case 'subcategory.rename': return subcategoryRename(payload);
+      case 'subcategory.delete': return subcategoryDelete(payload);
+      case 'sale.return': return saleReturn(payload);
+      case 'price.bulk': return bulkPrice(payload);
+      case 'stock.in': return stockIn(payload);
+      case 'stock.adjust': return stockAdjust(payload);
+      case 'opname.record': return opnameRecord(payload);
+      case 'opname.apply': return opnameAction(payload, 'apply');
+      case 'opname.review': return opnameAction(payload, 'review');
+      case 'opname.delete': return opnameAction(payload, 'delete');
+      case 'debt.create': return debtCreate(payload);
+      case 'debt.pay': return debtPay(payload);
+      case 'debt.delete': return debtDelete(payload);
+      case 'expense.create': return expenseCreate(payload);
+      case 'service.create': return serviceCreate(payload);
+      case 'shift.close': return shiftClose(payload);
+      case 'memory.save': return memorySave(payload, me.id);
+      case 'memory.forget': return memoryForget(payload);
+      default: throw new Error('Aksi tidak dikenali. Minta asisten menyiapkan ulang.');
+    }
+  });
+}
+
+// Katalog memakai aksi server tersendiri; izin assistant hanya diberikan saat
+// aksi ini dipanggil dari tombol konfirmasi pada kartu draf.
+export async function applyAssistantCatalogDraft(input: Parameters<typeof applyCatalogDraft>[0]) {
+  const me = await getCurrentUser();
+  if (!me) throw new Error('Sesi berakhir. Silakan masuk kembali.');
+  return withAssistantAuthorization(() => applyCatalogDraft(input));
+}
+
+export async function applyAssistantSaleCorrection(input: Parameters<typeof replaceSaleFromChat>[0]) {
+  const me = await getCurrentUser();
+  if (!me) throw new Error('Sesi berakhir. Silakan masuk kembali.');
+  return withAssistantAuthorization(() => replaceSaleFromChat(input));
+}
+
+export async function applyAssistantStockCheck(input: Parameters<typeof recordShiftStockCheck>[0]) {
+  const me = await getCurrentUser();
+  if (!me) throw new Error('Sesi berakhir. Silakan masuk kembali.');
+  return withAssistantAuthorization(() => recordShiftStockCheck(input));
 }

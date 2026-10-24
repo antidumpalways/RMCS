@@ -6,8 +6,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { applyCatalogDraft, recordCartSale, recordShiftStockCheck, replaceSaleFromChat } from '@/lib/actions';
-import { applyAssistantDraft } from '@/lib/assistant-actions';
+import { recordCartSale } from '@/lib/actions';
+import { applyAssistantCatalogDraft, applyAssistantDraft, applyAssistantSaleCorrection, applyAssistantStockCheck } from '@/lib/assistant-actions';
 import { formatRupiah } from '@/lib/utils';
 
 type CatalogProduct = {
@@ -29,8 +29,10 @@ type SaleProposal = {
   saleId?: number;
   expectedSignature?: string;
   previousItems?: { name: string; qty: number }[];
-  items: { productId: number; name: string; qty: number; unitPrice: string }[];
+  items: { productId: number; name: string; qty: number; unitPrice: string; profit: string; stockAfter: number }[];
   totalRevenue: string;
+  totalProfit: string;
+  marginPercent: string;
 };
 type CatalogProposal = {
   kind: 'create' | 'update';
@@ -136,7 +138,7 @@ export function AssistantChat({ role }: { role: string }) {
   const photoTextRef = React.useRef<Promise<string> | null>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const savingRef = React.useRef<string | null>(null);
-  const canRecordStock = role === 'karyawan';
+  const canRecordStock = true;
 
   React.useEffect(() => {
     if (open && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -163,7 +165,7 @@ export function AssistantChat({ role }: { role: string }) {
       const response = await fetch('/api/assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next.slice(-12).map(({ role: messageRole, content: messageContent }) => ({ role: messageRole, content: messageContent.slice(0, 700) })), ...(sentImage ? { image: sentImage, ocrText } : {}) }),
+        body: JSON.stringify({ messages: next.slice(-12).map(({ role: messageRole, content: messageContent }) => ({ role: messageRole, content: messageContent.slice(0, messageRole === 'user' ? 6000 : 2000) })), ...(sentImage ? { image: sentImage, ocrText } : {}) }),
       });
       const result = await response.json() as {
         message?: string;
@@ -223,7 +225,7 @@ export function AssistantChat({ role }: { role: string }) {
     setSavingId(line.id);
     setError('');
     try {
-      const result = await recordShiftStockCheck({
+      const result = await applyAssistantStockCheck({
         phase: proposal.phase,
         counts: proposal.items.map(({ productId, physicalStock }) => ({ productId, physicalStock })),
       });
@@ -255,7 +257,7 @@ export function AssistantChat({ role }: { role: string }) {
         saleId = result.saleId;
       } else {
         if (!proposal.saleId || !proposal.expectedSignature) throw new Error('Draf koreksi tidak lengkap.');
-        const result = await replaceSaleFromChat({
+        const result = await applyAssistantSaleCorrection({
           saleId: proposal.saleId,
           expectedSignature: proposal.expectedSignature,
           items: proposal.items.map(({ productId, qty, unitPrice }) => ({ productId, qty, expectedPrice: unitPrice })),
@@ -283,7 +285,7 @@ export function AssistantChat({ role }: { role: string }) {
     setSavingId(line.id);
     setError('');
     try {
-      await applyCatalogDraft({
+      await applyAssistantCatalogDraft({
         kind: proposal.kind,
         productId: proposal.productId,
         expectedSignature: proposal.expectedSignature,
@@ -344,13 +346,13 @@ export function AssistantChat({ role }: { role: string }) {
           <div className="max-w-[90%] rounded-2xl rounded-tl-sm bg-muted p-3 text-sm">Halo! Ada yang bisa dibantu? Cerita saja seperti ke teman kerja—misalnya “harga charger samsung berapa?” atau “tadi jual 2 surya”. Kalau ada yang kurang jelas, kita cari tahu pelan-pelan.</div>
           <div className="flex flex-wrap gap-2">
             <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Berapa harga barang ...?')}>Cari harga</button>
-            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat penjualan hari ini. Tolong tanya barang dan jumlah yang terjual.')}>Catat penjualan</button>
+            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat penjualan hari ini. Saya bisa menulis ringkasan beberapa barang sekaligus; tolong cocokkan ke katalog, hitung jumlah, omzet, laba, margin, dan stok yang berkurang. Tanyakan hanya bagian yang belum jelas.')}>Ringkasan penjualan</button>
             <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau koreksi penjualan terakhir. Tolong tanya perubahan yang benar sebelum menyiapkan draf.')}>Koreksi penjualan</button>
-            {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau tambah barang baru ke katalog. Tolong tanya nama barang, kategori, harga jual, dan stoknya dulu sebelum menyiapkan draf.')}>Tambah barang</button>}
+            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau tambah barang baru ke katalog. Tolong tanya nama barang, kategori, harga jual, dan stoknya dulu sebelum menyiapkan draf.')}>Tambah barang</button>
             <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau mencatat bon pelanggan. Tolong tanya nama pelanggan dan nominalnya dulu sebelum menyiapkan draf.')}>Catat bon</button>
-            {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau mencatat pengeluaran toko. Tolong tanya nama dan nominal pengeluarannya dulu sebelum menyiapkan draf.')}>Catat pengeluaran</button>}
-            {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Tolong rapikan katalog: periksa nama barang, provider, masa aktif, dan kategori/subkategori, lalu siapkan perbaikannya.')}>Rapikan katalog</button>}
-            {role === 'owner' && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau kamu mengingat sesuatu. Tanya dulu apa yang perlu diingat dan jenisnya (istilah khas, cara bicara, atau aturan toko) sebelum menyiapkan draf.')}>Ingat sesuatu</button>}
+            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau mencatat pengeluaran toko. Tolong tanya nama dan nominal pengeluarannya dulu sebelum menyiapkan draf.')}>Catat pengeluaran</button>
+            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Tolong rapikan katalog: periksa nama barang, provider, masa aktif, dan kategori/subkategori, lalu siapkan perbaikannya.')}>Rapikan katalog</button>
+            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau kamu mengingat sesuatu. Tanya dulu apa yang perlu diingat dan jenisnya (istilah khas toko, cara bicara, atau aturan toko) sebelum menyiapkan draf.')}>Ingat sesuatu</button>
             {canRecordStock && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat stok saat tutup toko. Tolong tanya barang dan jumlahnya dulu.')}>Catat stok</button>}
           </div>
         </div>}
@@ -377,9 +379,9 @@ export function AssistantChat({ role }: { role: string }) {
           {line.saleProposal && <div className="rounded-xl border border-primary/30 bg-card p-3 text-sm">
             <p className="flex items-center gap-2 text-xs font-semibold"><ShoppingBag className="h-4 w-4" /> {line.saleProposal.kind === 'create' ? 'Draf penjualan hari ini' : `Koreksi penjualan #${line.saleProposal.saleId}`}</p>
             {!!line.saleProposal.previousItems?.length && <div className="mt-2 rounded-lg bg-muted p-2 text-xs"><p className="font-medium">Catatan lama</p>{line.saleProposal.previousItems.map((item, index) => <p key={index}>{item.name} × {item.qty}</p>)}</div>}
-            <div className="mt-2 space-y-1">{line.saleProposal.items.map((item) => <div key={item.productId} className="flex justify-between gap-3 text-xs"><span>{item.name} × {item.qty}</span><span className="shrink-0 font-medium">{formatRupiah(BigInt(item.unitPrice) * BigInt(item.qty))}</span></div>)}</div>
-            <p className="mt-2 border-t pt-2 text-right font-semibold">Total {formatRupiah(BigInt(line.saleProposal.totalRevenue))}</p>
-            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa semua barang dan jumlahnya. Database dan stok baru berubah setelah Anda menekan tombol ini.</p>
+            <div className="mt-2 space-y-2">{line.saleProposal.items.map((item) => <div key={item.productId} className="flex justify-between gap-3 text-xs"><span>{item.name} × {item.qty}<span className="block text-muted-foreground">Sisa stok {item.stockAfter} · laba {formatRupiah(BigInt(item.profit))}</span></span><span className="shrink-0 font-medium">{formatRupiah(BigInt(item.unitPrice) * BigInt(item.qty))}</span></div>)}</div>
+            <div className="mt-2 space-y-1 border-t pt-2 text-right"><p className="font-semibold">Omzet {formatRupiah(BigInt(line.saleProposal.totalRevenue))}</p><p className="font-semibold text-emerald-700 dark:text-emerald-400">Perkiraan laba {formatRupiah(BigInt(line.saleProposal.totalProfit))} · margin {line.saleProposal.marginPercent}%</p></div>
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa semua barang dan jumlahnya. Setelah konfirmasi, stok berkurang dan omzet serta laba tercatat.</p>
             <Button type="button" size="sm" className="mt-3 w-full" disabled={savingId !== null} onClick={() => void confirmSale(line, line.saleProposal!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> {line.saleProposal.kind === 'create' ? 'Konfirmasi penjualan' : 'Konfirmasi koreksi'}</>}
             </Button>
@@ -425,7 +427,7 @@ export function AssistantChat({ role }: { role: string }) {
       <form className="flex items-center gap-2 border-t bg-background p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
         <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" aria-label="Pilih foto barang" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; try { setImage(await prepareImage(file)); photoTextRef.current = import('@/lib/browser-ocr').then(({ readPhotoText }) => readPhotoText(file)).catch(() => ''); setError(''); } catch (caught) { setError(caught instanceof Error ? caught.message : 'Foto gagal diproses.'); } event.target.value = ''; }} />
         <Button type="button" size="icon" variant="outline" aria-label="Tambahkan foto barang" disabled={busy} onClick={() => fileRef.current?.click()}><ImagePlus className="h-4 w-4" /></Button>
-        <Input value={text} onChange={(event) => setText(event.target.value)} placeholder="Tulis seperti biasa..." aria-label="Pesan untuk asisten" maxLength={700} disabled={busy} />
+        <textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="Tulis seperti biasa... (Shift+Enter untuk baris baru)" aria-label="Pesan untuk asisten" maxLength={6000} disabled={busy} rows={2} className="min-h-10 max-h-32 flex-1 resize-y rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" />
         <Button type="submit" size="icon" aria-label="Kirim pesan" disabled={busy || (!text.trim() && !image)}><Send className="h-4 w-4" /></Button>
       </form>
     </section>}

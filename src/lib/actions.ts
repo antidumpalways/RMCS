@@ -7,11 +7,12 @@ import { getCurrentUser } from '@/lib/auth';
 import { jakartaTodayBounds, saleSnapshotSignature } from '@/lib/sale-chat';
 import { catalogProductSignature } from '@/lib/catalog-chat';
 import { shiftOpening } from '@/lib/automation';
+import { isAssistantAuthorized } from '@/lib/assistant-authorization';
 
 // Aksi yang hanya boleh dijalankan owner. Ditegakkan di server, bukan hanya UI.
 async function requireOwner() {
   const me = await getCurrentUser();
-  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat melakukan ini.');
+  if (!me || (me.role !== 'owner' && !isAssistantAuthorized())) throw new Error('Hanya owner yang dapat melakukan ini.');
   return me;
 }
 
@@ -269,7 +270,7 @@ export async function applyCatalogDraft(input: {
   };
 }) {
   const me = await getCurrentUser();
-  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat mengubah katalog dari asisten.');
+  if (!me || (me.role !== 'owner' && !isAssistantAuthorized())) throw new Error('Akses katalog tidak tersedia.');
   if (!input || (input.kind !== 'create' && input.kind !== 'update')) throw new Error('Draf katalog tidak valid.');
   const f = input.fields;
   if (!f || typeof f.name !== 'string' || !f.name.trim() || f.name.trim().length > 120) {
@@ -368,7 +369,7 @@ export type CatalogCleanupInput = {
 
 export async function applyCatalogCleanup(operations: CatalogCleanupInput[]) {
   const me = await getCurrentUser();
-  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat merapikan katalog dari asisten.');
+  if (!me || (me.role !== 'owner' && !isAssistantAuthorized())) throw new Error('Akses katalog tidak tersedia.');
   if (!Array.isArray(operations) || operations.length < 1 || operations.length > 200) {
     throw new Error('Tidak ada perbaikan yang diterapkan.');
   }
@@ -691,7 +692,7 @@ export async function recordStockOpname(data: {
 }) {
   if (data.physicalStock < 0) throw new Error('Stok fisik tidak boleh negatif');
   const me = await getCurrentUser();
-  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat mencatat opname manual.');
+  if (!me || (me.role !== 'owner' && !isAssistantAuthorized())) throw new Error('Akses opname tidak tersedia.');
   const product = await prisma.product.findUniqueOrThrow({ where: { id: data.productId } });
   const diff = data.physicalStock - product.stock;
   await prisma.stockOpname.create({
@@ -716,7 +717,7 @@ export async function recordShiftStockCheck(data: {
   counts: { productId: number; physicalStock: number }[];
 }) {
   const me = await getCurrentUser();
-  if (!me || me.role !== 'karyawan') throw new Error('Menu ini khusus karyawan.');
+  if (!me || (me.role !== 'karyawan' && !isAssistantAuthorized())) throw new Error('Menu ini khusus karyawan.');
   if (!data || !['buka', 'tutup'].includes(data.phase)) throw new Error('Waktu cek stok tidak valid.');
   if (!Array.isArray(data.counts) || data.counts.length === 0 || data.counts.length > 500) {
     throw new Error('Isi hasil hitung minimal satu barang.');
@@ -764,7 +765,7 @@ export async function recordShiftStockCheck(data: {
 
 export async function applyStockOpname(id: number) {
   const me = await getCurrentUser();
-  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat menerapkan hasil opname.');
+  if (!me || (me.role !== 'owner' && !isAssistantAuthorized())) throw new Error('Akses opname tidak tersedia.');
   await prisma.$transaction(async (tx) => {
     const opname = await tx.stockOpname.findUniqueOrThrow({ where: { id } });
     if (opname.reviewStatus !== 'PENDING' || opname.diff === 0) {
@@ -789,7 +790,7 @@ export async function applyStockOpname(id: number) {
 
 export async function markStockOpnameReviewed(id: number) {
   const me = await getCurrentUser();
-  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat meninjau hasil opname.');
+  if (!me || (me.role !== 'owner' && !isAssistantAuthorized())) throw new Error('Akses opname tidak tersedia.');
   const result = await prisma.stockOpname.updateMany({
     where: { id, reviewStatus: 'PENDING', diff: { not: 0 } },
     data: { reviewStatus: 'REVIEWED', reviewedAt: new Date(), reviewedByUserId: me.id },
@@ -801,7 +802,7 @@ export async function markStockOpnameReviewed(id: number) {
 
 export async function deleteStockOpname(id: number) {
   const me = await getCurrentUser();
-  if (!me || me.role !== 'owner') throw new Error('Hanya owner yang dapat menghapus catatan opname.');
+  if (!me || (me.role !== 'owner' && !isAssistantAuthorized())) throw new Error('Akses opname tidak tersedia.');
   await prisma.stockOpname.delete({ where: { id } });
   revalidatePath('/opname');
 }
@@ -987,7 +988,7 @@ export async function replaceSaleFromChat(input: {
     await tx.$queryRaw`SELECT "id" FROM "SaleTransaction" WHERE "id" = ${input.saleId} FOR UPDATE`;
     const sale = await tx.saleTransaction.findUnique({ where: { id: input.saleId }, include: { items: true } });
     if (!sale || sale.kind !== 'SALE') throw new Error('Penjualan tidak ditemukan.');
-    if (me.role !== 'owner' && sale.userId !== me.id) throw new Error('Anda hanya bisa mengoreksi penjualan sendiri.');
+    if (me.role !== 'owner' && sale.userId !== me.id && !isAssistantAuthorized()) throw new Error('Anda hanya bisa mengoreksi penjualan sendiri.');
     const { start, end } = jakartaTodayBounds();
     if (sale.createdAt < start || sale.createdAt >= end) throw new Error('Chat hanya bisa mengoreksi penjualan hari ini.');
     if (sale.userId && await tx.shiftClosure.count({ where: { userId: sale.userId, closedAt: { gte: sale.createdAt } } })) {
