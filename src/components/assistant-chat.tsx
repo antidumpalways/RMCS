@@ -336,12 +336,12 @@ export function AssistantChat({ role }: { role: string }) {
   return <>
     {open && <section aria-label="Asisten R CELL" className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-3 z-50 flex h-[min(72dvh,620px)] w-[min(420px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl sm:right-6" role="dialog" aria-modal="false">
       <header className="flex items-center justify-between border-b bg-card px-4 py-3">
-        <div className="flex items-center gap-2"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary"><Bot className="h-5 w-5" /></span><div><h2 className="text-sm font-semibold">Asisten R CELL</h2><p className="text-[11px] text-muted-foreground">AI DeepSeek · harga sesuai katalog</p>{role === 'owner' && <Link className="text-[11px] text-primary underline" href="/asisten/umpan-balik" onClick={() => setOpen(false)}>Tinjau masukan</Link>}</div></div>
+        <div className="flex items-center gap-2"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary"><Bot className="h-5 w-5" /></span><div><h2 className="text-sm font-semibold">Teman Kerja R CELL</h2><p className="text-[11px] text-muted-foreground">Tanya dengan kata-katamu sendiri</p>{role === 'owner' && <Link className="text-[11px] text-primary underline" href="/asisten/umpan-balik" onClick={() => setOpen(false)}>Tinjau masukan</Link>}</div></div>
         <Button type="button" size="icon" variant="ghost" aria-label="Tutup chat" onClick={() => setOpen(false)}><X className="h-4 w-4" /></Button>
       </header>
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-3">
         {!lines.length && <div className="space-y-3 pt-2">
-          <div className="max-w-[90%] rounded-2xl rounded-tl-sm bg-muted p-3 text-sm">Halo! Tulis saja seperti biasa, meski singkat atau ada typo. Saya bisa bantu mencari harga, mencatat penjualan, mengoreksi penjualan hari ini, dan menyiapkan cek stok.</div>
+          <div className="max-w-[90%] rounded-2xl rounded-tl-sm bg-muted p-3 text-sm">Halo! Ada yang bisa dibantu? Cerita saja seperti ke teman kerja—misalnya “harga charger samsung berapa?” atau “tadi jual 2 surya”. Kalau ada yang kurang jelas, kita cari tahu pelan-pelan.</div>
           <div className="flex flex-wrap gap-2">
             <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Berapa harga barang ...?')}>Cari harga</button>
             <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat penjualan hari ini. Tolong tanya barang dan jumlah yang terjual.')}>Catat penjualan</button>
@@ -425,7 +425,7 @@ export function AssistantChat({ role }: { role: string }) {
       <form className="flex items-center gap-2 border-t bg-background p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
         <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" aria-label="Pilih foto barang" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; try { setImage(await prepareImage(file)); photoTextRef.current = import('@/lib/browser-ocr').then(({ readPhotoText }) => readPhotoText(file)).catch(() => ''); setError(''); } catch (caught) { setError(caught instanceof Error ? caught.message : 'Foto gagal diproses.'); } event.target.value = ''; }} />
         <Button type="button" size="icon" variant="outline" aria-label="Tambahkan foto barang" disabled={busy} onClick={() => fileRef.current?.click()}><ImagePlus className="h-4 w-4" /></Button>
-        <Input value={text} onChange={(event) => setText(event.target.value)} placeholder="Tanyakan dengan bahasa sehari-hari..." aria-label="Pesan untuk asisten" maxLength={700} disabled={busy} />
+        <Input value={text} onChange={(event) => setText(event.target.value)} placeholder="Tulis seperti biasa..." aria-label="Pesan untuk asisten" maxLength={700} disabled={busy} />
         <Button type="submit" size="icon" aria-label="Kirim pesan" disabled={busy || (!text.trim() && !image)}><Send className="h-4 w-4" /></Button>
       </form>
     </section>}

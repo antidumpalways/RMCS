@@ -53,7 +53,7 @@ export function MobileNav({
 
   return (
     <>
-      <nav aria-label="Navigasi utama" className="fixed bottom-0 left-0 right-0 z-40 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur supports-[backdrop-filter]:bg-background/80">
+      <nav aria-label="Navigasi utama" className="fixed bottom-0 left-0 right-0 z-40 border-t border-border/80 bg-card/90 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_28px_-22px_hsl(var(--foreground)/0.36)] backdrop-blur-xl supports-[backdrop-filter]:bg-card/75">
         <div
           className="mx-auto grid max-w-2xl"
           style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
@@ -66,11 +66,11 @@ export function MobileNav({
                 href={it.href}
                 aria-current={active ? 'page' : undefined}
                 className={cn(
-                  'flex min-h-16 flex-col items-center justify-center gap-1 px-1 py-2 text-[11px] font-medium transition-colors',
+                  'flex min-h-16 flex-col items-center justify-center gap-1 px-1 py-2 text-[11px] font-semibold transition-colors',
                   active ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
                 )}
               >
-                <span className={cn('flex h-7 w-12 items-center justify-center rounded-full', active && 'bg-primary/10')}><it.icon className="h-5 w-5" /></span>
+                <span className={cn('flex h-7 w-12 items-center justify-center rounded-full transition-colors', active && 'bg-primary/10')}><it.icon className="h-5 w-5" /></span>
                 <span>{it.label}</span>
               </Link>
             );
