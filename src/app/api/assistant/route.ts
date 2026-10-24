@@ -42,6 +42,37 @@ type SaleProposal = {
 };
 type SaleWithItems = Prisma.SaleTransactionGetPayload<{ include: { items: { include: { product: true } } } }>;
 
+function explicitSoldItems(content: string): { productName: string; qty: number }[] | null {
+  // Catch concise shift notes such as “laku voucher X 10 pcs” even when the
+  // language model mistakenly treats them as a catalog lookup.
+  const normalized = content.normalize('NFKC').replace(/\s+/g, ' ').trim();
+  if (!/\b(?:laku|terjual|kejual|sold|jual)\b/i.test(normalized) ||
+      /\b(?:mau|ingin|akan|rencana|bisa|boleh)\s+(?:di)?jual\b/i.test(normalized)) return null;
+  const qtyMatches = [...normalized.matchAll(/\b(\d{1,7})\s*(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\b|\b(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\s*(\d{1,7})\b/gi)];
+  // A short-note fallback is safe only for one item. Leave multi-item shift
+  // summaries to the full assistant parser so no quantities are silently lost.
+  if (qtyMatches.length !== 1) return null;
+  const qtyMatch = qtyMatches[0];
+  const qty = Number(qtyMatch[1] ?? qtyMatch[2]);
+  if (!Number.isSafeInteger(qty) || qty < 1 || qty > 1_000_000) return null;
+  const productName = normalized
+    .replace(/\b(?:laku|terjual|kejual|sold|sudah|telah|barusan|tadi|aku|saya|kami|jual|sebanyak)\b/gi, ' ')
+    .replace(qtyMatch[0], ' ')
+    .replace(/\b(?:ya|nih|dong|pcs?|buah|biji|unit|lembar|item|pack|pak|x|×)\b/gi, ' ')
+    .replace(/[,:;.!?]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return productName.length > 1 ? [{ productName, qty }] : null;
+}
+
+function isAffirmative(content: string): boolean {
+  return /^(?:betul|betul\s+itu|benar|iya|ya|yap|oke|ok|sip|cocok|itu\s+yang\s+benar)[.!\s]*$/i.test(content.trim());
+}
+
+function likelyBusinessAction(content: string): boolean {
+  const text = content.trim();
+  if (!text || /\b(?:bagaimana|gimana|caranya|cara|apa\s+itu|kenapa|mengapa|contoh)\b/i.test(text)) return false;
+  return /\b(?:tolong|bantu|coba|langsung|sekarang|ya|dong|please|bisa|mohon)?\s*(?:tambah(?:kan|in)?|buat(?:kan|in)?|catat|simpan|hapus|hilangkan|ubah|edit|ganti|naikkan|turunkan|masuk(?:kan|in)?|keluar(?:kan|in)?|kurang(?:i|in)?|retur|tukar|tutup|buka|cek|hitung|terjual|kejual|laku|jual|bayar|lunasi|ingat|lupakan|rapikan|susun|periksa|opname|stok\s+masuk|barang\s+masuk|stok\s+kurang)\b/i.test(text);
+}
+
 const tools = [
   {
     type: 'function',
@@ -1398,8 +1429,41 @@ export async function POST(request: Request) {
     const result = await response.json() as {
       choices?: { message?: { content?: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
     };
-    const assistantMessage = result.choices?.[0]?.message;
+    let assistantMessage = result.choices?.[0]?.message;
     if (!assistantMessage) throw new Error('Respons DeepSeek kosong.');
+    const hasActionToolCall = (calls: { function: { name: string } }[] | undefined) =>
+      Boolean(calls?.some((call) => call.function.name !== 'search_products'));
+    if (!hasActionToolCall(assistantMessage.tool_calls) && likelyBusinessAction(lastMessage.content)) {
+      // Auto tool selection sometimes answers a clear command conversationally
+      // or searches the catalog instead of preparing the requested action.
+      // Retry once with a required tool call; the normal server validation and
+      // confirmation card still decide whether anything can be saved.
+      try {
+        const retry = await fetch('https://api.deepseek.com/chat/completions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: process.env.DEEPSEEK_MODEL || 'deepseek-flash',
+            messages: [{ role: 'system', content: `${systemPrompt}\nPesan terbaru tampak seperti permintaan tindakan toko. Jangan hanya membalas dengan teks atau berhenti pada pencarian bila pengguna meminta perubahan. Pilih fungsi yang paling sesuai. Jangan mengarang detail yang tidak disebut; bila belum cukup, biarkan validasi server meminta klarifikasi.` },
+              { role: 'system', content: contextSystem },
+              ...messages.slice(0, -1),
+              { role: 'user', content: userMessageContent }],
+            tools: availableTools,
+            tool_choice: 'required',
+            max_tokens: 700,
+            stream: false,
+          }),
+          signal: AbortSignal.timeout(12_000),
+        });
+        if (retry.ok) {
+          const retryResult = await retry.json() as typeof result;
+          const retryMessage = retryResult.choices?.[0]?.message;
+          if (retryMessage?.tool_calls?.length && hasActionToolCall(retryMessage.tool_calls)) assistantMessage = retryMessage;
+        }
+      } catch {
+        // Keep the original response if the optional routing retry is unavailable.
+      }
+    }
 
     const catalog = new Map<number, CatalogProduct>();
     let stockProposal: StockProposal | null = null;
@@ -1416,7 +1480,16 @@ export async function POST(request: Request) {
     let auditScope: string[] = [];
     let catalogSearchUsed = false;
     let searchQuery = '';
-    for (const call of assistantMessage.tool_calls ?? []) {
+    const previousUserMessage = [...messages.slice(0, -1)].reverse().find((entry) => entry.role === 'user');
+    const priorSaleNote = isAffirmative(lastMessage.content) && previousUserMessage && explicitSoldItems(previousUserMessage.content)
+      ? previousUserMessage
+      : undefined;
+    const explicitSaleItems = explicitSoldItems(lastMessage.content) ??
+      (priorSaleNote ? explicitSoldItems(priorSaleNote.content) : null);
+    const effectiveToolCalls = explicitSaleItems
+      ? [{ id: 'explicit-sold-note', function: { name: 'prepare_sale_create', arguments: JSON.stringify({ items: explicitSaleItems }) } }]
+      : assistantMessage.tool_calls ?? [];
+    for (const call of effectiveToolCalls) {
       let args: Record<string, unknown>;
       try {
         const parsed: unknown = JSON.parse(call.function.arguments);
@@ -1537,7 +1610,8 @@ export async function POST(request: Request) {
           const productName = item.productName.trim();
           const matches = await findCatalogProducts(productName, apiKey);
           const previousMatch = oldSale ? matches.filter((product) => oldSale!.items.some((old) => old.productId === product.id)) : [];
-          const product = matches.length === 1 && ['exact', 'high'].includes(matches[0].matchConfidence ?? '')
+          const product = matches.length === 1 && (['exact', 'high'].includes(matches[0].matchConfidence ?? '') ||
+            (Boolean(priorSaleNote) && matches[0].matchConfidence === 'medium'))
             ? matches[0] : previousMatch.length === 1 ? previousMatch[0] : null;
           if (!product) {
             for (const match of matches) catalog.set(match.id, match);
