@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Bot, CheckCircle2, ImagePlus, Loader2, MessageCircle, PackagePlus, Send, ShoppingBag, Sparkles, X } from 'lucide-react';
+import { Bot, CheckCircle2, ImagePlus, Loader2, PackagePlus, Send, ShoppingBag, Sparkles, SquarePen, X } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
@@ -122,9 +122,16 @@ function formatCatalogValue(label: string, value: string) {
   return label.startsWith('Harga') && /^\d+$/.test(value) ? formatRupiah(BigInt(value)) : value;
 }
 
-export function AssistantChat({ role }: { role: string }) {
+function saleQuantityFromQuery(query: string): number | null {
+  if (!/\b(?:laku|jual|terjual|kejual)\b/i.test(query)) return null;
+  const matches = [...query.matchAll(/\b(\d{1,7})\s*(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\b|\b(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\s*(\d{1,7})\b/gi)];
+  if (matches.length !== 1) return null;
+  const qty = Number(matches[0][1] ?? matches[0][2]);
+  return Number.isSafeInteger(qty) && qty > 0 ? qty : null;
+}
+
+export function AssistantChat({ role, userId }: { role: string; userId: number }) {
   const router = useRouter();
-  const [open, setOpen] = React.useState(false);
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [savingId, setSavingId] = React.useState<string | null>(null);
@@ -135,14 +142,61 @@ export function AssistantChat({ role }: { role: string }) {
   const [feedbackDone, setFeedbackDone] = React.useState<string[]>([]);
   const [feedbackBusy, setFeedbackBusy] = React.useState<string | null>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
+  const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const photoTextRef = React.useRef<Promise<string> | null>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const savingRef = React.useRef<string | null>(null);
   const canRecordStock = true;
+  const storageKey = `rcms:assistant:${userId}:v1`;
+  const [restored, setRestored] = React.useState(false);
 
   React.useEffect(() => {
-    if (open && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [open, lines, busy]);
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(storageKey) ?? '[]') as unknown;
+      if (Array.isArray(saved)) {
+        setLines(saved.filter((line): line is ChatLine => Boolean(line) && typeof line === 'object' &&
+          typeof line.id === 'string' && (line.role === 'user' || line.role === 'assistant') &&
+          typeof line.content === 'string').slice(-40));
+      }
+    } catch { /* A damaged browser session starts with a clean conversation. */ }
+    setRestored(true);
+  }, [storageKey]);
+
+  React.useEffect(() => {
+    if (!restored) return;
+    try {
+      const safeHistory = lines.slice(-40).map((line) => ({
+        id: line.id, role: line.role,
+        content: line.saleProposal || line.stockProposal || line.catalogProposal || line.draft
+          ? 'Draf ini belum disimpan. Tulis perintahnya lagi untuk menyiapkan draf baru.'
+          : line.catalog?.length || line.audit?.length
+            ? 'Hasil sebelumnya perlu dicari ulang agar datanya tetap terbaru.'
+            : line.content,
+      }));
+      sessionStorage.setItem(storageKey, JSON.stringify(safeHistory));
+    } catch { /* Chat tetap dapat dipakai bila penyimpanan browser penuh. */ }
+  }, [lines, restored, storageKey]);
+
+  React.useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [lines, busy]);
+
+  const startPrompt = (value: string) => {
+    setText(value);
+    inputRef.current?.focus();
+  };
+
+  const newConversation = () => {
+    setLines([]);
+    setText('');
+    setImage(null);
+    photoTextRef.current = null;
+    setError('');
+    setFeedbackNotes({});
+    setFeedbackDone([]);
+    sessionStorage.removeItem(storageKey);
+    inputRef.current?.focus();
+  };
 
   const send = async (value = text) => {
     const content = value.trim();
@@ -196,6 +250,12 @@ export function AssistantChat({ role }: { role: string }) {
         canFeedback: result.canFeedback,
       }]);
     } catch (caught) {
+      setLines((current) => current.filter((line) => line.id !== userLine.id));
+      setText(content);
+      if (sentImage) {
+        setImage(sentImage);
+        photoTextRef.current = photoTextPromise;
+      }
       setError(caught instanceof Error ? caught.message : 'Pesan belum terkirim. Coba lagi.');
     } finally {
       setBusy(false);
@@ -335,54 +395,57 @@ export function AssistantChat({ role }: { role: string }) {
     }
   };
 
-  return <>
-    {open && <section aria-label="Asisten R CELL" className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-3 z-50 flex h-[min(72dvh,620px)] w-[min(420px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl sm:right-6" role="dialog" aria-modal="false">
-      <header className="flex items-center justify-between border-b bg-card px-4 py-3">
-        <div className="flex items-center gap-2"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary"><Bot className="h-5 w-5" /></span><div><h2 className="text-sm font-semibold">Teman Kerja R CELL</h2><p className="text-[11px] text-muted-foreground">Tanya dengan kata-katamu sendiri</p>{role === 'owner' && <Link className="text-[11px] text-primary underline" href="/asisten/umpan-balik" onClick={() => setOpen(false)}>Tinjau masukan</Link>}</div></div>
-        <Button type="button" size="icon" variant="ghost" aria-label="Tutup chat" onClick={() => setOpen(false)}><X className="h-4 w-4" /></Button>
+  return <section aria-label="Asisten R CELL" className="flex min-h-[23rem] flex-col overflow-hidden rounded-[1.75rem] border bg-card shadow-[0_18px_55px_-34px_hsl(var(--foreground)/0.35)]" style={{ height: 'calc(100dvh - 11.5rem - env(safe-area-inset-top) - env(safe-area-inset-bottom))' }}>
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b bg-card/95 px-4 py-3 sm:px-5">
+        <div className="flex min-w-0 items-center gap-3"><span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-emerald-700 text-primary-foreground shadow-sm"><Bot className="h-6 w-6" /></span><div className="min-w-0"><h1 className="truncate text-base font-bold tracking-tight">Tanya Asisten</h1><p className="text-xs text-muted-foreground">Tulis seperti bicara ke teman kerja</p></div></div>
+        <div className="flex shrink-0 items-center gap-1">{role === 'owner' && <Link className="inline-flex min-h-10 items-center rounded-xl px-2 text-[11px] font-semibold text-primary hover:bg-primary/10 sm:px-3" href="/asisten/umpan-balik">Masukan</Link>}<Button type="button" size="icon" variant="ghost" aria-label="Mulai percakapan baru" title="Percakapan baru" disabled={busy || savingId !== null} onClick={newConversation}><SquarePen className="h-5 w-5" /></Button></div>
       </header>
-      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-3">
-        {!lines.length && <div className="space-y-3 pt-2">
-          <div className="max-w-[90%] rounded-2xl rounded-tl-sm bg-muted p-3 text-sm">Halo! Ada yang bisa dibantu? Cerita saja seperti ke teman kerja—misalnya “harga charger samsung berapa?” atau “tadi jual 2 surya”. Kalau ada yang kurang jelas, kita cari tahu pelan-pelan.</div>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Berapa harga barang ...?')}>Cari harga</button>
-            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat penjualan hari ini. Saya bisa menulis ringkasan beberapa barang sekaligus; tolong cocokkan ke katalog, hitung jumlah, omzet, laba, margin, dan stok yang berkurang. Tanyakan hanya bagian yang belum jelas.')}>Ringkasan penjualan</button>
-            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau koreksi penjualan terakhir. Tolong tanya perubahan yang benar sebelum menyiapkan draf.')}>Koreksi penjualan</button>
-            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau tambah barang baru ke katalog. Tolong tanya nama barang, kategori, harga jual, dan stoknya dulu sebelum menyiapkan draf.')}>Tambah barang</button>
-            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau mencatat bon pelanggan. Tolong tanya nama pelanggan dan nominalnya dulu sebelum menyiapkan draf.')}>Catat bon</button>
-            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau mencatat pengeluaran toko. Tolong tanya nama dan nominal pengeluarannya dulu sebelum menyiapkan draf.')}>Catat pengeluaran</button>
-            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Tolong rapikan katalog: periksa nama barang, provider, masa aktif, dan kategori/subkategori, lalu siapkan perbaikannya.')}>Rapikan katalog</button>
-            <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau kamu mengingat sesuatu. Tanya dulu apa yang perlu diingat dan jenisnya (istilah khas toko, cara bicara, atau aturan toko) sebelum menyiapkan draf.')}>Ingat sesuatu</button>
-            {canRecordStock && <button type="button" className="min-h-10 rounded-full border px-3 text-xs hover:bg-muted" onClick={() => void send('Saya mau catat stok saat tutup toko. Tolong tanya barang dan jumlahnya dulu.')}>Catat stok</button>}
+      <div ref={scrollRef} role="log" aria-label="Percakapan asisten" aria-live="polite" className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-gradient-to-b from-background/50 via-background/20 to-card px-3 py-5 sm:px-6">
+        {!lines.length && <div className="mx-auto flex h-full max-w-lg flex-col justify-center py-4">
+          <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary"><Sparkles className="h-7 w-7" /></span>
+          <h2 className="mt-5 text-2xl font-bold tracking-tight">Mau dibantu apa hari ini?</h2>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Ceritakan dengan bahasamu sendiri. Kalau ada perubahan data, kamu akan melihat ringkasannya dulu sebelum menyimpan.</p>
+          <p className="mt-7 text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">Mulai dari sini</p>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {[
+              ['Catat penjualan', 'Laku '],
+              ['Cari harga', 'Berapa harga '],
+              ['Barang masuk', 'Barang masuk '],
+              ['Catat bon', 'Catat bon '],
+              ['Ubah katalog', 'Ubah barang '],
+              ['Ringkasan shift', 'Penjualan shift ini: '],
+            ].map(([label, prompt]) => <button key={label} type="button" className="min-h-14 rounded-2xl border bg-card px-3 py-2 text-left text-sm font-semibold shadow-sm transition-colors hover:border-primary/40 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => startPrompt(prompt)}>{label}<span className="mt-0.5 block text-[11px] font-normal text-muted-foreground">Tulis dengan kata-katamu</span></button>)}
           </div>
         </div>}
-        {lines.map((line) => <div key={line.id} className={`space-y-2 ${line.role === 'user' ? 'ml-auto max-w-[90%]' : 'mr-auto max-w-[95%]'}`}>
-          <div className={`whitespace-pre-wrap rounded-2xl p-3 text-sm leading-relaxed ${line.role === 'user' ? 'rounded-tr-sm bg-primary text-primary-foreground' : 'rounded-tl-sm bg-muted'}`}>{line.image && <img src={line.image} alt="Foto barang yang ditanyakan" className="mb-2 max-h-32 max-w-full rounded-lg object-contain" />}{line.content}</div>
+        {lines.map((line) => <div key={line.id} className={`space-y-2 ${line.role === 'user' ? 'ml-auto max-w-[88%]' : 'mr-auto max-w-[96%]'}`}>
+          <p className={`px-1 text-[11px] font-semibold text-muted-foreground ${line.role === 'user' ? 'text-right' : ''}`}>{line.role === 'user' ? 'Kamu' : 'Asisten R CELL'}</p>
+          <div className={`whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${line.role === 'user' ? 'rounded-tr-md bg-primary text-primary-foreground' : 'rounded-tl-md border bg-card'}`}>{line.image && <img src={line.image} alt="Foto barang yang ditanyakan" className="mb-2 max-h-32 max-w-full rounded-lg object-contain" />}{line.content}</div>
           {!!line.catalog?.length && <div className="space-y-2">{line.catalog.map((product) => <article key={product.id} className="rounded-xl border bg-card p-3 text-sm">
             <p className="font-semibold leading-snug">{product.name}</p>
             <p className="mt-1 text-xs text-muted-foreground">{[product.categoryName, product.provider, product.validity].filter(Boolean).join(' · ')}</p>
             <div className="mt-2 flex items-center justify-between gap-2"><strong className="text-primary">{formatRupiah(BigInt(product.sellPrice))}</strong><span className="text-xs text-muted-foreground">Stok {product.stock}</span></div>
             {product.matchConfidence !== 'exact' && <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">Kemungkinan cocok — periksa nama dan varian.</p>}
-            {line.query && !line.hasImage && !feedbackDone.includes(line.id) && <button type="button" className="mt-2 text-xs text-primary underline" disabled={feedbackBusy !== null} onClick={() => void submitFeedback(line, product.id)}>Ini barang yang benar</button>}
+            {line.query && saleQuantityFromQuery(line.query) && <Button type="button" size="sm" variant="outline" className="mt-3 min-h-11 w-full" disabled={busy || savingId !== null} onClick={() => void send(`Laku ${product.name} ${saleQuantityFromQuery(line.query!)} pcs`)}>Pakai untuk draf penjualan</Button>}
+            {line.query && !line.hasImage && !feedbackDone.includes(line.id) && <button type="button" className="mt-2 block text-xs text-primary underline" disabled={feedbackBusy !== null} onClick={() => void submitFeedback(line, product.id)}>Laporkan kecocokan ke owner</button>}
           </article>)}</div>}
           {line.canFeedback && line.query && !line.hasImage && (feedbackDone.includes(line.id)
             ? <p className="text-xs text-muted-foreground">Terima kasih. Owner akan meninjau masukan ini.</p>
             : <div className="space-y-1"><label htmlFor={`feedback-${line.id}`} className="text-xs text-muted-foreground">Belum tepat? Tulis nama atau ciri barang yang dimaksud.</label><Input id={`feedback-${line.id}`} value={feedbackNotes[line.id] || ''} maxLength={200} onChange={(event) => setFeedbackNotes((current) => ({ ...current, [line.id]: event.target.value }))} placeholder="Contoh: charger mobil colokan USB-C" /><Button size="sm" type="button" variant="outline" disabled={!feedbackNotes[line.id]?.trim() || feedbackBusy !== null} onClick={() => void submitFeedback(line)}>{feedbackBusy === line.id ? 'Mengirim...' : 'Kirim koreksi ke owner'}</Button></div>)}
           {canRecordStock && line.stockProposal && <div className="rounded-xl border border-primary/30 bg-card p-3">
             <p className="text-xs font-semibold">Periksa draf cek stok {line.stockProposal.phase === 'buka' ? 'saat buka' : 'saat tutup'}</p>
-            <div className="mt-2 max-h-44 space-y-1 overflow-y-auto">{line.stockProposal.items.map((item) => <div key={item.productId} className="flex justify-between gap-3 text-xs"><span className="min-w-0 truncate">{item.productName}</span><strong className="shrink-0">{item.physicalStock}</strong></div>)}</div>
+            <div className="mt-2 max-h-44 space-y-1 overflow-y-auto">{line.stockProposal.items.map((item) => <div key={item.productId} className="flex justify-between gap-3 text-sm"><span className="min-w-0 truncate">{item.productName}</span><strong className="shrink-0">{item.physicalStock}</strong></div>)}</div>
             <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Cek nama barang dan jumlahnya. Hasil akan disimpan sebagai catatan; selisih tetap menunggu owner.</p>
-            <Button type="button" size="sm" className="mt-3 w-full" disabled={savingId !== null} onClick={() => void confirmStock(line, line.stockProposal!)}>
+            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={savingId !== null} onClick={() => void confirmStock(line, line.stockProposal!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> Simpan hasil hitung</>}
             </Button>
           </div>}
           {line.saleProposal && <div className="rounded-xl border border-primary/30 bg-card p-3 text-sm">
             <p className="flex items-center gap-2 text-xs font-semibold"><ShoppingBag className="h-4 w-4" /> {line.saleProposal.kind === 'create' ? 'Draf penjualan hari ini' : `Koreksi penjualan #${line.saleProposal.saleId}`}</p>
             {!!line.saleProposal.previousItems?.length && <div className="mt-2 rounded-lg bg-muted p-2 text-xs"><p className="font-medium">Catatan lama</p>{line.saleProposal.previousItems.map((item, index) => <p key={index}>{item.name} × {item.qty}</p>)}</div>}
-            <div className="mt-2 space-y-2">{line.saleProposal.items.map((item) => <div key={item.productId} className="flex justify-between gap-3 text-xs"><span>{item.name} × {item.qty}<span className="block text-muted-foreground">Sisa stok {item.stockAfter} · laba {formatRupiah(BigInt(item.profit))}</span></span><span className="shrink-0 font-medium">{formatRupiah(BigInt(item.unitPrice) * BigInt(item.qty))}</span></div>)}</div>
+            <div className="mt-2 space-y-2">{line.saleProposal.items.map((item) => <div key={item.productId} className="flex justify-between gap-3 text-sm"><span>{item.name} × {item.qty}<span className="block text-xs text-muted-foreground">Sisa stok {item.stockAfter} · laba {formatRupiah(BigInt(item.profit))}</span></span><span className="shrink-0 font-medium">{formatRupiah(BigInt(item.unitPrice) * BigInt(item.qty))}</span></div>)}</div>
             <div className="mt-2 space-y-1 border-t pt-2 text-right"><p className="font-semibold">Omzet {formatRupiah(BigInt(line.saleProposal.totalRevenue))}</p><p className="font-semibold text-emerald-700 dark:text-emerald-400">Perkiraan laba {formatRupiah(BigInt(line.saleProposal.totalProfit))} · margin {line.saleProposal.marginPercent}%</p></div>
             <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa semua barang dan jumlahnya. Setelah konfirmasi, stok berkurang dan omzet serta laba tercatat.</p>
-            <Button type="button" size="sm" className="mt-3 w-full" disabled={savingId !== null} onClick={() => void confirmSale(line, line.saleProposal!)}>
+            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={savingId !== null} onClick={() => void confirmSale(line, line.saleProposal!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> {line.saleProposal.kind === 'create' ? 'Konfirmasi penjualan' : 'Konfirmasi koreksi'}</>}
             </Button>
           </div>}
@@ -399,7 +462,7 @@ export function AssistantChat({ role }: { role: string }) {
               <div className="flex justify-between gap-3"><span className="text-muted-foreground">Stok minimal</span><span>{line.catalogProposal.fields.minStock}</span></div>
             </div>}
             <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa nama, kategori, dan nilainya. Katalog baru berubah setelah Anda menekan tombol ini.</p>
-            <Button type="button" size="sm" className="mt-3 w-full" disabled={savingId !== null} onClick={() => void confirmCatalog(line, line.catalogProposal!)}>
+            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={savingId !== null} onClick={() => void confirmCatalog(line, line.catalogProposal!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> {line.catalogProposal.kind === 'create' ? 'Konfirmasi tambah barang' : 'Konfirmasi ubah barang'}</>}
             </Button>
           </div>}
@@ -413,26 +476,22 @@ export function AssistantChat({ role }: { role: string }) {
           </div>}
           {line.draft && <div className="rounded-xl border border-amber-300/60 bg-card p-3 text-sm">
             <p className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="h-4 w-4 text-amber-600 dark:text-amber-400" /> {line.draft.title}</p>
-            <div className="mt-2 space-y-1 text-xs">{line.draft.lines.map((entry, index) => <div key={index} className="flex justify-between gap-3"><span className="text-muted-foreground">{entry.label}</span><strong className={entry.emphasis ? '' : 'font-medium'}>{entry.value}</strong></div>)}</div>
+            <div className="mt-2 space-y-1 text-sm">{line.draft.lines.map((entry, index) => <div key={index} className="flex justify-between gap-3"><span className="text-muted-foreground">{entry.label}</span><strong className={entry.emphasis ? '' : 'font-medium'}>{entry.value}</strong></div>)}</div>
             <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Periksa nilainya. Data baru berubah setelah Anda menekan tombol ini.</p>
-            <Button type="button" size="sm" className="mt-3 w-full" disabled={savingId !== null} onClick={() => void confirmDraft(line, line.draft!)}>
+            <Button type="button" size="sm" className="mt-3 min-h-11 w-full" disabled={savingId !== null} onClick={() => void confirmDraft(line, line.draft!)}>
               {savingId === line.id ? <><Loader2 className="h-4 w-4 animate-spin" /> Menyimpan...</> : <><CheckCircle2 className="h-4 w-4" /> Konfirmasi</>}
             </Button>
           </div>}
         </div>)}
-        {busy && <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Asisten sedang mencari...</div>}
+        {busy && <div role="status" className="flex items-center gap-2 px-1 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Asisten sedang menyiapkan jawaban...</div>}
         {error && <p role="alert" className="rounded-lg bg-destructive/10 p-2 text-xs text-destructive">{error}</p>}
       </div>
-      {image && <div className="flex items-center gap-2 border-t px-3 py-2 text-xs"><img src={image} alt="Foto siap dikirim" className="h-10 w-10 rounded object-cover" /><span className="flex-1">Foto siap dikirim. Pastikan tulisan pada label terlihat dekat dan terang.</span><button type="button" aria-label="Hapus foto" onClick={() => { setImage(null); photoTextRef.current = null; }}><X className="h-4 w-4" /></button></div>}
-      <form className="flex items-center gap-2 border-t bg-background p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+      {image && <div className="flex shrink-0 items-center gap-2 border-t px-4 py-2 text-xs"><img src={image} alt="Foto siap dikirim" className="h-10 w-10 rounded object-cover" /><span className="flex-1">Foto siap dikirim. Pastikan tulisan label terlihat jelas.</span><button type="button" aria-label="Hapus foto" onClick={() => { setImage(null); photoTextRef.current = null; }}><X className="h-4 w-4" /></button></div>}
+      <form className="flex shrink-0 items-end gap-2 border-t bg-card px-3 py-3 sm:px-5" onSubmit={(event) => { event.preventDefault(); void send(); }}>
         <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" aria-label="Pilih foto barang" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; try { setImage(await prepareImage(file)); photoTextRef.current = import('@/lib/browser-ocr').then(({ readPhotoText }) => readPhotoText(file)).catch(() => ''); setError(''); } catch (caught) { setError(caught instanceof Error ? caught.message : 'Foto gagal diproses.'); } event.target.value = ''; }} />
-        <Button type="button" size="icon" variant="outline" aria-label="Tambahkan foto barang" disabled={busy} onClick={() => fileRef.current?.click()}><ImagePlus className="h-4 w-4" /></Button>
-        <textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="Tulis seperti biasa... (Shift+Enter untuk baris baru)" aria-label="Pesan untuk asisten" maxLength={6000} disabled={busy} rows={2} className="min-h-10 max-h-32 flex-1 resize-y rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" />
-        <Button type="submit" size="icon" aria-label="Kirim pesan" disabled={busy || (!text.trim() && !image)}><Send className="h-4 w-4" /></Button>
+        <Button type="button" size="icon" variant="outline" aria-label="Tambahkan foto barang" disabled={busy} onClick={() => fileRef.current?.click()} className="h-11 w-11 shrink-0 rounded-xl"><ImagePlus className="h-5 w-5" /></Button>
+        <textarea ref={inputRef} value={text} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="Ceritakan apa yang terjadi di toko..." aria-label="Pesan untuk asisten" maxLength={6000} disabled={busy} rows={2} className="min-h-11 max-h-36 min-w-0 flex-1 resize-y rounded-xl border border-input bg-background px-3 py-2.5 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" />
+        <Button type="submit" size="icon" aria-label="Kirim pesan" disabled={busy || (!text.trim() && !image)} className="h-11 w-11 shrink-0 rounded-xl"><Send className="h-5 w-5" /></Button>
       </form>
-    </section>}
-    {!open && <Button type="button" size="icon" className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-3 z-50 h-14 w-14 rounded-full shadow-lg sm:bottom-6 sm:right-6" aria-label="Buka asisten R CELL" aria-expanded={open} onClick={() => setOpen(true)}>
-      <MessageCircle className="h-6 w-6" />
-    </Button>}
-  </>;
+    </section>;
 }

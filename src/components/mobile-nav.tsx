@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { Home, Package, ArrowRightLeft, FileText, Tag, Wallet, Settings as Cog, ClipboardCheck, ClipboardList, MoreHorizontal } from 'lucide-react';
+import { Home, Package, ArrowRightLeft, FileText, Tag, Wallet, Settings as Cog, ClipboardCheck, ClipboardList, MoreHorizontal, MessageCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 
@@ -15,6 +15,7 @@ type NavItem = {
 
 const allItems: NavItem[] = [
   { href: '/', label: 'Ringkasan', icon: Home },
+  { href: '/asisten', label: 'Asisten', icon: MessageCircle },
   { href: '/inventory', label: 'Stok', icon: Package },
   { href: '/transaksi', label: 'Transaksi', icon: ArrowRightLeft },
   { href: '/harga', label: 'Harga', icon: Tag },
@@ -35,13 +36,14 @@ export function MobileNav({
   const items = isKaryawan ? [
     { href: '/', label: 'Beranda', icon: Home },
     { href: '/transaksi', label: 'Penjualan', icon: ArrowRightLeft },
+    { href: '/asisten', label: 'Asisten', icon: MessageCircle },
     { href: '/cek-stok', label: 'Cek Stok', icon: ClipboardCheck },
     { href: '/piutang', label: 'Bon', icon: Wallet },
     { href: '/serah-terima', label: 'Serah Terima', icon: ClipboardList },
   ] : allItems;
   const [moreOpen, setMoreOpen] = React.useState(false);
 
-  // Karyawan = 5 item pas, Owner = 8 → tampil 4 + More (5 kolom total) biar 44px touch target
+  // Tampilkan empat tujuan utama dan kelompokkan sisanya agar target sentuh tetap lega.
   const MAX_VISIBLE = 4;
   const needsMore = items.length > 5;
   const visibleItems = needsMore ? items.slice(0, MAX_VISIBLE) : items;
