@@ -48,10 +48,30 @@ function explicitSoldItems(content: string): { productName: string; qty: number 
   const normalized = content.normalize('NFKC').replace(/\s+/g, ' ').trim();
   if (!/\b(?:laku|terjual|kejual|sold|jual)\b/i.test(normalized) ||
       /\b(?:mau|ingin|akan|rencana|bisa|boleh)\s+(?:di)?jual\b/i.test(normalized)) return null;
+  const saleVerbs = [...normalized.matchAll(/\b(?:laku|terjual|kejual|sold|jual)\b/gi)];
+  if (saleVerbs.length > 1) {
+    // In shift notes, each "<barang> laku <jumlah>" closes one item. A
+    // missing quantity on any item makes the whole note ambiguous.
+    const sales = [...normalized.matchAll(/\b(?:laku|terjual|kejual|sold|jual)\s+(\d{1,7})(?:\s*(?:pcs?|buah|biji|unit|lembar|item|pack|pak))?\b/gi)];
+    if (sales.length !== saleVerbs.length || sales.length > 100) return null;
+    let cursor = 0;
+    const items: { productName: string; qty: number }[] = [];
+    for (const sale of sales) {
+      const qty = Number(sale[1]);
+      const productName = normalized.slice(cursor, sale.index)
+        .replace(/\b(?:hari ini|pagi ini|siang ini|sore ini|malam ini|kemarin|sudah|telah|barusan|tadi|aku|saya|kami)\b/gi, ' ')
+        .replace(/^[\s,;:.!?]*(?:dan|serta)?\s*/i, '')
+        .replace(/[\/,;:.!?]+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!Number.isSafeInteger(qty) || qty < 1 || qty > 1_000_000 || productName.length < 2) return null;
+      items.push({ productName, qty });
+      cursor = sale.index + sale[0].length;
+    }
+    return normalized.slice(cursor).trim().replace(/[.!?,;\s]+/g, '') ? null : items;
+  }
   // A separator or repeated sale phrase can indicate more than one item,
   // including when only one of the quantities has a unit such as "pcs".
   if (/[,;\n]|\b(?:dan|serta)\b/i.test(content) ||
-      [...normalized.matchAll(/\b(?:laku|terjual|kejual|sold|jual)\b/gi)].length !== 1) return null;
+      saleVerbs.length !== 1) return null;
   const withUnit = [...normalized.matchAll(/\b(\d{1,7})\s*(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\b|\b(?:pcs?|buah|biji|unit|lembar|item|pack|pak)\s*(\d{1,7})\b/gi)];
   const qtyMatches = withUnit.length ? withUnit
     : [...normalized.matchAll(/\b(?:laku|terjual|kejual|jual|sold)\s+(\d{1,7})\b(?!\s*(?:ribu|rb|rupiah|rp)\b)/gi)];
@@ -638,6 +658,23 @@ function catalogProduct(product: {
     sellPrice: product.sellPrice.toString(),
     stock: product.stock,
   };
+}
+
+async function findUnambiguousCatalogProduct(query: string): Promise<CatalogProduct | null> {
+  const terms = catalogSearchTerms(query);
+  if (terms.length < 2) return null;
+  const products = await prisma.product.findMany({
+    include: { category: { select: { name: true } } }, take: 3001,
+  });
+  // A partial catalog cannot establish that a variant is unique.
+  if (products.length > 3000) return null;
+  const matches = products.filter((product) => {
+    const attributes = new Set(catalogSearchTerms([
+      product.name, product.category.name, product.provider, product.validity,
+    ].filter(Boolean).join(' ')));
+    return terms.every((term) => attributes.has(term));
+  });
+  return matches.length === 1 ? { ...catalogProduct(matches[0]), matchConfidence: 'high' } : null;
 }
 
 async function findCatalogProducts(query: string, apiKey: string) {
@@ -1677,7 +1714,8 @@ export async function POST(request: Request) {
         const changedIds = new Set<number>();
         for (const item of rawItems as { productName: string; qty: number }[]) {
           const productName = item.productName.trim();
-          let matches = await findCatalogProducts(productName, apiKey);
+          const verified = await findUnambiguousCatalogProduct(productName);
+          let matches = verified ? [verified] : await findCatalogProducts(productName, apiKey);
           // Employees often say the category before the exact catalog name,
           // e.g. “voucher Telkomsel 5GB 3 Hari”. Check that exact name before
           // treating a single semantic suggestion as uncertain.
