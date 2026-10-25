@@ -146,9 +146,15 @@ export function AssistantChat({ role, userId }: { role: string; userId: number }
     try {
       const saved = JSON.parse(sessionStorage.getItem(storageKey) ?? '[]') as unknown;
       if (Array.isArray(saved)) {
-        setLines(saved.filter((line): line is ChatLine => Boolean(line) && typeof line === 'object' &&
+        const validLines = saved.filter((line): line is ChatLine => Boolean(line) && typeof line === 'object' &&
           typeof line.id === 'string' && (line.role === 'user' || line.role === 'assistant') &&
-          typeof line.content === 'string').slice(-40));
+          typeof line.content === 'string').slice(-40);
+        const staleResultNotice = 'Hasil sebelumnya perlu dicari ulang agar datanya tetap terbaru.';
+        setLines(validLines.filter((line, index) => {
+          if (line.role === 'assistant' && line.content === staleResultNotice) return false;
+          return !(line.role === 'user' && validLines[index + 1]?.role === 'assistant' &&
+            validLines[index + 1]?.content === staleResultNotice);
+        }));
       }
     } catch { /* A damaged browser session starts with a clean conversation. */ }
     setRestored(true);

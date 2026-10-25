@@ -587,11 +587,13 @@ async function classifyAssistantIntent(apiKey: string, messages: ChatMessage[], 
           { role: 'system', content: `Tentukan maksud pesan TERAKHIR dalam percakapan toko berbahasa Indonesia. Pahami bahasa bebas, typo, urutan kata, rujukan ke pesan sebelumnya, dan laporan beberapa barang sekaligus. Pilih tepat satu intent: "action" bila pengguna meminta perubahan data ATAU menceritakan kejadian/hasil toko yang perlu dicatat; "lookup" bila hanya meminta informasi atau mencari barang; "conversation" bila hanya mengobrol atau informasi belum cukup untuk memilih alat; "pending_confirmation" bila sudah ada draf aktif dan pengguna hanya menyetujui atau meminta menyimpan draf itu. Draf aktif: ${pendingDraft ? 'ya' : 'tidak'}. Cerita bahwa barang sudah laku/terjual adalah laporan penjualan yang perlu dicatat walau pengguna tidak menulis kata "catat". Jumlah barang yang muncul bersama laporan seperti itu harus dihitung sebagai saleItemCount. Contoh berdasarkan maksud, bukan pencocokan kata: "laku voucher A 10 pcs" = action dengan 1 item; "voucher A sama B masing-masing laku 2" = action dengan 2 item; "berapa harga voucher A?" = lookup; "stok fisik barang A sekarang 45, tolong perbarui" = action; "tambahkan barang baru A dengan harga ..." = action. Untuk action selain laporan penjualan, isi saleItemCount null. Jangan membaca laporan kejadian sebagai pencarian hanya karena nama barang disebut. Jangan tentukan dari kata kunci saja; pahami maksud seluruh kalimat dan riwayatnya. Balas JSON saja: {"intent":"...","saleItemCount":null}. Alat aksi yang tersedia: ${tools.filter((tool) => tool.function.name !== 'search_products').map((tool) => tool.function.name).join(', ')}.` },
           ...messages.slice(-8),
         ],
-        max_tokens: 120,
+        response_format: { type: 'json_object' },
+        thinking: { type: 'disabled' },
+        max_tokens: 180,
         temperature: 0,
         stream: false,
       }),
-      signal: AbortSignal.timeout(8_000),
+      signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) return null;
     const data = await response.json() as { choices?: { message?: { content?: string | null } }[] };
