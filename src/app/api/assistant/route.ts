@@ -1503,7 +1503,7 @@ export async function POST(request: Request) {
           { role: 'system', content: contextSystem },
           ...messages.slice(0, -1),
           { role: 'user', content: userMessageContent }],
-        ...(availableTools.length ? { tools: availableTools, tool_choice: intent === 'action' || intent === 'lookup' ? 'required' : 'auto' } : {}),
+        ...(availableTools.length ? { tools: availableTools, tool_choice: intent === 'lookup' ? 'required' : 'auto' } : {}),
         max_tokens: 700,
         stream: false,
       }),
