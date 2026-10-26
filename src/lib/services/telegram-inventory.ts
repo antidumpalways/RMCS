@@ -4,7 +4,7 @@ import { shiftOpening } from '@/lib/automation';
 import { catalogQueryKey } from '@/lib/catalog-search';
 import { semanticCatalogSearch } from '@/lib/semantic-catalog';
 import type { RecapDraft, RecapInventoryLine } from '@/lib/telegram/recap';
-import { calculateUnrecordedQuantity, evaluateInventoryDeduction, normalizeStockUnit, resolveInventoryProduct, type InventoryCatalogProduct } from '@/lib/telegram/inventory';
+import { calculateUnrecordedQuantity, evaluateInventoryDeduction, normalizeStockUnit, resolveInventoryProduct, telegramWebAppSaleScope, type InventoryCatalogProduct } from '@/lib/telegram/inventory';
 
 export class TelegramInventoryError extends Error {
   constructor(readonly code: 'INVENTORY_UNMAPPED' | 'INVENTORY_COVERAGE' | 'INVENTORY_STALE' | 'INVENTORY_INSUFFICIENT' | 'INVENTORY_UNIT', message: string) { super(message); }
@@ -41,18 +41,18 @@ export async function resolveInventoryMappings(draft: RecapDraft): Promise<Recap
   return { ...draft, inventoryLines: resolved };
 }
 
-export async function inventoryPreview(userId: number, draft: RecapDraft, now = new Date()) {
+export async function inventoryPreview(userId: number | null, draft: RecapDraft, now = new Date()) {
   const { start } = await shiftOpening(now);
   const productIds = [...new Set((draft.inventoryLines ?? []).flatMap(line => line.productId ? [line.productId] : []))];
   const rows = await prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true, stock: true, locationId: true } });
   const items = await Promise.all(rows.map(async product => {
-    const sales = await prisma.saleItem.aggregate({ where: { productId: product.id, sale: { userId, kind: 'SALE', createdAt: { gte: start, lte: now } } }, _sum: { qty: true } });
+    const sales = await prisma.saleItem.aggregate({ where: { productId: product.id, sale: telegramWebAppSaleScope(userId, start, now) }, _sum: { qty: true } });
     return { ...product, recordedWebQty: sales._sum.qty ?? 0 };
   }));
   return { start, items };
 }
 
-export async function postTelegramInventory(tx: Prisma.TransactionClient, reportId: string, userId: number, draft: RecapDraft, shiftStart: Date, now = new Date()) {
+export async function postTelegramInventory(tx: Prisma.TransactionClient, reportId: string, userId: number | null, telegramIdentityId: string, draft: RecapDraft, shiftStart: Date, now = new Date()) {
   const lines = draft.inventoryLines ?? [];
   if (!lines.length) return [];
   if (lines.some(line => line.mappingStatus !== 'MATCHED' || !line.productId)) throw new TelegramInventoryError('INVENTORY_UNMAPPED', 'Ada produk yang belum dipastikan.');
@@ -71,7 +71,7 @@ export async function postTelegramInventory(tx: Prisma.TransactionClient, report
   const postings = [];
   for (const product of products) {
     const group = aggregated.get(product.id)!;
-    const sales = await tx.saleItem.aggregate({ where: { productId: product.id, sale: { userId, kind: 'SALE', createdAt: { gte: shiftStart, lte: now } } }, _sum: { qty: true } });
+    const sales = await tx.saleItem.aggregate({ where: { productId: product.id, sale: telegramWebAppSaleScope(userId, shiftStart, now) }, _sum: { qty: true } });
     const recorded = sales._sum.qty ?? 0;
     if (recorded !== group.recorded) throw new TelegramInventoryError('INVENTORY_STALE', `Penjualan Web App untuk ${product.name} berubah sejak pratinjau. Tinjau laporan lagi.`);
     const plan = evaluateInventoryDeduction(group.quantity, recorded, product.stock, group.coverage === 'INCLUDES_APP_SALES' ? 'INCLUDES_APP_SALES' : 'UNRECORDED_ONLY');
@@ -85,7 +85,7 @@ export async function postTelegramInventory(tx: Prisma.TransactionClient, report
     let movementId: number | null = null;
     if (appliedQty > 0) {
       const movement = await tx.inventoryMovement.create({ data: { productId: product.id, type: 'TELEGRAM_SHIFT_RECAP', qty: -appliedQty,
-        costAtTime: product.costPrice, note: `Rekap Telegram ${reportId}; baris ${lineId}`, userId }, select: { id: true } });
+        costAtTime: product.costPrice, note: `Rekap Telegram ${reportId}; baris ${lineId}`, userId, telegramIdentityId }, select: { id: true } });
       movementId = movement.id;
     }
     const posting = await tx.telegramInventoryPosting.create({ data: { operationKey: `${reportId}:${lineId}:TELEGRAM_SHIFT_RECAP`, reportId, lineId,
@@ -96,7 +96,7 @@ export async function postTelegramInventory(tx: Prisma.TransactionClient, report
   return postings;
 }
 
-export async function prepareInventoryReview(userId: number, draft: RecapDraft, now = new Date()) {
+export async function prepareInventoryReview(userId: number | null, draft: RecapDraft, now = new Date()) {
   const mapped = await resolveInventoryMappings(draft);
   const preview = await inventoryPreview(userId, mapped, now);
   const byId = new Map(preview.items.map(item => [item.id, item]));

@@ -67,6 +67,7 @@ model User {
   telegramShiftReports TelegramShiftReport[]
   telegramCorrectionsRequested TelegramReportCorrection[] @relation("TelegramCorrectionRequester")
   telegramCorrectionsApproved TelegramReportCorrection[] @relation("TelegramCorrectionApprover")
+  linkedTelegramIdentity TelegramIdentity? @relation("LinkedTelegramUser")
   telegramUserId BigInt? @unique
   telegramLinkCodeHash String? @unique
   telegramLinkExpiresAt DateTime?
@@ -199,6 +200,8 @@ model InventoryMovement {
   note        String?
   userId      Int?
   user        User?    @relation(fields: [userId], references: [id])
+  telegramIdentityId String?
+  telegramIdentity TelegramIdentity? @relation("TelegramInventoryActor", fields: [telegramIdentityId], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now())
 
   telegramPosting TelegramInventoryPosting?
@@ -291,11 +294,34 @@ model TelegramUpdate {
   @@index([status, leaseUntil])
 }
 
+// Telegram-native identities stay isolated from RMCS web-login accounts.
+model TelegramIdentity {
+  id                    String   @id @default(cuid())
+  telegramUserId        BigInt   @unique
+  displayName           String
+  username              String?
+  lastGroupId           BigInt
+  linkedUserId          Int?     @unique
+  linkedUser            User?    @relation("LinkedTelegramUser", fields: [linkedUserId], references: [id], onDelete: SetNull)
+  sessions              TelegramSession[]
+  drafts                TelegramDraft[]
+  shiftReports          TelegramShiftReport[]
+  requestedCorrections  TelegramReportCorrection[] @relation("TelegramCorrectionTelegramRequester")
+  approvedCorrections   TelegramReportCorrection[] @relation("TelegramCorrectionTelegramApprover")
+  inventoryMovements    InventoryMovement[] @relation("TelegramInventoryActor")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([lastGroupId])
+}
+
 model TelegramSession {
   id        String   @id @default(cuid())
   chatId    BigInt
-  userId    Int
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  telegramIdentityId String?
+  telegramIdentity TelegramIdentity? @relation(fields: [telegramIdentityId], references: [id], onDelete: Cascade)
   state     String   // REPORTING | WAITING_CONFIRMATION
   revision  Int      @default(0)
   draftId   String?
@@ -304,13 +330,16 @@ model TelegramSession {
   updatedAt DateTime @updatedAt
 
   @@unique([chatId, userId])
+  @@unique([chatId, telegramIdentityId])
   @@index([userId, expiresAt])
 }
 
 model TelegramDraft {
   id          String   @id @default(cuid())
-  userId      Int
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      Int?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  telegramIdentityId String?
+  telegramIdentity TelegramIdentity? @relation(fields: [telegramIdentityId], references: [id], onDelete: SetNull)
   chatId      BigInt
   kind        String   // SHIFT_RECAP
   payload     Json
@@ -321,6 +350,7 @@ model TelegramDraft {
   updatedAt   DateTime @updatedAt
 
   @@index([userId, status, expiresAt])
+  @@index([telegramIdentityId, status, expiresAt])
   @@index([chatId, status])
   shiftReport TelegramShiftReport?
 }
@@ -329,8 +359,10 @@ model TelegramShiftReport {
   id          String   @id @default(cuid())
   draftId     String   @unique
   draft       TelegramDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
-  userId      Int
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      Int?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  telegramIdentityId String?
+  telegramIdentity TelegramIdentity? @relation(fields: [telegramIdentityId], references: [id], onDelete: SetNull)
   chatId      BigInt
   shiftLabel  String?
   payload     Json
@@ -338,6 +370,7 @@ model TelegramShiftReport {
   createdAt   DateTime @default(now())
 
   @@index([userId, confirmedAt])
+  @@index([telegramIdentityId, confirmedAt])
   @@index([chatId, confirmedAt])
   inventoryPostings TelegramInventoryPosting[]
   corrections TelegramReportCorrection[]
@@ -466,10 +499,14 @@ model TelegramReportCorrection {
   report         TelegramShiftReport @relation(fields: [reportId], references: [id], onDelete: Restrict)
   postingId      String
   posting         TelegramInventoryPosting @relation(fields: [postingId], references: [id], onDelete: Restrict)
-  requestedById  Int
-  requestedBy    User @relation("TelegramCorrectionRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  requestedById  Int?
+  requestedBy    User? @relation("TelegramCorrectionRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  requestedByTelegramIdentityId String?
+  requestedByTelegramIdentity TelegramIdentity? @relation("TelegramCorrectionTelegramRequester", fields: [requestedByTelegramIdentityId], references: [id], onDelete: SetNull)
   approvedById   Int?
   approvedBy     User? @relation("TelegramCorrectionApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedByTelegramIdentityId String?
+  approvedByTelegramIdentity TelegramIdentity? @relation("TelegramCorrectionTelegramApprover", fields: [approvedByTelegramIdentityId], references: [id], onDelete: SetNull)
   reason         String
   previousQty    Int
   requestedQty   Int

@@ -59,10 +59,9 @@ test('duplicate Telegram update IDs are acknowledged only after the original is 
  assert.equal(duplicateUpdateDisposition('PROCESSING',new Date(now.getTime()+10000),now),'BUSY');
  assert.equal(duplicateUpdateDisposition('FAILED',null,now),'CLAIMED');
 });
-test('unlinked Telegram users cannot access an allowed report group',()=>{
+test('an identified Telegram member does not need an RMCS account to use an allowed report group',()=>{
  assert.equal(allowedTelegramGroup(-100123,'supergroup','-100123'),true);
- const userId:number|null=null;
- assert.equal(userId!==null&&allowedTelegramGroup(-100123,'supergroup','-100123'),false);
+ assert.equal(allowedTelegramGroup(-100999,'supergroup','-100123'),false);
 });
 
 
