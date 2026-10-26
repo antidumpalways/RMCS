@@ -35,6 +35,7 @@ import { useToast } from '@/components/ui/toast';
 type Product = {
   id: number;
   name: string;
+  sku: string | null;
   categoryId: number;
   categoryName: string;
   subcategoryId: number | null;
@@ -444,6 +445,7 @@ function EditProductDialog({
 }) {
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState(product.name);
+  const [sku, setSku] = React.useState(product.sku ?? '');
   const [categoryId, setCategoryId] = React.useState(String(product.categoryId));
   const [subId, setSubId] = React.useState(product.subcategoryId ? String(product.subcategoryId) : 'none');
   const [provider, setProvider] = React.useState(product.provider || 'none');
@@ -473,6 +475,7 @@ function EditProductDialog({
           action={async (fd) => {
             await updateProduct(product.id, {
               name: String(fd.get('name') || product.name),
+              sku: String(fd.get('sku') ?? '').trim() || null,
               categoryId: Number(fd.get('categoryId') || product.categoryId),
               subcategoryId: fd.get('subId') ? Number(fd.get('subId')) : null,
               provider: isVoucher && provider !== 'none' ? provider : null,
@@ -497,6 +500,10 @@ function EditProductDialog({
             />
           </div>
           <div className="space-y-1">
+          <div className="space-y-1">
+            <Label>SKU (opsional)</Label>
+            <Input name="sku" value={sku} onChange={(e) => setSku(e.target.value)} placeholder="Kode produk unik" />
+          </div>
             <Label>Kategori</Label>
             <input type="hidden" name="categoryId" value={categoryId} />
             <Select value={categoryId} onValueChange={setCategoryId}>
