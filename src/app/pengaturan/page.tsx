@@ -3,6 +3,7 @@ import { AppHeader } from '@/components/app-header';
 import { PengaturanClient } from './pengaturan-client';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/guard';
+import { TelegramLinking } from './telegram-linking';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,9 +30,11 @@ export default async function PengaturanPage() {
   } catch {
     // ignore
   }
+  const telegramUsers = await prisma.user.findMany({ where: { active: true }, select: { id: true, username: true, role: true, shift: true }, orderBy: { username: 'asc' } });
   return (
     <>
       <AppHeader user={me} />
+      <div className="space-y-4">
       <PengaturanClient
         isKaryawan={isKaryawan}
         settings={{
@@ -41,6 +44,8 @@ export default async function PengaturanPage() {
           theme: settings.theme,
         }}
       />
+      <TelegramLinking users={telegramUsers} />
+      </div>
     </>
   );
 }

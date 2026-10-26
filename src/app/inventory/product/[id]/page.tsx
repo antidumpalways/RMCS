@@ -42,6 +42,7 @@ export default async function ProductDetailPage({
         product={{
           id: p.id,
           name: p.name,
+          sku: p.sku,
           categoryId: p.categoryId,
           categoryName: p.category.name,
           subcategoryId: p.subcategoryId,
