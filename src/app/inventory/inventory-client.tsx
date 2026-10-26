@@ -38,6 +38,7 @@ import type { CategorySummary } from '@/lib/automation';
 type Product = {
   id: number;
   name: string;
+  sku: string | null;
   categoryId: number;
   categoryName: string;
   subcategoryId: number | null;
@@ -462,6 +463,7 @@ function ProductRow({
 function AddCategoryDialog({ onAdded }: { onAdded: () => void }) {
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState('');
+  const [sku, setSku] = React.useState('');
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -481,6 +483,7 @@ function AddCategoryDialog({ onAdded }: { onAdded: () => void }) {
             await createCategory(n);
             setOpen(false);
             setName('');
+            setSku('');
             onAdded();
           }}
           className="space-y-3"
@@ -496,6 +499,10 @@ function AddCategoryDialog({ onAdded }: { onAdded: () => void }) {
               required
               autoFocus
             />
+          </div>
+          <div className="space-y-1">
+            <Label>SKU (opsional)</Label>
+            <Input name="sku" value={sku} onChange={(e) => setSku(e.target.value)} placeholder="Kode produk unik" />
           </div>
           <Button type="submit" className="w-full">
             Tambah
@@ -608,6 +615,7 @@ function AddProductDialog({
             if (!n) return;
             await createProduct({
               name: n,
+              sku: String(fd.get('sku') ?? '').trim() || null,
               categoryId,
               subcategoryId: fd.get('subId') ? Number(fd.get('subId')) : null,
               provider: isVoucher && provider !== 'none' ? provider : null,

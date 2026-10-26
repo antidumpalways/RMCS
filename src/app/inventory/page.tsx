@@ -27,6 +27,7 @@ export default async function InventoryPage() {
         allProducts={allProducts.map((p) => ({
           id: p.id,
           name: p.name,
+          sku: p.sku,
           categoryId: p.categoryId,
           categoryName: p.category.name,
           subcategoryId: p.subcategoryId,
