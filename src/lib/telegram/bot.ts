@@ -295,18 +295,32 @@ async function processUpdate(u:TelegramUpdate){
  const m=u.message,c=u.callback_query,chat=m?.chat??c?.message?.chat,from=m?.from??c?.from;if(!chat||!from)return false;
  const command=m?.text?parseTelegramCommand(m.text):null;
  if(chat.type==='private'){
-  const claim=await claimUpdate(id);if(claim==='PROCESSED')return true;if(claim==='BUSY')throw new TelegramUpdateBusy();
+  let claim:'PROCESSED'|'BUSY'|'CLAIMED';
+  try{claim=await claimUpdate(id);}catch{
+   if(c)await answerTelegramCallback(c.id,'Saya belum bisa memeriksa permintaan ini. Coba lagi sebentar.');
+   else await sendTelegramMessage(chat.id,'Maaf, saya belum bisa memeriksa pesan ini sekarang. Tidak ada perubahan usaha yang diterapkan; coba lagi sebentar.');
+   return true;
+  }
+  if(claim==='PROCESSED')return true;
+  if(claim==='BUSY'){
+   if(c)await answerTelegramCallback(c.id,'Pesan sebelumnya masih diproses.');
+   else await sendTelegramMessage(chat.id,'Pesan sebelumnya masih diproses. Tunggu sebentar lalu kirim lagi.');
+   return true;
+  }
   try{
    const senderId=telegramId(from.id);
    if(senderId===null||senderId<=0n){
     if(c)await answerTelegramCallback(c.id,'Pengirim tidak dapat diverifikasi.');
+    else await sendTelegramMessage(chat.id,'Saya tidak dapat memverifikasi pengirim pesan ini.');
    }else if(command?.command==='whoami'){
     await sendTelegramMessage(chat.id,'ID Telegram Anda: '+senderId.toString()+'. Kirim angka ini kepada owner bila perlu ditambahkan sebagai owner bot.');
    }else if(senderId!==BigInt(chat.id)||!authorizedOwnerPrivateChat(from.id,chat.id)){
     if(c)await answerTelegramCallback(c.id,'Akses tidak diizinkan.');
     else await sendTelegramMessage(chat.id,'Asisten administrasi hanya tersedia untuk owner yang telah diotorisasi.');
    }else if(c){
-    await handleOwnerCallback(c,from.id);
+    try{await handleOwnerCallback(c,from.id);}catch{
+     await answerTelegramCallback(c.id,'Saya belum bisa menyelesaikan tombol ini. Periksa status terbaru sebelum mencoba lagi.');
+    }
    }else if(m){
     await handleOwnerMessage(m,from.id);
    }
