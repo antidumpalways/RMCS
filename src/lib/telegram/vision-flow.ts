@@ -20,7 +20,7 @@ function canonicalLabel(category:string,label:string){
 export function findVisionConflicts(current:RecapEntry[],candidate:RecapEntry[]):RecapEntry[]{
  return candidate.filter(entry=>current.some(old=>old.category===entry.category&&canonicalLabel(old.category,old.label)===canonicalLabel(entry.category,entry.label)));
 }
-export function visionPhotoAllowed(groupAllowed:boolean,linkedUser:boolean,activeSession:boolean){return groupAllowed&&linkedUser&&activeSession;}
+export function visionPhotoAllowed(groupAllowed:boolean,identifiedTelegramActor:boolean,activeSession:boolean){return groupAllowed&&identifiedTelegramActor&&activeSession;}
 export function mergeVisionEntries(current:RecapEntry[],candidate:RecapEntry[],mode:'accept'|'replace'|'supplement'):{entries:RecapEntry[];conflicts:RecapEntry[];blockedBalanceSupplement:boolean}{
  const conflicts=findVisionConflicts(current,candidate);
  if(mode==='accept'&&conflicts.length)return{entries:current,conflicts,blockedBalanceSupplement:false};

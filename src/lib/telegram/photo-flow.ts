@@ -67,11 +67,11 @@ export async function sendLatestPhotoReview(chatId:bigint,draftId:string,d:Recap
  const r=[...(d.photoReviews??[])].reverse().find(x=>['PENDING_REVIEW','CORRECTING'].includes(x.status));
  if(!r)return false;await showReview(chatId,draftId,r,d,revision);return true;
 }
-export async function handleTelegramPhoto(m:IncomingPhotoMessage,userId:number,updateId:bigint){
+export async function handleTelegramPhoto(m:IncomingPhotoMessage,identityId:string,updateId:bigint){
  const chatId=telegramId(m.chat.id);if(chatId===null)return;
- const session=await prisma.telegramSession.findUnique({where:{chatId_userId:{chatId,userId}}});
+ const session=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId,telegramIdentityId:identityId}}});
  const row=session?.draftId?await prisma.telegramDraft.findUnique({where:{id:session.draftId}}):null;
- const authorized=visionPhotoAllowed(allowedTelegramGroup(m.chat.id,m.chat.type,process.env.TELEGRAM_ALLOWED_GROUP_IDS),userId!==null,!!session&&session.state==='REPORTING'&&!!row&&row.status==='PENDING'&&session.expiresAt>new Date());
+ const authorized=visionPhotoAllowed(allowedTelegramGroup(m.chat.id,m.chat.type,process.env.TELEGRAM_ALLOWED_GROUP_IDS),!!identityId,!!session&&session.state==='REPORTING'&&!!row&&row.status==='PENDING'&&session.expiresAt>new Date());
  if(!authorized||!session||!row)return sendTelegramMessage(chatId,'Jalankan /rekap terlebih dahulu sebelum mengirim foto.');
  const input=chooseImage(m);if(!input||!input.fileUniqueId)return sendTelegramMessage(chatId,'Lampiran foto tidak dikenali. Kirim JPEG, PNG, GIF, atau WebP.');
  if(input.fileSize!==undefined&&input.fileSize>MAX_TELEGRAM_IMAGE_BYTES)return sendTelegramMessage(chatId,'Foto melebihi batas 8 MB. Kirim versi yang lebih kecil atau ketik manual.');
@@ -115,9 +115,9 @@ export async function handleTelegramPhoto(m:IncomingPhotoMessage,userId:number,u
   return sendTelegramMessage(chatId,e instanceof VisionExtractionError?e.message:'Pembacaan foto gagal. Silakan ketik rekap manual.');
  }
 }
-export async function correctTelegramPhotoFromText(m:IncomingPhotoMessage,userId:number,updateId:bigint):Promise<boolean>{
+export async function correctTelegramPhotoFromText(m:IncomingPhotoMessage,identityId:string,updateId:bigint):Promise<boolean>{
  const chatId=telegramId(m.chat.id);if(chatId===null||!m.text)return false;
- const session=await prisma.telegramSession.findUnique({where:{chatId_userId:{chatId,userId}}});if(!session?.draftId)return false;
+ const session=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId,telegramIdentityId:identityId}}});if(!session?.draftId)return false;
  const row=await prisma.telegramDraft.findUnique({where:{id:session.draftId}});if(!row||row.status!=='PENDING')return false;
  const draft=row.payload as unknown as RecapDraft;if(!draft.correctionPhotoId)return false;const review=draft.photoReviews?.find(x=>x.id===draft.correctionPhotoId&&x.status==='CORRECTING');if(!review)return false;
  if(draft.processedUpdateIds?.includes(updateId.toString())){await showReview(chatId,row.id,review,draft,session.revision);return true;}
@@ -134,12 +134,11 @@ export async function correctTelegramPhotoFromText(m:IncomingPhotoMessage,userId
  if(saved){const latest=saved.draft.photoReviews!.find(r=>r.id===review.id)!;await sendTelegramMessage(chatId,reviewText(latest)+'\n\nKoreksi tercatat. Tekan Selesai koreksi jika sudah benar.',makeKeyboard(row.id,latest,saved.draft,saved.revision));}
  return true;
 }
-export async function handleTelegramVisionCallback(c:Callback,userId:number|null){
+export async function handleTelegramVisionCallback(c:Callback,identityId:string){
  const chat=c.message?.chat,chatId=chat&&telegramId(chat.id),parsed=parseVisionCallback(c.data);
  if(!chat||chatId===null||chatId===undefined||!allowedTelegramGroup(chat.id,chat.type,process.env.TELEGRAM_ALLOWED_GROUP_IDS)){await answerTelegramCallback(c.id,'Grup tidak diizinkan.');return;}
  if(!parsed){await answerTelegramCallback(c.id,'Tombol foto tidak valid.');return;}
- if(!userId){await answerTelegramCallback(c.id,'Akun belum tertaut.');return;}
- const session=await prisma.telegramSession.findUnique({where:{chatId_userId:{chatId,userId}}});
+ const session=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId,telegramIdentityId:identityId}}});
  if(!session||session.draftId!==parsed.draftId||session.revision!==parsed.revision){await answerTelegramCallback(c.id,'Sesi berubah. Gunakan ringkasan foto terbaru atau /rekap.');return;}
  const row=await prisma.telegramDraft.findUnique({where:{id:parsed.draftId}});if(!row||row.status!=='PENDING'){await answerTelegramCallback(c.id,'Draf sudah tidak aktif.');return;}
  const draft=row.payload as unknown as RecapDraft,review=draft.photoReviews?.find(x=>x.id===parsed.photoId);

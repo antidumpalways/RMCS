@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allowedTelegramGroup, formatTelegramRupiah, parseCashInput, parseTelegramCallback, parseTelegramCommand, telegramId } from './core';
+import { allowedTelegramGroup, authorizedTelegramGroupSender, callbackBelongsToActor, formatTelegramRupiah, parseCashInput, parseTelegramCallback, parseTelegramCommand, parseTelegramOwnerIds, telegramId } from './core';
 
 test('parses commands and optional bot mention', () => {
   assert.deepEqual(parseTelegramCommand('/Rekap'), { command: 'rekap', args: '' });
@@ -13,6 +13,28 @@ test('allows only configured group and supergroup IDs', () => {
   assert.equal(allowedTelegramGroup(-100123, 'group', '-100456'), false);
   assert.equal(allowedTelegramGroup(123, 'private', '123'), false);
   assert.equal(allowedTelegramGroup(-100123, 'supergroup', undefined), false);
+});
+
+test('allowlisted group membership gives an unlinked numeric sender a Telegram identity', () => {
+  assert.equal(authorizedTelegramGroupSender({ chatId: -100123, chatType: 'supergroup', senderId: 700001, configuredGroups: '-100123' }), 700001n);
+  assert.equal(authorizedTelegramGroupSender({ chatId: -100999, chatType: 'supergroup', senderId: 700001, configuredGroups: '-100123' }), null);
+  assert.equal(authorizedTelegramGroupSender({ chatId: 700001, chatType: 'private', senderId: 700001, configuredGroups: '-100123,700001' }), null);
+});
+
+test('anonymous and channel-originated senders are rejected in an authorized group', () => {
+  assert.equal(authorizedTelegramGroupSender({ chatId: -100123, chatType: 'supergroup', senderId: 700001, senderChatId: -100123, configuredGroups: '-100123' }), null);
+  assert.equal(authorizedTelegramGroupSender({ chatId: -100123, chatType: 'channel', senderId: 700001, configuredGroups: '-100123' }), null);
+  assert.equal(authorizedTelegramGroupSender({ chatId: -100123, chatType: 'supergroup', senderId: undefined, configuredGroups: '-100123' }), null);
+});
+
+test('shared group callbacks remain bound to the Telegram identity that owns the draft', () => {
+  assert.equal(callbackBelongsToActor('telegram-employee-a', 'telegram-employee-a'), true);
+  assert.equal(callbackBelongsToActor('telegram-employee-a', 'telegram-employee-b'), false);
+  assert.equal(callbackBelongsToActor(null, 'telegram-employee-a'), false);
+});
+
+test('owner authorization uses explicit numeric Telegram IDs only', () => {
+  assert.deepEqual([...parseTelegramOwnerIds('123456, 700001, name, -5, 123456')], ['123456', '700001']);
 });
 
 test('parses non-negative rupiah input without accepting ambiguous text', () => {

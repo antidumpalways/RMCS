@@ -11,6 +11,26 @@ export function allowedTelegramGroup(chatId: string | number, chatType: string, 
   return allowed.has(String(chatId));
 }
 
+export function authorizedTelegramGroupSender(input: {
+  chatId: string | number;
+  chatType: string;
+  senderId: number | undefined;
+  senderChatId?: number;
+  configuredGroups: string | undefined;
+}): bigint | null {
+  if (!allowedTelegramGroup(input.chatId, input.chatType, input.configuredGroups) || input.senderChatId !== undefined) return null;
+  if (input.senderId === undefined || !Number.isSafeInteger(input.senderId) || input.senderId <= 0) return null;
+  return BigInt(input.senderId);
+}
+
+export function callbackBelongsToActor(ownerIdentityId: string | null, actorIdentityId: string): boolean {
+  return ownerIdentityId !== null && ownerIdentityId === actorIdentityId;
+}
+
+export function parseTelegramOwnerIds(value: string | undefined): Set<string> {
+  return new Set((value ?? '').split(',').map((id) => id.trim()).filter((id) => /^\d{1,20}$/.test(id)));
+}
+
 export function parseTelegramCallback(data: string | undefined): { operation: 'ok' | 'cancel' | 'edit'; draftId: string; revision?: number } | null {
   const match = /^rcms:(ok|cancel|edit):([A-Za-z0-9_-]{10,40})(?::([0-9]{1,10}))?$/.exec(data ?? '');
   if (!match) return null;

@@ -1,6 +1,10 @@
 import { catalogQueryKey, catalogSearchTerms, rankCatalogProducts, type SearchableProduct } from '@/lib/catalog-search';
 import type { RecapInventoryExtraction, RecapInventoryLine } from './recap';
 
+export function telegramWebAppSaleScope(userId: number | null, from: Date, to: Date) {
+  return { ...(userId === null ? {} : { userId }), kind: 'SALE' as const, createdAt: { gte: from, lte: to } };
+}
+
 export type InventoryCatalogProduct = SearchableProduct & { id: number; sku?: string | null; stock: number; locationId: number | null };
 export type ProductResolution = { status: 'MATCHED' | 'AMBIGUOUS' | 'UNMATCHED'; productId: number | null; candidateProductIds: number[] };
 

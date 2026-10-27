@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyExtraction, deterministicExtraction, emptyRecap } from './recap';
-import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, evaluateInventoryDeduction, inventoryCallback, mergePhotoInventory, normalizeStockUnit, parseInventoryCallback, resolveInventoryProduct, type InventoryCatalogProduct } from './inventory';
+import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, evaluateInventoryDeduction, inventoryCallback, mergePhotoInventory, normalizeStockUnit, parseInventoryCallback, resolveInventoryProduct, telegramWebAppSaleScope, type InventoryCatalogProduct } from './inventory';
 
 const catalog: InventoryCatalogProduct[] = [
   { id: 1, name: 'Kartu Axis 3GB', categoryName: 'Voucher', provider: 'Axis', validity: '3 hari', stock: 20, locationId: 1 },
@@ -81,4 +81,10 @@ test('post-confirmation correction is compensating and preserves the requested t
   assert.equal(correctedStockDeduction(5, 2, 'INCLUDES_APP_SALES'), 3);
   assert.equal(correctedStockDeduction(1, 2, 'INCLUDES_APP_SALES'), null);
   assert.equal(correctedStockDeduction(5, 2, 'UNRECORDED_ONLY'), 5);
+});
+
+test('unlinked Telegram employees reconcile against all same-shift Web App sales conservatively', () => {
+  const from = new Date('2026-10-27T08:00:00Z'), to = new Date('2026-10-27T16:00:00Z');
+  assert.deepEqual(telegramWebAppSaleScope(null, from, to), { kind: 'SALE', createdAt: { gte: from, lte: to } });
+  assert.deepEqual(telegramWebAppSaleScope(17, from, to), { userId: 17, kind: 'SALE', createdAt: { gte: from, lte: to } });
 });

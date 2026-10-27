@@ -46,7 +46,7 @@ test('same-account balance cannot be automatically supplemented',()=>{
  const x=mergeVisionEntries([{category:'electronic_balance',label:'dana',amount:'3,5jt',operation:'set'}],[{category:'electronic_balance',label:'dana',amount:'4jt',operation:'set'}],'supplement');
  assert.equal(x.blockedBalanceSupplement,true);
 });
-test('photo authorization requires group, linked user and active report',()=>{
+test('photo authorization requires an allowlisted group, identified Telegram sender and active report',()=>{
  assert.equal(visionPhotoAllowed(true,true,true),true);
  assert.equal(visionPhotoAllowed(false,true,true),false);
  assert.equal(visionPhotoAllowed(true,false,true),false);
