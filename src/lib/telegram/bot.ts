@@ -8,6 +8,8 @@ import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, 
 import { prepareInventoryReview, postTelegramInventory, inventoryPreview, TelegramInventoryError } from '@/lib/services/telegram-inventory';
 import { shiftOpening } from '@/lib/automation';
 import { identifyTelegramActor, configuredTelegramOwners, type TelegramActor } from './identity';
+import { handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
+import { authorizedOwnerPrivateChat } from './owner-intent';
 
 type TelegramChat={id:number;type:string};
 type TelegramUser={id:number;first_name?:string;last_name?:string;username?:string};
@@ -293,12 +295,21 @@ async function processUpdate(u:TelegramUpdate){
  const m=u.message,c=u.callback_query,chat=m?.chat??c?.message?.chat,from=m?.from??c?.from;if(!chat||!from)return false;
  const command=m?.text?parseTelegramCommand(m.text):null;
  if(chat.type==='private'){
-  if(c)return false;
   const claim=await claimUpdate(id);if(claim==='PROCESSED')return true;if(claim==='BUSY')throw new TelegramUpdateBusy();
   try{
-   await sendTelegramMessage(chat.id,command?.command==='start'
-    ?'Untuk memakai asisten operasional, kirim /rekap langsung di grup privat R-CELL yang diizinkan owner.'
-    :'Operasional bot hanya tersedia di grup privat R-CELL yang telah diizinkan. Perintah /link sudah tidak diperlukan.');
+   const senderId=telegramId(from.id);
+   if(senderId===null||senderId<=0n){
+    if(c)await answerTelegramCallback(c.id,'Pengirim tidak dapat diverifikasi.');
+   }else if(command?.command==='whoami'){
+    await sendTelegramMessage(chat.id,'ID Telegram Anda: '+senderId.toString()+'. Kirim angka ini kepada owner bila perlu ditambahkan sebagai owner bot.');
+   }else if(senderId!==BigInt(chat.id)||!authorizedOwnerPrivateChat(from.id,chat.id)){
+    if(c)await answerTelegramCallback(c.id,'Akses tidak diizinkan.');
+    else await sendTelegramMessage(chat.id,'Asisten administrasi hanya tersedia untuk owner yang telah diotorisasi.');
+   }else if(c){
+    await handleOwnerCallback(c,from.id);
+   }else if(m){
+    await handleOwnerMessage(m,from.id);
+   }
    await prisma.telegramUpdate.update({where:{updateId:id},data:{status:'PROCESSED',processedAt:new Date(),leaseUntil:null,lastError:null}});
    return true;
   }catch(e){await prisma.telegramUpdate.update({where:{updateId:id},data:{status:'FAILED',leaseUntil:null,lastError:(e instanceof Error?e.message:'unknown').slice(0,500)}});throw e;}
