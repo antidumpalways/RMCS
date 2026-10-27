@@ -15,6 +15,16 @@ export type OwnerAgentAction =
 export type OwnerAgentTurn = { reply: string; actions: OwnerAgentAction[]; clarification: string | null };
 export type OwnerChatMessage = { role: 'user' | 'assistant'; content: string };
 
+export class OwnerAgentTurnValidationError extends Error {
+  constructor(readonly reason: string, readonly field?: string, readonly actionIndex?: number) {
+    super('OWNER_AGENT_INVALID'); this.name = 'OwnerAgentTurnValidationError';
+  }
+}
+
+function invalidTurn(reason: string, field?: string, actionIndex?: number): never {
+  throw new OwnerAgentTurnValidationError(reason, field, actionIndex);
+}
+
 const safeText = (value: unknown, limit = 180): string | null =>
   typeof value === 'string' && value.trim() ? value.trim().replace(/\s+/g, ' ').slice(0, limit) : null;
 const safeQty = (value: unknown): number | null =>
@@ -28,19 +38,21 @@ function safeDate(value: unknown): string | null {
 }
 
 export function validateOwnerAgentTurn(value: unknown): OwnerAgentTurn {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('OWNER_AGENT_INVALID');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalidTurn('root_must_be_object');
   const raw = value as Record<string, unknown>;
   const reply = safeText(raw.reply, 900);
-  if (!reply || !Array.isArray(raw.actions) || raw.actions.length > 8) throw new Error('OWNER_AGENT_INVALID');
+  if (!reply) invalidTurn('reply_missing_or_invalid', 'reply');
+  if (!Array.isArray(raw.actions)) invalidTurn('actions_must_be_array', 'actions');
+  if (raw.actions.length > 8) invalidTurn('too_many_actions', 'actions');
   const actions: OwnerAgentAction[] = [];
-  for (const entry of raw.actions) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('OWNER_AGENT_INVALID');
+  for (const [actionIndex, entry] of raw.actions.entries()) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) invalidTurn('action_must_be_object', undefined, actionIndex);
     const action = entry as Record<string, unknown>;
     const query = safeText(action.query);
     switch (action.kind) {
       case 'search_products':
       case 'get_product_details':
-        if (!query) throw new Error('OWNER_AGENT_INVALID');
+        if (!query) invalidTurn('query_missing_or_invalid', 'query', actionIndex);
         actions.push({ kind: action.kind, query });
         break;
       case 'get_inventory':
@@ -48,36 +60,36 @@ export function validateOwnerAgentTurn(value: unknown): OwnerAgentTurn {
         break;
       case 'get_low_stock': actions.push({ kind: 'get_low_stock' }); break;
       case 'propose_stock_in':
-        if (!query) throw new Error('OWNER_AGENT_INVALID');
+        if (!query) invalidTurn('query_missing_or_invalid', 'query', actionIndex);
         actions.push({ kind: 'propose_stock_in', query, quantity: safeQty(action.quantity),
           unitCost: safeText(action.unitCost, 40), sellPrice: safeText(action.sellPrice, 40),
           margin: safeText(action.margin, 40), supplier: safeText(action.supplier, 100) });
         break;
       case 'propose_stock_adjustment':
-        if (!query) throw new Error('OWNER_AGENT_INVALID');
+        if (!query) invalidTurn('query_missing_or_invalid', 'query', actionIndex);
         actions.push({ kind: 'propose_stock_adjustment', query, targetStock: safeQty(action.targetStock), reason: safeText(action.reason, 300) });
         break;
       case 'propose_price_update':
-        if (!query) throw new Error('OWNER_AGENT_INVALID');
+        if (!query) invalidTurn('query_missing_or_invalid', 'query', actionIndex);
         actions.push({ kind: 'propose_price_update', query,
           field: action.field === 'sellPrice' || action.field === 'costPrice' || action.field === 'margin' ? action.field : null,
           amount: safeText(action.amount, 40) });
         break;
       case 'propose_location_change':
-        if (!query) throw new Error('OWNER_AGENT_INVALID');
+        if (!query) invalidTurn('query_missing_or_invalid', 'query', actionIndex);
         actions.push({ kind: 'propose_location_change', query, location: safeText(action.location, 100) });
         break;
       case 'get_business_report':
-        if (action.date !== null && action.date !== undefined && !safeDate(action.date)) throw new Error('OWNER_AGENT_INVALID');
+        if (action.date !== null && action.date !== undefined && !safeDate(action.date)) invalidTurn('date_invalid', 'date', actionIndex);
         actions.push({ kind: 'get_business_report', date: safeDate(action.date), shift: safeText(action.shift, 30) });
         break;
       case 'request_clarification': {
         const question = safeText(action.question, 500);
-        if (!question) throw new Error('OWNER_AGENT_INVALID');
+        if (!question) invalidTurn('question_missing_or_invalid', 'question', actionIndex);
         actions.push({ kind: 'request_clarification', question });
         break;
       }
-      default: throw new Error('OWNER_AGENT_INVALID');
+      default: invalidTurn('action_kind_unsupported', 'kind', actionIndex);
     }
   }
   return { reply, actions, clarification: safeText(raw.clarification, 500) };
@@ -100,7 +112,8 @@ export function planStockInPricing(action: Extract<OwnerAgentAction, { kind: 'pr
 
 export class OwnerAgentUnavailable extends Error {
   readonly diagnostics: { stage: string; category: string; status?: number; durationMs: number;
-    model: string; finishReason?: string | null; usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number } };
+    model: string; finishReason?: string | null; validationReason?: string; validationField?: string; actionIndex?: number;
+    usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number } };
   constructor(diagnostics: OwnerAgentUnavailable['diagnostics']) {
     super('OWNER_AGENT_UNAVAILABLE'); this.name = 'OwnerAgentUnavailable'; this.diagnostics = diagnostics;
   }
@@ -155,7 +168,14 @@ export async function interpretOwnerTurn(input: {
       console.info(JSON.stringify({ event: 'owner_agent_success', stage: 'complete', model: data.model || model,
         durationMs: Date.now() - startedAt, status: response.status, finishReason, usage }));
       return turn;
-    } catch { throw diagnose('schema_validation', stage, extra); }
+    } catch (error) {
+      const validation = error instanceof OwnerAgentTurnValidationError ? {
+        validationReason: error.reason,
+        ...(error.field ? { validationField: error.field } : {}),
+        ...(error.actionIndex !== undefined ? { actionIndex: error.actionIndex } : {}),
+      } : { validationReason: 'unexpected_validator_error' };
+      throw diagnose('schema_validation', stage, { ...extra, ...validation });
+    }
   } catch (error) {
     if (error instanceof OwnerAgentUnavailable) throw error;
     const aborted = timeoutSignal.aborted || (error instanceof Error && error.name === 'TimeoutError');
