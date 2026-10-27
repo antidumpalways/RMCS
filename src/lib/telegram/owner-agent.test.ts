@@ -112,6 +112,10 @@ test('truncated, empty, invalid JSON, and schema-invalid completions have distin
       });
     assert.equal(failure?.diagnostics.category, item.category);
     assert.equal(typeof failure?.diagnostics.durationMs, 'number');
+    if (item.label === 'schema invalid') {
+      assert.equal(failure?.diagnostics.validationReason, 'reply_missing_or_invalid');
+      assert.equal(failure?.diagnostics.validationField, 'reply');
+    }
   }
 });
 
