@@ -4,7 +4,7 @@ import { catalogSearchTerms, rankCatalogProducts } from '@/lib/catalog-search';
 import { respectsNumericAttributes, semanticCatalogSearch } from '@/lib/semantic-catalog';
 import { answerTelegramCallback, sendTelegramMessage, type InlineKeyboard } from './client';
 import { parseOwnerRupiah, telegramOwnerAuthorized, validateOwnerIntent, type OwnerIntent } from './owner-intent';
-import { interpretOwnerTurn, planStockInPricing, type OwnerAgentAction, type OwnerChatMessage } from './owner-agent';
+import { interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerChatMessage } from './owner-agent';
 
 type OwnerMessage = { chat: { id: number; type: string }; from?: { id: number; first_name?: string; last_name?: string }; text?: string };
 type OwnerCallback = { id: string; from: { id: number }; data?: string; message?: { chat: { id: number; type: string } } };
@@ -30,6 +30,14 @@ const CHAT_TTL = 7 * 24 * 60 * 60_000;
 const idr = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 });
 const formatIdr = (value: bigint) => idr.format(value);
 
+function logOwnerDiagnostic(stage: string, category: string, startedAt: number) {
+  console.error(JSON.stringify({ event: 'owner_assistant_failure', stage, category, durationMs: Date.now() - startedAt }));
+}
+
+class OwnerAssistantDatabaseError extends Error {
+  constructor(readonly stage: string) { super('OWNER_ASSISTANT_DATABASE_ERROR'); this.name = 'OwnerAssistantDatabaseError'; }
+}
+
 function expectedProduct(product: CatalogProduct): ExpectedProduct {
   return { stock: product.stock, costPrice: product.costPrice.toString(), sellPrice: product.sellPrice.toString(),
     locationId: product.locationId, locationName: product.location?.name ?? null, updatedAt: product.updatedAt.toISOString() };
@@ -53,11 +61,17 @@ function agentCandidateKeyboard(ownerId: number, actionIndex: number, products: 
 }
 
 async function getCatalog(): Promise<CatalogProduct[]> {
-  return prisma.product.findMany({
-    take: 3001, orderBy: { name: 'asc' },
-    select: { id: true, name: true, sku: true, provider: true, validity: true, stock: true, minStock: true, updatedAt: true,
-      costPrice: true, sellPrice: true, locationId: true, category: { select: { name: true } }, location: { select: { name: true } } },
-  });
+  const startedAt = Date.now();
+  try {
+    return await prisma.product.findMany({
+      take: 3001, orderBy: { name: 'asc' },
+      select: { id: true, name: true, sku: true, provider: true, validity: true, stock: true, minStock: true, updatedAt: true,
+        costPrice: true, sellPrice: true, locationId: true, category: { select: { name: true } }, location: { select: { name: true } } },
+    });
+  } catch {
+    logOwnerDiagnostic('product_catalog_lookup', 'database_error', startedAt);
+    throw new OwnerAssistantDatabaseError('product_catalog_lookup');
+  }
 }
 
 export async function findProductCandidates(query: string, catalog: CatalogProduct[]): Promise<CatalogProduct[]> {
@@ -271,23 +285,35 @@ function parseOwnerChatState(value: unknown, ownerId: number): OwnerChatState | 
 
 async function getOwnerChatState(chatId: bigint, ownerId: number): Promise<{ rowId: string; state: OwnerChatState }> {
   const rowId = ownerConversationId(ownerId), now = new Date();
-  const existing = await prisma.telegramDraft.findUnique({ where: { id: rowId } });
-  const saved = existing && existing.kind === 'OWNER_CONVERSATION' && existing.chatId === chatId &&
-    ['PENDING', 'PROCESSING'].includes(existing.status) && existing.expiresAt > now ? parseOwnerChatState(existing.payload, ownerId) : null;
-  if (saved) return { rowId, state: saved };
-  const initial: OwnerChatState = { version: 1, ownerId: String(ownerId), history: [], actions: [], selected: [],
-    pendingMatches: [], proposalDraftId: null, preview: null };
-  await prisma.telegramDraft.upsert({ where: { id: rowId },
-    create: { id: rowId, chatId, kind: 'OWNER_CONVERSATION', payload: initial as object, status: 'PENDING', expiresAt: new Date(Date.now() + CHAT_TTL) },
-    update: { chatId, kind: 'OWNER_CONVERSATION', payload: initial as object, status: 'PENDING', expiresAt: new Date(Date.now() + CHAT_TTL), confirmedAt: null },
-  });
-  return { rowId, state: initial };
+  const startedAt = Date.now();
+  try {
+    const existing = await prisma.telegramDraft.findUnique({ where: { id: rowId } });
+    const saved = existing && existing.kind === 'OWNER_CONVERSATION' && existing.chatId === chatId &&
+      ['PENDING', 'PROCESSING'].includes(existing.status) && existing.expiresAt > now ? parseOwnerChatState(existing.payload, ownerId) : null;
+    if (saved) return { rowId, state: saved };
+    const initial: OwnerChatState = { version: 1, ownerId: String(ownerId), history: [], actions: [], selected: [],
+      pendingMatches: [], proposalDraftId: null, preview: null };
+    await prisma.telegramDraft.upsert({ where: { id: rowId },
+      create: { id: rowId, chatId, kind: 'OWNER_CONVERSATION', payload: initial as object, status: 'PENDING', expiresAt: new Date(Date.now() + CHAT_TTL) },
+      update: { chatId, kind: 'OWNER_CONVERSATION', payload: initial as object, status: 'PENDING', expiresAt: new Date(Date.now() + CHAT_TTL), confirmedAt: null },
+    });
+    return { rowId, state: initial };
+  } catch {
+    logOwnerDiagnostic('conversation_state_read', 'database_error', startedAt);
+    throw new OwnerAssistantDatabaseError('conversation_state_read');
+  }
 }
 
 async function saveOwnerChatState(rowId: string, chatId: bigint, state: OwnerChatState, status: 'PENDING' | 'PROCESSING' = 'PENDING') {
-  await prisma.telegramDraft.update({ where: { id: rowId }, data: {
-    chatId, kind: 'OWNER_CONVERSATION', payload: state as object, status, expiresAt: new Date(Date.now() + CHAT_TTL),
-  } });
+  const startedAt = Date.now();
+  try {
+    await prisma.telegramDraft.update({ where: { id: rowId }, data: {
+      chatId, kind: 'OWNER_CONVERSATION', payload: state as object, status, expiresAt: new Date(Date.now() + CHAT_TTL),
+    } });
+  } catch {
+    logOwnerDiagnostic('conversation_state_write', 'database_error', startedAt);
+    throw new OwnerAssistantDatabaseError('conversation_state_write');
+  }
 }
 
 function actionQuery(action: OwnerAgentAction): string | null {
@@ -388,12 +414,12 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     await saveOwnerChatState(rowId, chatId, state);
     return sendTelegramMessage(chatId, `${reply}\n\n${state.preview}`, ownerActionKeyboard(previousDraftId!));
   }
-  if (previousDraftId) await prisma.telegramDraft.updateMany({ where: { id: previousDraftId, chatId, kind: 'OWNER_OPERATION', status: 'PENDING' }, data: { status: 'CANCELLED' } });
   state.proposalDraftId = null; state.preview = null; state.pendingMatches = [];
   const catalog = state.actions.some(action => 'query' in action || action.kind === 'get_low_stock') ? await getCatalog() : [];
   if (catalog.length > 3000) {
     state.proposalDraftId = null;
     await saveOwnerChatState(rowId, chatId, state);
+    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     return sendTelegramMessage(chatId, 'Katalog terlalu besar untuk ditinjau dengan aman sekarang. Belum ada perubahan data; coba pecah permintaan menjadi satu barang per pesan.');
   }
   const operations: OwnerOperation[] = [], labels: string[] = [], responses: string[] = [];
@@ -455,10 +481,10 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       if (clarification) break;
     }
   }
-  await saveOwnerChatState(rowId, chatId, state, 'PROCESSING');
   const content = [state.actions.length ? '' : reply, ...responses].filter(Boolean).join('\n\n');
   if (state.pendingMatches.length) {
     await saveOwnerChatState(rowId, chatId, state);
+    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     for (const pending of state.pendingMatches) {
       const matches = catalog.filter(product => pending.candidateIds.includes(product.id));
       await sendTelegramMessage(chatId, `Saya menemukan beberapa barang untuk “${pending.query}”. Pilih yang tepat; rincian permintaan tetap tersimpan.`,
@@ -469,16 +495,28 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
   }
   if (clarification) {
     await saveOwnerChatState(rowId, chatId, state);
+    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     return sendTelegramMessage(chatId, [content, clarification, 'Belum ada perubahan.'].filter(Boolean).join('\n\n'));
   }
   if (operations.length) {
     const batch = await createBatchDraft(chatId, ownerId, operations, labels);
     state.proposalDraftId = batch.draftId; state.preview = batch.preview;
-    await saveOwnerChatState(rowId, chatId, state);
+    try { await saveOwnerChatState(rowId, chatId, state); }
+    catch (error) {
+      await cancelSupersededDraft(batch.draftId, chatId);
+      throw error;
+    }
+    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     return sendTelegramMessage(chatId, [content, batch.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(batch.draftId));
   }
   await saveOwnerChatState(rowId, chatId, state);
+  if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
   return sendTelegramMessage(chatId, content || 'Saya belum menangkap maksudnya. Coba ceritakan dengan kata-kata sendiri; kalau ada angka yang belum jelas, saya akan tanyakan.');
+}
+
+async function cancelSupersededDraft(draftId: string, chatId: bigint) {
+  await prisma.telegramDraft.updateMany({ where: { id: draftId, chatId, kind: 'OWNER_OPERATION', status: 'PENDING' },
+    data: { status: 'CANCELLED' } });
 }
 
 function parseOperation(value: unknown): OwnerOperation | null {
@@ -497,6 +535,10 @@ async function confirmBatchOperation(callback: OwnerCallback, ownerId: number, d
   let result: 'APPLIED' | 'STALE' | 'USED' = 'USED';
   try {
     result = await prisma.$transaction(async tx => {
+      const conversation = await tx.telegramDraft.findUnique({ where: { id: ownerConversationId(ownerId) } });
+      const conversationState = conversation?.kind === 'OWNER_CONVERSATION' && conversation.chatId === chatId
+        ? parseOwnerChatState(conversation.payload, ownerId) : null;
+      if (conversationState?.proposalDraftId !== draftId) return 'USED';
       const claimed = await tx.telegramDraft.updateMany({
         where: { id: draftId, chatId, kind: 'OWNER_OPERATION', status: 'PENDING', expiresAt: { gt: new Date() } },
         data: { status: 'PROCESSING' },
@@ -734,6 +776,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
   if (command?.[1].toLowerCase() === 'start' || command?.[1].toLowerCase() === 'help') {
     return sendTelegramMessage(chatId, 'Hai, saya asisten toko R-CELL. Tanyakan atau ceritakan kebutuhan Anda dengan kata-kata sendiri—saya bisa membantu mencari barang, membaca stok, merangkum usaha, dan menyiapkan perubahan untuk diperiksa.\n\nSetiap perubahan tetap menunggu tombol konfirmasi sebelum diterapkan. /whoami menampilkan ID Telegram Anda.');
   }
+  const startedAt = Date.now();
   try {
     const { rowId, state } = await getOwnerChatState(chatId, ownerId);
     const claimed = await prisma.telegramDraft.updateMany({ where: { id: rowId, kind: 'OWNER_CONVERSATION', status: 'PENDING', expiresAt: { gt: new Date() } }, data: { status: 'PROCESSING' } });
@@ -746,8 +789,6 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
         await saveOwnerChatState(rowId, chatId, state);
         return sendTelegramMessage(chatId, 'Rencana dibatalkan. Data RMCS tidak berubah.');
       }
-      if (state.proposalDraftId) await prisma.telegramDraft.updateMany({ where: { id: state.proposalDraftId, chatId,
-        kind: 'OWNER_OPERATION', status: 'PENDING' }, data: { status: 'CANCELLED' } });
       const priorActions = state.actions;
       const turn = await interpretOwnerTurn({ text, history: state.history, currentActions: state.actions,
         apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL });
@@ -761,18 +802,24 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
       const reply = [turn.reply, turn.clarification].filter(Boolean).join('\n');
       const historyReply = state.actions.length ? 'Saya sudah meninjau permintaan. Rencana perubahan hanya akan diterapkan setelah tombol konfirmasi ditekan.' : reply;
       state.history = [...state.history, { role: 'user' as const, content: text }, { role: 'assistant' as const, content: historyReply }].slice(-12);
-      if (!state.actions.length && state.proposalDraftId) {
-        await prisma.telegramDraft.updateMany({ where: { id: state.proposalDraftId, chatId, kind: 'OWNER_OPERATION', status: 'PENDING' }, data: { status: 'CANCELLED' } });
-        state.proposalDraftId = null; state.preview = null;
-      }
       return await renderOwnerActions(chatId, ownerId, rowId, state, reply, priorActions);
-    } catch {
-      state.history = [...state.history, { role: 'user' as const, content: text },
-        { role: 'assistant' as const, content: 'Maaf, saya belum berhasil memeriksa permintaan itu.' }].slice(-12);
-      try { await saveOwnerChatState(rowId, chatId, state); } catch { /* Keep the user-facing fallback independent of draft persistence. */ }
-      return await sendTelegramMessage(chatId, 'Maaf, saya belum berhasil memeriksa permintaan itu. Tidak ada perubahan usaha yang diterapkan. Coba kirim ulang sebentar lagi.');
+    } catch (error) {
+      if (!(error instanceof OwnerAgentUnavailable) && !(error instanceof OwnerAssistantDatabaseError)) {
+        logOwnerDiagnostic('owner_action_processing', 'operation_error', startedAt);
+      }
+      try {
+        await prisma.telegramDraft.updateMany({ where: { id: rowId, kind: 'OWNER_CONVERSATION', status: 'PROCESSING' },
+          data: { status: 'PENDING' } });
+      } catch {
+        console.error(JSON.stringify({ event: 'owner_assistant_failure', stage: 'conversation_recovery', category: 'state_release_error' }));
+      }
+      const unavailable = error instanceof OwnerAgentUnavailable;
+      return await sendTelegramMessage(chatId, unavailable
+        ? 'Maaf, asisten AI sedang mengalami gangguan sementara. Rencana sebelumnya tetap tersimpan dan belum ada perubahan usaha yang diterapkan. Coba lagi sebentar.'
+        : 'Maaf, saya belum berhasil memeriksa permintaan itu. Rencana sebelumnya tetap tersimpan dan belum ada perubahan usaha yang diterapkan. Coba kirim ulang sebentar lagi.');
     }
-  } catch {
+  } catch (error) {
+    if (!(error instanceof OwnerAssistantDatabaseError)) logOwnerDiagnostic('conversation_state_read', 'state_access_error', startedAt);
     return sendTelegramMessage(chatId, 'Maaf, saya belum bisa memeriksa data toko sekarang. Tidak ada perubahan yang diterapkan; coba lagi sebentar.');
   }
 }

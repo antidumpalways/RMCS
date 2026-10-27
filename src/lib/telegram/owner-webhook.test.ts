@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 let middlewareInstalled = false;
 let productReadCount = 0;
 let businessWriteCounts = { product: 0, movement: 0 };
+let throwCatalogQuery = false;
 let fakeProducts: unknown[] = [];
 let draftSequence = 0;
 const fakeDrafts = new Map<string, Record<string, unknown>>();
@@ -33,7 +34,11 @@ async function modules() {
           fakeDrafts.set(id, { ...row, ...params.args.data }); return fakeDrafts.get(id);
         }
       }
-      if (params.model === 'Product' && params.action === 'findMany') { productReadCount++; return fakeProducts; }
+      if (params.model === 'Product' && params.action === 'findMany') {
+        productReadCount++;
+        if (throwCatalogQuery) throw new Error('synthetic database failure with private details');
+        return fakeProducts;
+      }
       if (params.model === 'Product' && params.action === 'update') { businessWriteCounts.product++; return {}; }
       if (params.model === 'InventoryMovement' && params.action === 'create') { businessWriteCounts.movement++; return {}; }
       return next(params);
@@ -110,10 +115,61 @@ test('Telegram update-to-response: DeepSeek outage gets a safe response and no c
     const result = await webhook(handleTelegramWebhook, privateUpdate(903, 'tmbahin charger zbox 20 pcs, harga 50rb margin 20rb'));
     assert.equal(result.status, 200);
     assert.equal(sent.length, 1);
-    assert.match(String(sent[0].text), /belum berhasil memeriksa permintaan/);
-    assert.match(String(sent[0].text), /Tidak ada perubahan usaha yang diterapkan/);
+    assert.match(String(sent[0].text), /gangguan sementara/);
+    assert.match(String(sent[0].text), /belum ada perubahan usaha yang diterapkan/);
     assert.equal(productReadCount, 0);
   });
+});
+
+test('AI failure preserves the existing pending proposal and its confirmation draft', async () => {
+  const { handleTelegramWebhook } = await modules();
+  process.env.TELEGRAM_OWNER_IDS = '700123';
+  process.env.DEEPSEEK_API_KEY = 'test-api-key';
+  fakeDrafts.clear();
+  const proposal = { kind: 'propose_price_update', query: 'charger zbox', field: 'sellPrice', amount: '50rb' };
+  const statePayload = { version: 1, ownerId: '700123', history: [], actions: [proposal], selected: [], pendingMatches: [],
+    proposalDraftId: 'owner-proposal-existing', preview: 'Rencana lama: harga jual Rp40.000 → Rp50.000.' };
+  fakeDrafts.set('owner-agent-700123', { id: 'owner-agent-700123', chatId: 700123n, kind: 'OWNER_CONVERSATION',
+    payload: statePayload, status: 'PENDING', expiresAt: new Date(Date.now() + 60_000) });
+  const oldDraft = { id: 'owner-proposal-existing', chatId: 700123n, kind: 'OWNER_OPERATION', payload: { version: 2 },
+    status: 'PENDING', expiresAt: new Date(Date.now() + 60_000) };
+  fakeDrafts.set(oldDraft.id, oldDraft);
+  await withTelegramFetch(async sent => {
+    const result = await webhook(handleTelegramWebhook, privateUpdate(909, 'eh ubah lagi jadi 55rb'));
+    assert.equal(result.status, 200);
+    assert.equal(sent.length, 1);
+    assert.match(String(sent[0].text), /gangguan sementara/);
+    assert.equal(fakeDrafts.get(oldDraft.id)?.status, 'PENDING');
+    assert.deepEqual(fakeDrafts.get('owner-agent-700123')?.payload, statePayload);
+    assert.equal(fakeDrafts.get('owner-agent-700123')?.status, 'PENDING');
+  });
+});
+
+test('catalog database errors are logged by sanitized stage and do not leak exception text', async () => {
+  const { handleTelegramWebhook } = await modules();
+  process.env.TELEGRAM_OWNER_IDS = '700123';
+  process.env.DEEPSEEK_API_KEY = 'test-api-key';
+  fakeDrafts.clear();
+  throwCatalogQuery = true;
+  const originalError = console.error;
+  const diagnostics: string[] = [];
+  console.error = (...args: unknown[]) => { diagnostics.push(args.map(String).join(' ')); };
+  const ai = JSON.stringify({ reply: 'Saya periksa.', clarification: null, actions: [
+    { kind: 'get_product_details', query: 'axis 13gb' },
+  ] });
+  try {
+    await withTelegramFetch(async sent => {
+      const result = await webhook(handleTelegramWebhook, privateUpdate(910, 'cek stok axis 13gb'));
+      assert.equal(result.status, 200);
+      assert.equal(sent.length, 1);
+      assert.match(String(sent[0].text), /belum berhasil memeriksa/);
+    }, ai);
+  } finally {
+    console.error = originalError;
+    throwCatalogQuery = false;
+  }
+  assert.ok(diagnostics.some(line => line.includes('"stage":"product_catalog_lookup"') && line.includes('"category":"database_error"')));
+  assert.equal(diagnostics.some(line => line.includes('synthetic database failure') || line.includes('cek stok axis 13gb')), false);
 });
 
 test('Telegram update-to-response: natural multi-field stock request creates one preview but no business write before confirmation', async () => {
