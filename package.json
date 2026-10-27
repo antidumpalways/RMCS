@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test:telegram": "tsx --test src/lib/telegram/core.test.ts src/lib/telegram/recap.test.ts src/lib/telegram/vision.test.ts src/lib/telegram/inventory.test.ts src/lib/telegram/webhook.test.ts",
+    "test:telegram": "tsx --test src/lib/telegram/core.test.ts src/lib/telegram/recap.test.ts src/lib/telegram/vision.test.ts src/lib/telegram/inventory.test.ts src/lib/telegram/webhook.test.ts src/lib/telegram/owner-intent.test.ts",
     "test:assistant": "tsc --module commonjs --target es2022 --esModuleInterop --skipLibCheck --outDir node_modules/.cache/assistant-tests --rootDir src src/lib/assistant-search.test.ts && node .\\node_modules\\.cache\\assistant-tests\\lib\\assistant-search.test.js",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
