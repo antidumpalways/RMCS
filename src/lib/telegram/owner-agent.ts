@@ -99,7 +99,11 @@ export function planStockInPricing(action: Extract<OwnerAgentAction, { kind: 'pr
 }
 
 export class OwnerAgentUnavailable extends Error {
-  constructor() { super('OWNER_AGENT_UNAVAILABLE'); this.name = 'OwnerAgentUnavailable'; }
+  readonly diagnostics: { stage: string; category: string; status?: number; durationMs: number;
+    model: string; finishReason?: string | null; usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number } };
+  constructor(diagnostics: OwnerAgentUnavailable['diagnostics']) {
+    super('OWNER_AGENT_UNAVAILABLE'); this.name = 'OwnerAgentUnavailable'; this.diagnostics = diagnostics;
+  }
 }
 
 const instructions = `You are R-CELL's Indonesian conversational store assistant. Understand intent from informal Indonesian, slang, abbreviations, typos and natural follow-ups. Do not make the owner use command syntax. Return JSON only: {"reply":"short natural Indonesian reply","clarification":null|string,"actions":[...]}. Extract up to 8 actions in the order requested. For each intent use one of: search_products {query}; get_product_details {query}; get_low_stock; get_inventory {query|null}; propose_stock_in {query,quantity,unitCost,sellPrice,margin,supplier}; propose_stock_adjustment {query,targetStock,reason}; propose_price_update {query,field,amount}; propose_location_change {query,location}; get_business_report {date,shift}; request_clarification {question}. Prices must be strings as written (e.g. 50rb); quantities integers. Only extract facts the owner actually stated. Never invent a product, ID, stock, price, expense, profit, or transaction. For stock corrections, require a reason the owner explicitly gave and copy that reason verbatim; otherwise set reason=null and ask. In a stock-in request, an unqualified “harga 50rb, margin 20rb” means sellPrice=50rb and margin=20rb; derive unitCost as sellPrice minus margin. Map to unitCost only when the owner says modal/harga modal/harga beli. If both sellPrice and margin are stated for stock-in, preserve both; the application will derive unit cost deterministically and disclose it. If a follow-up changes sellPrice and the prior proposal stated a margin, preserve that margin and recalculate the derived cost; if the owner may mean to change the margin too, ask. Corrections update the existing proposal instead of adding a duplicate action. Treat the current proposal list as the complete prior draft and return the complete updated action list. If the owner answers a prior clarification, resolve it and remove the answered clarification action. Do not reactivate cancelled or rejected proposals from message history unless the owner explicitly asks to make that change again. If context is unclear or required values are missing, ask a concise question and do not invent values. A casual acknowledgement such as “oke” never authorizes a database write; writes always require the owner's Telegram confirmation button. If user cancels, return an empty actions array and explain cancellation.`;
@@ -108,23 +112,53 @@ export async function interpretOwnerTurn(input: {
   text: string; history: OwnerChatMessage[]; currentActions: OwnerAgentAction[];
   apiKey?: string; model?: string; fetcher?: typeof fetch; timeoutMs?: number;
 }): Promise<OwnerAgentTurn> {
-  if (!input.apiKey) throw new OwnerAgentUnavailable();
+  const startedAt = Date.now();
+  const model = input.model || 'deepseek-flash';
+  const diagnose = (category: string, stage: string, extra: Partial<OwnerAgentUnavailable['diagnostics']> = {}): OwnerAgentUnavailable => {
+    const diagnostics = { stage, category, durationMs: Date.now() - startedAt, model, ...extra };
+    console.error(JSON.stringify({ event: 'owner_agent_failure', ...diagnostics }));
+    return new OwnerAgentUnavailable(diagnostics);
+  };
+  if (!input.apiKey) throw diagnose('missing_configuration', 'configuration');
+  let stage = 'request';
+  const timeoutSignal = AbortSignal.timeout(input.timeoutMs ?? 20_000);
   try {
     const response = await (input.fetcher ?? fetch)('https://api.deepseek.com/chat/completions', {
       method: 'POST', headers: { Authorization: 'Bearer ' + input.apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: input.model || 'deepseek-flash', response_format: { type: 'json_object' },
-        temperature: 0, max_tokens: 1200, stream: false, messages: [
+      body: JSON.stringify({ model, thinking: { type: 'disabled' }, response_format: { type: 'json_object' },
+        temperature: 0, max_tokens: 2400, stream: false, messages: [
           { role: 'system', content: instructions },
           ...input.history.slice(-12).map(message => ({ role: message.role, content: message.content.slice(0, 1200) })),
           { role: 'user', content: JSON.stringify({ latest_message: input.text.slice(0, 1500), current_proposal: input.currentActions }) },
-        ] }), signal: AbortSignal.timeout(input.timeoutMs ?? 10_000),
+        ] }), signal: timeoutSignal,
     });
-    if (!response.ok) throw new OwnerAgentUnavailable();
-    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) throw new OwnerAgentUnavailable();
-    return validateOwnerAgentTurn(JSON.parse(content));
-  } catch {
-    throw new OwnerAgentUnavailable();
+    if (!response.ok) throw diagnose('provider_http_error', 'provider_response', { status: response.status });
+    stage = 'provider_response';
+    let data: { choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }; model?: string };
+    try { data = await response.json() as typeof data; }
+    catch { throw diagnose('invalid_provider_response', 'provider_response', { status: response.status }); }
+    const choice = data.choices?.[0], finishReason = choice?.finish_reason ?? null;
+    const usage = data.usage ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens,
+      totalTokens: data.usage.total_tokens } : undefined;
+    const extra = { status: response.status, finishReason, usage, model: data.model || model };
+    if (finishReason === 'length') throw diagnose('truncated_completion', 'completion', extra);
+    const content = choice?.message?.content;
+    if (typeof content !== 'string' || !content.trim()) throw diagnose('empty_completion', 'completion', extra);
+    stage = 'json_parse';
+    let parsed: unknown;
+    try { parsed = JSON.parse(content); }
+    catch { throw diagnose('invalid_json', 'json_parse', extra); }
+    stage = 'schema_validation';
+    try {
+      const turn = validateOwnerAgentTurn(parsed);
+      console.info(JSON.stringify({ event: 'owner_agent_success', stage: 'complete', model: data.model || model,
+        durationMs: Date.now() - startedAt, status: response.status, finishReason, usage }));
+      return turn;
+    } catch { throw diagnose('schema_validation', stage, extra); }
+  } catch (error) {
+    if (error instanceof OwnerAgentUnavailable) throw error;
+    const aborted = timeoutSignal.aborted || (error instanceof Error && error.name === 'TimeoutError');
+    throw diagnose(aborted ? 'timeout' : 'network_error', stage);
   }
 }
