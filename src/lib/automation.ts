@@ -200,6 +200,14 @@ export async function shiftOpening(now: Date = new Date()) {
     select: { closedAt: true, actualCash: true },
   });
   const actual = previous?.actualCash ?? null;
+  const latestAdjustment = await prisma.balanceAdjustment.findFirst({
+    where: { account: 'CASH', createdAt: { lte: now } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    select: { createdAt: true, newBalance: true },
+  });
+  if (latestAdjustment && (!previous || latestAdjustment.createdAt > previous.closedAt)) {
+    return { start: latestAdjustment.createdAt, openingCash: latestAdjustment.newBalance };
+  }
   if (!previous || actual === null) {
     return { start: todayStart, openingCash: await cashOnHandAt(todayStart) };
   }
@@ -407,3 +415,4 @@ export async function getCategoriesWithSummary(): Promise<CategorySummary[]> {
     };
   });
 }
+

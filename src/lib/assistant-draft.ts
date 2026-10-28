@@ -29,7 +29,8 @@ export type AssistantAction =
   | 'service.create'
   | 'shift.close'
   | 'memory.save'
-  | 'memory.forget';
+  | 'memory.forget'
+  | 'balance.update';
 
 export type DraftLine = { label: string; value: string; emphasis?: boolean };
 
@@ -48,7 +49,7 @@ const ASSISTANT_ACTIONS: readonly AssistantAction[] = [
   'opname.record', 'opname.apply', 'opname.review', 'opname.delete',
   'debt.create', 'debt.pay', 'debt.delete',
   'expense.create', 'service.create', 'shift.close',
-  'memory.save', 'memory.forget',
+  'memory.save', 'memory.forget', 'balance.update',
 ];
 
 export const MEMORY_KINDS = ['SYNONYM', 'STYLE', 'PREFERENCE'] as const;
@@ -68,12 +69,12 @@ export function isAssistantAction(value: unknown): value is AssistantAction {
   return typeof value === 'string' && (ASSISTANT_ACTIONS as readonly string[]).includes(value);
 }
 
-// Semua tindakan yang tersedia di sini dapat diajukan oleh owner maupun
-// karyawan melalui asisten. Aksi tetap menunggu konfirmasi dan validasi server.
-export const EMPLOYEE_ALLOWED_ACTIONS: readonly AssistantAction[] = ASSISTANT_ACTIONS;
+// Aksi owner-only dikeluarkan dari kemampuan karyawan; server tetap memeriksa role saat menerapkan perubahan.
+const OWNER_ONLY_ACTIONS: readonly AssistantAction[] = ['balance.update'];
+export const EMPLOYEE_ALLOWED_ACTIONS: readonly AssistantAction[] = ASSISTANT_ACTIONS.filter(action => !OWNER_ONLY_ACTIONS.includes(action));
 
 export function actionRequiresOwner(action: AssistantAction) {
-  return !EMPLOYEE_ALLOWED_ACTIONS.includes(action);
+  return OWNER_ONLY_ACTIONS.includes(action);
 }
 
 const idr = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 });

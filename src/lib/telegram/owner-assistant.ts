@@ -1,7 +1,5 @@
-Warning: truncated output (original token count: 28525)
-Total output lines: 1338
-
 import { prisma } from '@/lib/prisma';
+import { computeCash } from '@/lib/automation';
 import { withTelegramOwnerUser } from '@/lib/auth';
 import { withAssistantAuthorization } from '@/lib/assistant-authorization';
 import { applyAssistantDraft } from '@/lib/assistant-actions';
@@ -487,6 +485,26 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
   };
   const build = (action: AssistantAction, title: string, lines: Array<{ label: string; value: string; emphasis?: boolean }>, payload: Record<string, unknown>) => ({ draft: { action, title, lines, payload } as AssistantDraft });
 
+  if (kind === 'balance_update') {
+    const rawAccount = text('account', 40)?.toLowerCase();
+    if (rawAccount && ['dana', 'gopay', 'ovo', 'bca', 'bri', 'mandiri', 'bank'].includes(rawAccount)) return { clarification: 'Saat ini saya hanya mencatat saldo elektronik total, belum saldo per aplikasi atau rekening. Mau perbarui saldo elektronik total?' };
+    const account = rawAccount && ['cash', 'kas', 'tunai'].includes(rawAccount) ? 'CASH'
+      : rawAccount && ['electronic', 'elektronik', 'transfer', 'ewallet'].includes(rawAccount) ? 'ELECTRONIC' : null;
+    if (!account) return { clarification: 'Saldo yang ingin diperbarui yang mana: kas/cash atau saldo elektronik total?' };
+    const actualBalance = amount('actualBalance');
+    if (actualBalance === null) return { clarification: 'Sebutkan jumlah saldo aktualnya, misalnya “update saldo cash jadi 1,85 juta”.' };
+    const settings = await prisma.settings.upsert({ where: { id: 1 }, update: {}, create: { id: 1, storeName: 'R CELL', cashInitial: 0n, balanceInitial: 0n } });
+    const currentBalance = account === 'CASH' ? await computeCash() : settings.balanceInitial;
+    const label = account === 'CASH' ? 'Kas/cash' : 'Saldo elektronik total';
+    const note = text('note', 240);
+    return build('balance.update', 'Draf pembaruan saldo', [
+      { label: 'Jenis saldo', value: label },
+      { label: 'Saldo tercatat', value: formatIdr(currentBalance) },
+      { label: 'Saldo aktual awal shift', value: formatIdr(actualBalance), emphasis: true },
+      { label: 'Selisih penyesuaian', value: formatIdr(actualBalance - currentBalance), emphasis: true },
+      ...(note ? [{ label: 'Catatan', value: note }] : []),
+    ], { account, actualBalance: actualBalance.toString(), expectedBalance: currentBalance.toString(), ...(note ? { note } : {}) });
+  }
   if (kind === 'sale_create' || kind === 'sale_edit' || kind === 'sale_return') {
     const saleId = number('saleId', 1);
     const rawItems = data.items;
@@ -498,7 +516,367 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
         if (!name || !Number.isSafeInteger(qty) || (qty as number) <= 0) return { clarification: 'Penjualan perlu nama barang dan jumlah terjual yang jelas.' };
         const resolved = await chooseProduct(name); if (!resolved.product) return { clarification: resolved.issue };
         const prior = resolvedItems.find(item => item.product.id === resolved.product!.id);
-        if (prior) prior.qty += qty as number; else resolvedItems.push({ …8525 tokens truncated…l && operation.subcategoryName !== null) || (operation.locationId === null && operation.locationName !== null)) return null;
+        if (prior) prior.qty += qty as number; else resolvedItems.push({ product: resolved.product, qty: qty as number });
+      }
+      const short = resolvedItems.find(item => item.product.stock < item.qty);
+      if (short) return { clarification: `Jumlah terjual ${short.qty} melebihi stok ${short.product.stock} untuk ${short.product.name}.` };
+      const items = resolvedItems.map(item => ({ productId: item.product.id, qty: item.qty }));
+      const expectedPrices = resolvedItems.map(item => ({ productId: item.product.id, sellPrice: item.product.sellPrice.toString() }));
+      const lines = resolvedItems.map(item => ({ label: item.product.name, value: `${item.qty} unit × ${formatIdr(item.product.sellPrice)} (stok ${item.product.stock})`, emphasis: true }));
+      return build('sale.create', 'Draf penjualan baru', lines, { items, expectedPrices });
+    }
+    if (!saleId) return { clarification: 'Sebutkan nomor penjualan yang ingin dikoreksi atau diretur.' };
+    const sale = await prisma.saleTransaction.findUnique({ where: { id: saleId }, include: { items: { include: { product: true } } } });
+    if (!sale || sale.kind !== 'SALE') return { clarification: `Penjualan #${saleId} tidak ditemukan.` };
+    if (kind === 'sale_return') {
+      const items: Array<{ productId: number; qty: number }> = [], lines: AssistantDraft['lines'] = [];
+      for (const raw of rawItems as Array<Record<string, unknown>>) {
+        const name = typeof raw.productName === 'string' ? raw.productName.trim().toLowerCase() : '', qty = raw.qty;
+        const item = sale.items.find(row => row.product.name.toLowerCase() === name || row.product.name.toLowerCase().includes(name));
+        if (!item || !Number.isSafeInteger(qty) || (qty as number) <= 0) return { clarification: `Barang retur “${name}” atau jumlahnya belum cocok dengan penjualan #${saleId}.` };
+        items.push({ productId: item.productId, qty: qty as number }); lines.push({ label: item.product.name, value: `${qty} unit`, emphasis: true });
+      }
+      const reason = text('reason', 200);
+      if (reason) lines.push({ label: 'Alasan', value: reason });
+      return build('sale.return', `Draf retur penjualan #${saleId}`, lines, { saleId, items, reason });
+    }
+    const { start, end } = jakartaTodayBounds();
+    if (sale.createdAt < start || sale.createdAt >= end) return { clarification: 'Koreksi lewat asisten hanya tersedia untuk penjualan hari ini; penjualan lama perlu ditinjau lewat Web App.' };
+    const changed = new Map<number, number>();
+    for (const raw of rawItems as Array<Record<string, unknown>>) {
+      const name = typeof raw.productName === 'string' ? raw.productName.trim() : '', qty = raw.qty;
+      if (!name || !Number.isSafeInteger(qty) || (qty as number) < 0) return { clarification: 'Koreksi perlu nama barang dan jumlah baru yang jelas.' };
+      const existing = sale.items.filter(item => item.product.name.toLowerCase() === name.toLowerCase() || item.product.name.toLowerCase().includes(name.toLowerCase()));
+      if (existing.length !== 1) return { clarification: `Barang “${name}” belum cocok ke satu baris di penjualan #${saleId}.` };
+      changed.set(existing[0].productId, qty as number);
+    }
+    const merged = sale.items.filter(item => (changed.get(item.productId) ?? item.qty) > 0).map(item => ({ productId: item.productId, qty: changed.get(item.productId) ?? item.qty, expectedPrice: item.priceAtSale.toString() }));
+    if (!merged.length) return { clarification: 'Koreksi tidak boleh menghapus seluruh barang dari penjualan.' };
+    return build('sale.edit', `Draf koreksi penjualan #${saleId}`, merged.map(item => ({ label: sale.items.find(old => old.productId === item.productId)!.product.name, value: `${item.qty} unit` })), { saleId, expectedSignature: saleSnapshotSignature(sale), items: merged });
+  }
+
+  if (kind === 'debt_create') {
+    const customer = text('customer', 80), total = amount('amount');
+    if (!customer || !total || total <= 0n) return { clarification: 'Catat bon perlu nama pelanggan dan nominal yang jelas.' };
+    return build('debt.create', 'Draf catat bon', [{ label: 'Pelanggan', value: customer, emphasis: true }, { label: 'Nominal', value: formatIdr(total), emphasis: true }, ...(text('description', 200) ? [{ label: 'Keterangan', value: text('description', 200)! }] : [])], { customer, amount: total.toString(), description: text('description', 200) });
+  }
+  if (kind === 'debt_pay' || kind === 'debt_delete') {
+    const customer = text('customer', 80); if (!customer) return { clarification: 'Sebutkan nama pelanggan pemilik bon.' };
+    const candidates = await prisma.debt.findMany({ where: { customer: { contains: customer, mode: 'insensitive' }, ...(kind === 'debt_pay' ? { status: 'BELUM' } : {}) }, orderBy: { createdAt: 'desc' }, take: 10 });
+    if (candidates.length !== 1) return { clarification: candidates.length ? `Ada beberapa bon cocok: ${candidates.map(d => `${d.customer} #${d.id}`).join(', ')}. Sebutkan pelanggan/bon yang tepat.` : `Bon untuk ${customer} tidak ditemukan.` };
+    const debt = candidates[0], remaining = debt.amount - debt.paid;
+    if (kind === 'debt_delete') return build('debt.delete', 'Draf hapus bon', [{ label: 'Pelanggan', value: debt.customer, emphasis: true }, { label: 'Sisa bon', value: formatIdr(remaining) }], { debtId: debt.id });
+    const paid = amount('amount'); if (!paid || paid <= 0n || paid > remaining) return { clarification: `Nominal pembayaran harus lebih dari 0 dan tidak melebihi sisa bon ${formatIdr(remaining)}.` };
+    return build('debt.pay', 'Draf pembayaran bon', [{ label: 'Pelanggan', value: debt.customer, emphasis: true }, { label: 'Sisa bon', value: formatIdr(remaining) }, { label: 'Dibayar', value: formatIdr(paid), emphasis: true }], { debtId: debt.id, amount: paid.toString(), note: text('note', 200) });
+  }
+  if (kind === 'expense_create') {
+    const name = text('name', 100), value = amount('amount'); if (!name || !value || value <= 0n) return { clarification: 'Pengeluaran perlu nama dan nominal positif yang jelas.' };
+    return build('expense.create', 'Draf pengeluaran', [{ label: 'Pengeluaran', value: name }, { label: 'Nominal', value: formatIdr(value), emphasis: true }], { name, amount: value.toString() });
+  }
+  if (kind === 'service_create') {
+    const count = number('count', 1), value = amount('profit'); if (!count || value === null) return { clarification: 'Biaya admin perlu jumlah transaksi dan total admin yang jelas.' };
+    return build('service.create', 'Draf biaya admin/jasa', [{ label: 'Transaksi', value: String(count) }, { label: 'Total admin', value: formatIdr(value), emphasis: true }], { count, profit: value.toString() });
+  }
+  if (kind === 'shift_close') {
+    const actualCash = amount('actualCash'); const note = text('note', 500);
+    const lines: AssistantDraft['lines'] = [{ label: 'Kas fisik', value: actualCash === null ? 'Belum disebut' : formatIdr(actualCash), emphasis: actualCash !== null }];
+    if (note) lines.push({ label: 'Catatan', value: note });
+    return build('shift.close', 'Draf tutup shift', lines, { ...(actualCash === null ? {} : { actualCash: Number(actualCash) }), ...(note ? { note } : {}) });
+  }
+  if (kind.startsWith('opname_')) {
+    const name = text('productName'); if (!name) return { clarification: 'Sebutkan nama barang untuk stock opname.' };
+    const resolved = await chooseProduct(name); if (!resolved.product) return { clarification: resolved.issue };
+    const p = resolved.product;
+    if (kind === 'opname_record') {
+      const physicalStock = number('physicalStock'); if (physicalStock === null) return { clarification: 'Sebutkan jumlah fisik hasil hitung.' };
+      return build('opname.record', 'Draf catat stock opname', [{ label: 'Barang', value: p.name }, { label: 'Stok sistem', value: String(p.stock) }, { label: 'Stok fisik', value: String(physicalStock), emphasis: true }, { label: 'Selisih', value: String(physicalStock - p.stock) }], { productId: p.id, physicalStock, note: text('note', 200) });
+    }
+    const opname = await prisma.stockOpname.findFirst({ where: { productId: p.id, reviewStatus: 'PENDING' }, orderBy: { createdAt: 'desc' } });
+    if (!opname) return { clarification: `Tidak ada hasil opname yang menunggu untuk ${p.name}.` };
+    const action = kind === 'opname_apply' ? 'opname.apply' : kind === 'opname_review' ? 'opname.review' : 'opname.delete';
+    return build(action, `Draf ${kind === 'opname_apply' ? 'terapkan' : kind === 'opname_review' ? 'tinjau' : 'hapus'} opname`, [{ label: 'Barang', value: p.name }, { label: 'Sistem → fisik', value: `${opname.systemStock} → ${opname.physicalStock}`, emphasis: true }, { label: 'Selisih', value: String(opname.diff) }], { opnameId: opname.id });
+  }
+  if (kind.startsWith('category_')) {
+    const name = text('categoryName') ?? text('name'); if (!name) return { clarification: 'Sebutkan nama kategori.' };
+    const category = await prisma.category.findFirst({ where: { name: { equals: name, mode: 'insensitive' } } });
+    if (kind === 'category_create') {
+      if (category) return { clarification: `Kategori ${name} sudah ada.` };
+      return build('category.create', 'Draf tambah kategori', [{ label: 'Kategori baru', value: name, emphasis: true }], { name });
+    }
+    if (!category) return { clarification: `Kategori ${name} tidak ditemukan.` };
+    if (kind === 'category_delete') return build('category.delete', 'Draf hapus kategori', [{ label: 'Kategori', value: category.name, emphasis: true }, { label: 'Barang terkait', value: String(await prisma.product.count({ where: { categoryId: category.id } })) }], { categoryId: category.id });
+    const newName = text('newName', 60); if (!newName) return { clarification: 'Sebutkan nama kategori yang baru.' };
+    return build('category.rename', 'Draf ubah nama kategori', [{ label: 'Kategori', value: category.name }, { label: 'Nama baru', value: newName, emphasis: true }], { categoryId: category.id, name: newName });
+  }
+  if (kind.startsWith('subcategory_')) {
+    const categoryName = text('categoryName', 60), subName = text('subcategoryName', 60); if (!categoryName || !subName) return { clarification: 'Sebutkan nama kategori dan subkategori.' };
+    const category = await prisma.category.findFirst({ where: { name: { equals: categoryName, mode: 'insensitive' } } }); if (!category) return { clarification: `Kategori ${categoryName} tidak ditemukan.` };
+    const sub = await prisma.subcategory.findFirst({ where: { categoryId: category.id, name: { equals: subName, mode: 'insensitive' } } });
+    if (kind === 'subcategory_create') { if (sub) return { clarification: `Subkategori ${subName} sudah ada.` }; return build('subcategory.create', 'Draf tambah subkategori', [{ label: 'Kategori', value: category.name }, { label: 'Subkategori', value: subName, emphasis: true }], { categoryId: category.id, name: subName }); }
+    if (!sub) return { clarification: `Subkategori ${subName} tidak ditemukan di ${category.name}.` };
+    if (kind === 'subcategory_delete') return build('subcategory.delete', 'Draf hapus subkategori', [{ label: 'Kategori', value: category.name }, { label: 'Subkategori', value: sub.name, emphasis: true }], { subcategoryId: sub.id });
+    const newName = text('newName', 60); if (!newName) return { clarification: 'Sebutkan nama subkategori yang baru.' };
+    return build('subcategory.rename', 'Draf ubah nama subkategori', [{ label: 'Kategori', value: category.name }, { label: 'Subkategori', value: sub.name }, { label: 'Nama baru', value: newName, emphasis: true }], { subcategoryId: sub.id, name: newName });
+  }
+  if (kind === 'price_bulk') {
+    const scope = data.scope === 'category' || data.scope === 'subcategory' ? data.scope : data.scope === 'all' ? 'all' : null;
+    const marginPercent = typeof data.marginPercent === 'number' && Number.isFinite(data.marginPercent) && data.marginPercent >= 0 && data.marginPercent <= 1000 ? data.marginPercent : null;
+    if (!scope || marginPercent === null) return { clarification: 'Sebutkan cakupan perubahan (semua barang/kategori/subkategori) dan persentase margin.' };
+    const payload: Record<string, unknown> = { scope, marginPercent };
+    let where: Record<string, unknown> = {};
+    if (scope === 'category') { const name = text('categoryName', 60); const c = name && await prisma.category.findFirst({ where: { name: { equals: name, mode: 'insensitive' } } }); if (!c) return { clarification: 'Kategori untuk ubah harga massal tidak ditemukan.' }; payload.categoryId = c.id; where = { categoryId: c.id }; }
+    if (scope === 'subcategory') { const name = text('subcategoryName', 60); const sub = name && await prisma.subcategory.findFirst({ where: { name: { equals: name, mode: 'insensitive' } } }); if (!sub) return { clarification: 'Subkategori untuk ubah harga massal tidak ditemukan.' }; payload.subcategoryId = sub.id; where = { subcategoryId: sub.id }; }
+    const products = await prisma.product.findMany({ where, select: { name: true, costPrice: true, sellPrice: true }, take: 501 });
+    if (!products.length || products.length > 500) return { clarification: products.length ? 'Cakupan lebih dari 500 produk; pecah perubahan agar aman.' : 'Tidak ada barang pada cakupan itu.' };
+    return build('price.bulk', 'Draf ubah harga massal', [{ label: 'Cakupan', value: scope === 'all' ? 'Semua barang' : text(scope === 'category' ? 'categoryName' : 'subcategoryName')! }, { label: 'Produk terdampak', value: String(products.length), emphasis: true }, { label: 'Margin', value: `${marginPercent}%` }, { label: 'Contoh barang', value: products.slice(0, 5).map(p => `${p.name} (${formatIdr(p.sellPrice)})`).join(', ') }], payload);
+  }
+  if (kind === 'catalog_update') {
+    const productName = text('productName'); if (!productName) return { clarification: 'Sebutkan nama produk yang ingin diubah.' };
+    const resolved = await chooseProduct(productName); if (!resolved.product) return { clarification: resolved.issue };
+    const p = resolved.product, payload: Record<string, unknown> = { productId: p.id }, changes: AssistantDraft['lines'] = [];
+    const newName = text('name', 180); if (newName) { payload.name = newName; changes.push({ label: 'Nama', value: `${p.name} → ${newName}` }); }
+    if (typeof data.categoryName === 'string') {
+      const category = await prisma.category.findFirst({ where: { name: { equals: data.categoryName.trim(), mode: 'insensitive' } } });
+      if (!category) return { clarification: `Kategori ${data.categoryName} tidak ditemukan.` };
+      payload.categoryId = category.id; payload.subcategoryId = null; changes.push({ label: 'Kategori', value: `${p.category.name} → ${category.name}` });
+    }
+    if (typeof data.subcategoryName === 'string') {
+      const sub = await prisma.subcategory.findFirst({ where: { name: { equals: data.subcategoryName.trim(), mode: 'insensitive' }, ...(typeof payload.categoryId === 'number' ? { categoryId: payload.categoryId } : { categoryId: (await prisma.product.findUnique({ where: { id: p.id }, select: { categoryId: true } }))!.categoryId }) } });
+      if (!sub) return { clarification: `Subkategori ${data.subcategoryName} tidak ditemukan pada kategori tujuan.` };
+      payload.subcategoryId = sub.id; changes.push({ label: 'Subkategori', value: sub.name });
+    }
+    for (const field of ['sku', 'provider', 'validity'] as const) {
+      if (Object.prototype.hasOwnProperty.call(data, field)) {
+        const value = text(field, field === 'sku' ? 80 : 100); payload[field] = value;
+        changes.push({ label: field === 'sku' ? 'SKU' : field === 'provider' ? 'Provider' : 'Masa aktif', value: `${(p[field] ?? '—')} → ${value ?? 'dihapus'}` });
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'minStock')) {
+      const minStock = number('minStock'); if (minStock === null) return { clarification: 'Batas stok minimum harus angka bulat 0 atau lebih.' };
+      payload.minStock = minStock; changes.push({ label: 'Stok minimum', value: `${p.minStock} → ${minStock}` });
+    }
+    if (!changes.length) return { clarification: 'Sebutkan bagian produk yang ingin diubah.' };
+    return build('catalog.update', 'Draf ubah informasi produk', [{ label: 'Produk', value: p.name, emphasis: true }, ...changes], payload);
+  }  if (kind === 'catalog_delete') {
+    const name = text('productName'); if (!name) return { clarification: 'Sebutkan nama barang yang ingin dihapus.' };
+    const resolved = await chooseProduct(name); if (!resolved.product) return { clarification: resolved.issue };
+    return build('catalog.delete', 'Draf hapus barang', [{ label: 'Barang', value: resolved.product.name, emphasis: true }, { label: 'Catatan', value: 'Penghapusan ditolak jika barang punya riwayat transaksi/stok.' }], { productId: resolved.product.id });
+  }
+  if (kind === 'catalog_audit') {
+    const rawFocus = Array.isArray(data.focus) ? data.focus : [];
+    const focus = rawFocus.filter((item): item is AuditKind => typeof item === 'string' && (AUDIT_KINDS as readonly string[]).includes(item));
+    const categories = Array.isArray(data.categories) ? data.categories.filter((item): item is string => typeof item === 'string').map(item => item.trim()).filter(Boolean).slice(0, 50) : [];
+    const report = await analyzeCatalog({ categoryNames: categories }); const selected = focus.length ? focus : [...AUDIT_KINDS];
+    const ops = cleanupsForKinds(report, selected).slice(0, 200);
+    if (!ops.length) return { clarification: `Audit selesai: tidak ada perapian aman yang perlu diterapkan. Temuan total ${report.findings.length}; tidak ada perubahan dibuat.` };
+    return build('catalog.cleanup', 'Draf perapian katalog', [{ label: 'Barang yang akan dirapikan', value: String(ops.length), emphasis: true }, { label: 'Cakupan', value: categories.length ? categories.join(', ') : 'Semua kategori' }, { label: 'Contoh ID barang', value: ops.slice(0, 8).map(op => String(op.productId)).join(', ') }], { operations: ops });
+  }
+  if (kind === 'memory_save') {
+    const memoryKind = data.kind === 'SYNONYM' || data.kind === 'STYLE' || data.kind === 'PREFERENCE' ? data.kind : null;
+    const content = text('content', 300), term = text('term', 80);
+    if (!memoryKind || !content || (memoryKind === 'SYNONYM' && !term)) return { clarification: 'Sebutkan jenis memori, isi yang harus diingat, dan istilah bila itu sinonim.' };
+    return build('memory.save', 'Draf simpan memori', [{ label: 'Jenis', value: memoryKind }, ...(term ? [{ label: 'Istilah', value: term }] : []), { label: 'Diingat', value: content, emphasis: true }], { kind: memoryKind, term, content });
+  }
+  if (kind === 'memory_forget') {
+    const query = text('memory', 160); if (!query) return { clarification: 'Sebutkan istilah atau isi memori yang ingin dilupakan.' };
+    const rows = await prisma.assistantMemory.findMany({ where: { active: true, OR: [{ term: { contains: query, mode: 'insensitive' } }, { content: { contains: query, mode: 'insensitive' } }] }, take: 6, orderBy: { id: 'desc' } });
+    if (rows.length !== 1) return { clarification: rows.length ? `Ada beberapa memori yang cocok: ${rows.map(m => `#${m.id} ${m.term ?? m.content.slice(0, 40)}`).join('; ')}. Sebutkan yang tepat.` : 'Memori itu tidak ditemukan.' };
+    const memory = rows[0]; return build('memory.forget', 'Draf lupakan memori', [{ label: 'Istilah', value: memory.term ?? '—' }, { label: 'Isi', value: memory.content, emphasis: true }], { memoryId: memory.id });
+  }
+  return { clarification: 'Jenis perubahan belum didukung atau rincian belum cukup. Belum ada perubahan.' };
+}
+
+async function createBatchDraft(chatId: bigint, ownerId: number, operations: OwnerBatchOperation[], labels: string[]) {
+  const batch: OwnerBatch = { version: 2, ownerId: String(ownerId), operations, labels };
+  const row = await prisma.telegramDraft.create({ data: { chatId, kind: 'OWNER_OPERATION', payload: batch as object,
+    status: 'PENDING', expiresAt: new Date(Date.now() + DRAFT_TTL) }, select: { id: true } });
+  const preview = `Rencana perubahan (${operations.length} langkah):\n${operations.map((operation, index) =>
+    `${index + 1}. ${isProductCreate(operation) ? operation.name : operation.productName} — ${labels[index]}`).join('\n')}\n\nBelum ada yang diubah. Tinjau semua rincian lalu tekan tombol konfirmasi untuk menerapkan semuanya sekaligus.`;
+  return { draftId: row.id, preview };
+}
+
+function queryForAction(action: OwnerAgentAction): string | null {
+  if ('query' in action) return action.query;
+  return null;
+}
+
+async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string, state: OwnerChatState,
+  reply: string, priorActions: OwnerAgentAction[]) {
+  const previousDraftId = state.proposalDraftId;
+  const existing = previousDraftId ? await prisma.telegramDraft.findUnique({ where: { id: previousDraftId } }) : null;
+  if (sameActions(priorActions, state.actions) && ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'].includes(existing?.kind ?? '') && existing?.status === 'PENDING' && existing.expiresAt > new Date() && state.preview) {
+    await saveOwnerChatState(rowId, chatId, state);
+    return sendTelegramMessage(chatId, `${reply}\n\n${state.preview}`, ownerActionKeyboard(previousDraftId!));
+  }
+  state.proposalDraftId = null; state.preview = null; state.pendingMatches = [];
+  const catalog = state.actions.some(action => 'query' in action || action.kind === 'get_low_stock') ? await getCatalog() : [];
+  if (catalog.length > 3000) {
+    state.proposalDraftId = null;
+    await saveOwnerChatState(rowId, chatId, state);
+    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+    return sendTelegramMessage(chatId, 'Katalog terlalu besar untuk ditinjau dengan aman sekarang. Belum ada perubahan data; coba pecah permintaan menjadi satu barang per pesan.');
+  }
+  const operations: OwnerBatchOperation[] = [], labels: string[] = [], responses: string[] = [];
+  let clarification: string | null = null;
+  let businessDraft: AssistantDraft | null = null;
+  for (let index = 0; index < state.actions.length; index++) {
+    const action = state.actions[index];
+    if (action.kind === 'propose_business_action') {
+      if (operations.length || businessDraft) { clarification ??= 'Tinjau satu tindakan penting per pesan agar perubahan tetap jelas dan aman.'; continue; }
+      const planned = await planOwnerBusinessAction(action.action, action.data, ownerId);
+      businessDraft = planned.draft ?? null; clarification ??= planned.clarification ?? null; continue;
+    }
+    if (action.kind === 'request_clarification') { clarification ??= action.question; continue; }
+    if (action.kind === 'get_business_report') { responses.push(await showBusinessReport(action.date, action.shift)); continue; }
+    if (action.kind === 'get_low_stock') {
+      const lowStock = catalog.filter(product => product.stock <= product.minStock).sort((a, b) => a.stock - b.stock);
+      responses.push(lowStock.length
+        ? `Barang yang perlu dicek stoknya (${lowStock.length}):\n${lowStock.slice(0, 25).map(product => `• ${product.name}: ${product.stock} (minimum ${product.minStock})${product.location?.name ? ` · ${product.location.name}` : ''}`).join('\n')}${lowStock.length > 25 ? `\n…dan ${lowStock.length - 25} barang lain.` : ''}`
+        : 'Tidak ada barang yang mencapai batas stok minimum saat ini.');
+      continue;
+    }
+    if (action.kind === 'get_inventory' && !action.query) {
+      const modal = catalog.reduce((sum, product) => sum + product.costPrice * BigInt(product.stock), 0n);
+      const retail = catalog.reduce((sum, product) => sum + product.sellPrice * BigInt(product.stock), 0n);
+      responses.push(`Nilai stok dari katalog RMCS (${catalog.length} produk): modal ${formatIdr(modal)}; nilai jual ${formatIdr(retail)}.`);
+      continue;
+    }
+    if (action.kind === 'propose_product_create') {
+      const planned = await planProductCreate(action, ownerId);
+      if (planned.clarification) clarification ??= planned.clarification;
+      else if (planned.operation && planned.label) { operations.push(planned.operation); labels.push(planned.label); }
+      continue;
+    }
+    const query = queryForAction(action);
+    if (!query) { clarification ??= 'Barang yang dimaksud belum jelas. Sebutkan nama, SKU, atau ciri barangnya.'; continue; }
+    let products: CatalogProduct[] = [];
+    const selectedId = selectedProduct(state, index, query);
+    if (selectedId) products = catalog.filter(product => product.id === selectedId);
+    if (!products.length) products = await findProductCandidates(query, catalog);
+    if (!products.length) {
+      if (action.kind.startsWith('propose_')) clarification ??= `Saya belum menemukan “${query}” di katalog RMCS. Perubahan tetap ditahan; sebutkan nama atau SKU yang lebih tepat.`;
+      else responses.push(`Saya belum menemukan barang “${query}” di katalog RMCS.`);
+      continue;
+    }
+    if (products.length > 1 && (action.kind.startsWith('propose_') || action.kind === 'get_product_details' || action.kind === 'get_inventory')) {
+      state.pendingMatches.push({ actionIndex: index, query, candidateIds: products.map(product => product.id) });
+      continue;
+    }
+    if (action.kind === 'search_products') {
+      responses.push(`Hasil katalog untuk “${query}”:\n${products.slice(0, 5).map(product => `• ${product.name} · stok ${product.stock} · ${formatIdr(product.sellPrice)}`).join('\n')}`);
+    } else if (action.kind === 'get_product_details' || action.kind === 'get_inventory') {
+      responses.push(productDescription(products[0]));
+    } else if (action.kind.startsWith('propose_')) {
+      const proposal = await planOwnerOperations(action, products[0], ownerId);
+      if (proposal.operations.length) { operations.push(...proposal.operations); labels.push(...proposal.labels); }
+      else responses.push(...proposal.labels);
+      clarification ??= proposal.clarification ?? null;
+    }
+  }
+  if (!clarification && businessDraft && operations.length) clarification = 'Pisahkan perubahan ini menjadi pesan terpisah agar satu konfirmasi hanya mengubah satu jenis data.';
+  if (!clarification && operations.length > 1 && operations.some(isProductCreate)) {
+    clarification = 'Pembuatan produk baru sebaiknya ditinjau terpisah dari perubahan barang lain. Kirim permintaan produk baru saja terlebih dahulu.';
+  }
+  if (!clarification && operations.length > 1) {
+    const seen = new Set<string>();
+    for (const operation of operations.filter((item): item is OwnerOperation => !isProductCreate(item))) {
+      const fields = operation.kind === 'STOCK_IN' ? ['stock', 'costPrice']
+        : operation.kind === 'STOCK_ADJUST' ? ['stock']
+          : operation.kind === 'LOCATION_MOVE' ? ['location'] : [operation.proposed.field ?? 'price'];
+      for (const field of fields) {
+        const key = `${operation.productId}:${field}`;
+        if (seen.has(key)) { clarification = `Ada beberapa perubahan yang saling bertabrakan untuk ${operation.productName}. Pisahkan menjadi beberapa pesan agar setiap pratinjau jelas.`; break; }
+        seen.add(key);
+      }
+      if (clarification) break;
+    }
+  }
+  // Read-only tools run first; a second, bounded model turn can now answer from their actual RMCS evidence.
+  // Mutations keep the application-authored preview and never rely on model-generated execution claims.
+  let userFacingReply = reply;
+  if (responses.length && !clarification && !state.actions.some(action => action.kind.startsWith('propose_'))) {
+    const latestRequest = [...state.history].reverse().find(message => message.role === 'user')?.content ?? '';
+    userFacingReply = await composeOwnerReply({ text: latestRequest, history: state.history.slice(0, -2), evidence: responses,
+      apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL }) ?? reply;
+  }
+  const content = [userFacingReply, ...responses].filter(Boolean).join('\n\n');
+  if (state.pendingMatches.length) {
+    rememberOwnerReply(state, content);
+    await saveOwnerChatState(rowId, chatId, state);
+    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+    for (const pending of state.pendingMatches) {
+      const matches = catalog.filter(product => pending.candidateIds.includes(product.id));
+      await sendTelegramMessage(chatId, `Saya menemukan beberapa barang untuk “${pending.query}”. Pilih yang tepat; rincian permintaan tetap tersimpan.`,
+        agentCandidateKeyboard(ownerId, pending.actionIndex, matches));
+    }
+    if (content) await sendTelegramMessage(chatId, content);
+    return;
+  }
+  if (clarification) {
+    rememberOwnerReply(state, [content, clarification, 'Belum ada perubahan.'].filter(Boolean).join('\n\n'));
+    await saveOwnerChatState(rowId, chatId, state);
+    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+    return sendTelegramMessage(chatId, [content, clarification, 'Belum ada perubahan.'].filter(Boolean).join('\n\n'));
+  }
+  if (businessDraft) {
+    const saved = await createAssistantActionDraft(chatId, ownerId, businessDraft);
+    state.proposalDraftId = saved.draftId; state.preview = saved.preview;
+    rememberOwnerReply(state, [content, saved.preview].filter(Boolean).join('\n\n'));
+    await saveOwnerChatState(rowId, chatId, state);
+    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+    return sendTelegramMessage(chatId, [content, saved.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(saved.draftId));
+  }
+  if (operations.length) {
+    const batch = await createBatchDraft(chatId, ownerId, operations, labels);
+    state.proposalDraftId = batch.draftId; state.preview = batch.preview;
+    rememberOwnerReply(state, [content, batch.preview].filter(Boolean).join('\n\n'));
+    try { await saveOwnerChatState(rowId, chatId, state); }
+    catch (error) {
+      await cancelSupersededDraft(batch.draftId, chatId);
+      throw error;
+    }
+    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+    return sendTelegramMessage(chatId, [content, batch.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(batch.draftId));
+  }
+  // A completed read-only request should not be replayed as the next turn's proposal.
+  rememberOwnerReply(state, content || 'Saya belum menangkap maksudnya. Coba ceritakan dengan kata-kata sendiri; kalau ada angka yang belum jelas, saya akan tanyakan.');
+  state.actions = []; state.selected = []; state.pendingMatches = [];
+  await saveOwnerChatState(rowId, chatId, state);
+  if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+  return sendTelegramMessage(chatId, content || 'Saya belum menangkap maksudnya. Coba ceritakan dengan kata-kata sendiri; kalau ada angka yang belum jelas, saya akan tanyakan.');
+}
+
+async function cancelSupersededDraft(draftId: string, chatId: bigint) {
+  await prisma.telegramDraft.updateMany({ where: { id: draftId, chatId, kind: { in: ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'] }, status: 'PENDING' },
+    data: { status: 'CANCELLED' } });
+}
+
+function parseOperation(value: unknown): OwnerOperation | null {
+  if (!value || typeof value !== 'object') return null;
+  const operation = value as Partial<OwnerOperation>;
+  if (operation.version !== 1 || !['STOCK_IN', 'STOCK_ADJUST', 'PRICE_UPDATE', 'LOCATION_MOVE'].includes(operation.kind ?? '') ||
+      !Number.isSafeInteger(operation.productId) || !operation.expected || !operation.proposed || !/^\d{1,20}$/.test(operation.ownerId ?? '')) return null;
+  return operation as OwnerOperation;
+}
+
+function parseOwnerProductCreate(value: unknown): OwnerProductCreate | null {
+  if (!value || typeof value !== 'object') return null;
+  const operation = value as Partial<OwnerProductCreate>;
+  if (operation.version !== 1 || operation.kind !== 'PRODUCT_CREATE' || typeof operation.ownerId !== 'string' || !/^\d{1,20}$/.test(operation.ownerId) ||
+      !Number.isSafeInteger(operation.categoryId) || (operation.categoryId ?? 0) <= 0 || typeof operation.categoryName !== 'string' || !operation.categoryName.trim() ||
+      typeof operation.name !== 'string' || !operation.name.trim() || operation.name.length > 180 ||
+      !(operation.subcategoryId === null || (typeof operation.subcategoryId === 'number' && Number.isSafeInteger(operation.subcategoryId) && operation.subcategoryId > 0)) ||
+      !(operation.locationId === null || (typeof operation.locationId === 'number' && Number.isSafeInteger(operation.locationId) && operation.locationId > 0)) ||
+      typeof operation.costPrice !== 'string' || !/^\d{1,13}$/.test(operation.costPrice) || BigInt(operation.costPrice) <= 0n || BigInt(operation.costPrice) > 1_000_000_000_000n ||
+      typeof operation.sellPrice !== 'string' || !/^\d{1,13}$/.test(operation.sellPrice) || BigInt(operation.sellPrice) <= 0n || BigInt(operation.sellPrice) > 1_000_000_000_000n ||
+      !Number.isSafeInteger(operation.stock) || (operation.stock ?? 0) <= 0 || (operation.stock ?? 1_000_001) > 1_000_000 ||
+      !Number.isSafeInteger(operation.minStock) || (operation.minStock ?? -1) < 0 || (operation.minStock ?? 1_000_001) > 1_000_000 ||
+      !(operation.sku === null || (typeof operation.sku === 'string' && operation.sku.length <= 80)) ||
+      !(operation.provider === null || (typeof operation.provider === 'string' && operation.provider.length <= 80)) ||
+      !(operation.validity === null || (typeof operation.validity === 'string' && operation.validity.length <= 80)) ||
+      !(operation.subcategoryName === null || (typeof operation.subcategoryName === 'string' && operation.subcategoryName.length <= 100)) ||
+      !(operation.locationName === null || (typeof operation.locationName === 'string' && operation.locationName.length <= 100)) ||
+      (operation.subcategoryId === null && operation.subcategoryName !== null) || (operation.locationId === null && operation.locationName !== null)) return null;
   return operation as OwnerProductCreate;
 }
 
@@ -651,7 +1029,7 @@ async function confirmAssistantAction(callback: OwnerCallback, ownerId: number, 
     const owner = linked.length === 1 ? linked[0] : linkedOwners.length === 1 ? linkedOwners[0] : null;
     if (!owner) throw new Error('Akun owner RMCS belum dapat dipastikan. Hubungkan Telegram owner ke akun RMCS.');
     await withTelegramOwnerUser({ id: owner.id, username: owner.username, role: 'owner', shift: owner.shift }, () =>
-      withAssistantAuthorization(() => applyAssistantDraft({ action: saved.action, payload: saved.payload })));
+      withAssistantAuthorization(() => applyAssistantDraft({ action: saved.action, payload: saved.payload, sourceDraftId: row.id })));
     await prisma.telegramDraft.update({ where: { id: row.id }, data: { status: 'CONFIRMED', confirmedAt: new Date() } });
     await answerTelegramCallback(callback.id, 'Perubahan berhasil diterapkan.');
     return sendTelegramMessage(row.chatId, '✅ ' + (typeof saved.preview === 'string' ? saved.preview.split('\n')[0] : 'Perubahan') + ' berhasil diterapkan di RMCS.');
@@ -834,7 +1212,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
   if (!text) return sendTelegramMessage(chatId, 'Kirim pertanyaan atau perintah dalam bentuk teks.');
   const command = /^\/([a-z]+)(?:@\w+)?(?:\s+([\s\S]*))?$/i.exec(text);
   if (command?.[1].toLowerCase() === 'start' || command?.[1].toLowerCase() === 'help') {
-    return sendTelegramMessage(chatId, 'Hai, saya asisten toko R-CELL. Tanyakan atau ceritakan kebutuhan Anda dengan kata-kata sendiri—saya bisa membantu mencari barang, membaca stok, merangkum usaha, dan menyiapkan perubahan untuk diperiksa.\n\nSetiap perubahan tetap menunggu tombol konfirmasi sebelum diterapkan. /whoami menampilkan ID Telegram Anda.');
+    return sendTelegramMessage(chatId, 'Hai, saya asisten owner R-CELL. Tanyakan dengan kata-kata sendiri—saya bisa membantu transaksi, saldo, bon, pengeluaran, stok opname, kategori, harga, katalog, laporan, dan memori toko.\n\nSetiap perubahan tetap menunggu tombol konfirmasi sebelum diterapkan. /whoami menampilkan ID Telegram Anda.');
   }
   const startedAt = Date.now();
   try {

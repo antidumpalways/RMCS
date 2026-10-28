@@ -21,6 +21,22 @@ model Settings {
   theme       String   @default("system") // light | dark | system
   updatedAt   DateTime @updatedAt
 }
+model BalanceAdjustment {
+  id              Int      @id @default(autoincrement())
+  account         String   // CASH | ELECTRONIC
+  previousBalance BigInt
+  newBalance      BigInt
+  delta           BigInt
+  note            String?
+  createdById     Int
+  createdBy       User     @relation(fields: [createdById], references: [id])
+  sourceDraftId   String?  @unique
+  sourceDraft     TelegramDraft? @relation(fields: [sourceDraftId], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+
+  @@index([account, createdAt])
+  @@index([createdById, createdAt])
+}
 
 // ============================================================================
 // LOCATIONS - lokasi penyimpanan barang (custom, admin kelola)
@@ -68,6 +84,7 @@ model User {
   telegramCorrectionsRequested TelegramReportCorrection[] @relation("TelegramCorrectionRequester")
   telegramCorrectionsApproved TelegramReportCorrection[] @relation("TelegramCorrectionApprover")
   linkedTelegramIdentity TelegramIdentity? @relation("LinkedTelegramUser")
+  balanceAdjustments BalanceAdjustment[]
   telegramUserId BigInt? @unique
   telegramLinkCodeHash String? @unique
   telegramLinkExpiresAt DateTime?
@@ -353,6 +370,7 @@ model TelegramDraft {
   @@index([telegramIdentityId, status, expiresAt])
   @@index([chatId, status])
   shiftReport TelegramShiftReport?
+  balanceAdjustment BalanceAdjustment?
 }
 
 model TelegramShiftReport {
@@ -520,3 +538,4 @@ model TelegramReportCorrection {
   @@index([reportId, createdAt])
   @@index([status, createdAt])
 }
+
