@@ -71,6 +71,11 @@ export function validateOwnerIntent(raw: unknown): OwnerIntent {
 /** Parse explicit rupiah amounts without guessing what an unmarked decimal means. */
 export function parseOwnerRupiah(value: string | null): bigint | null {
   if (!value) return null;
+  const compound = /^(?:rp\s*)?(\d+(?:[.,]\d+)?)\s*(jt|juta|m)\s*(?:\+\s*)?(\d+(?:[.,]\d+)?)\s*(rb|ribu|k)$/i.exec(value.trim());
+  if (compound) {
+    const first = parseOwnerRupiah(compound[1] + compound[2]), second = parseOwnerRupiah(compound[3] + compound[4]);
+    return first === null || second === null || first + second > 1_000_000_000_000n ? null : first + second;
+  }
   const normalized = value.trim().toLocaleLowerCase('id-ID').replace(/^rp\s*/, '').replace(/\s+/g, '');
   const match = /^(\d+(?:[.,]\d+)?)((?:rb|ribu|k|jt|juta|m)?)$/.exec(normalized);
   if (match && !match[2] && /[.,]/.test(match[1])) {

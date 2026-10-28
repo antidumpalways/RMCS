@@ -23,13 +23,13 @@ model Settings {
 }
 model BalanceAdjustment {
   id              Int      @id @default(autoincrement())
-  account         String   // CASH | ELECTRONIC
+  account         String   // CASH | ELECTRONIC | TOTAL
   previousBalance BigInt
   newBalance      BigInt
   delta           BigInt
   note            String?
-  createdById     Int
-  createdBy       User     @relation(fields: [createdById], references: [id])
+  createdById     Int?
+  createdBy       User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
   sourceDraftId   String?  @unique
   sourceDraft     TelegramDraft? @relation(fields: [sourceDraftId], references: [id], onDelete: SetNull)
   createdAt       DateTime @default(now())

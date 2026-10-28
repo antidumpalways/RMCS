@@ -7,6 +7,7 @@ import { correctTelegramPhotoFromText, handleTelegramPhoto, handleTelegramVision
 import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, inventoryCallback, parseInventoryCallback, type InventoryCallbackAction } from './inventory';
 import { prepareInventoryReview, postTelegramInventory, inventoryPreview, TelegramInventoryError } from '@/lib/services/telegram-inventory';
 import { shiftOpening } from '@/lib/automation';
+import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { identifyTelegramActor, configuredTelegramOwners, type TelegramActor } from './identity';
 import { handleGroupAssistantMessage, handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
 import { authorizedOwnerPrivateChat } from './owner-intent';
@@ -39,9 +40,9 @@ function addressedToGroupAssistant(m:TelegramMessage){const username=configuredB
 function naturalRecapStart(text:string){const clean=text.trim().replace(/^@\w+\s*/,'');const match=/^(?:(?:halo|hai)\s+)?(?:(?:aku|saya|kami)\s+)?(?:(?:mau|ingin|boleh|tolong)\s+)?(?:(?:mulai|buka|buat|lanjut)\s+)?(?:rekap|laporan|lapor)(?:\s+(?:shift|hari\s+ini|penjualan|jualan))?(?:\s+(pagi|siang|malam))?[.!?]*$/i.exec(clean);return match?{shiftLabel:match[1]?.toLocaleLowerCase('id-ID')??null}:null;}
 function formatDraft(d:RecapDraft):string{
  const totals=recapTotals(d);
- const labels:{[K in keyof typeof totals]:string}={service_volume:'Volume jasa',service_fee:'Biaya jasa',sale:'Penjualan barang',expense:'Pengeluaran',cash_balance:'Saldo kas akhir',electronic_balance:'Saldo elektronik akhir'};
- const rows=(Object.keys(labels) as (keyof typeof totals)[]).map(k=>labels[k]+': '+formatTelegramRupiah(BigInt(totals[k])));
- const detail=d.entries.map(e=>'• '+e.label+': '+formatTelegramRupiah(parseIndonesianRupiah(e.amount) ?? 0n)+(e.category==='service_volume'?' (volume)':e.category==='service_fee'?' (biaya jasa)':e.category==='sale'?' (penjualan)':e.category==='expense'?' (pengeluaran)':e.category==='cash_balance'?' (kas akhir)':' (saldo elektronik)'));
+ const labels:{[K in keyof typeof totals]:string}={service_volume:'Volume jasa',service_fee:'Biaya jasa',sale:'Penjualan barang',expense:'Pengeluaran',cash_balance:'Saldo kas akhir',electronic_balance:'Saldo elektronik akhir',total_balance:'Saldo total (kas + elektronik)'};
+ const rows=(Object.keys(labels) as (keyof typeof totals)[]).filter(k=>k!=='cash_balance'&&k!=='electronic_balance').map(k=>labels[k]+': '+formatTelegramRupiah(BigInt(totals[k])));
+ const detail=d.entries.map(e=>'• '+e.label+': '+formatTelegramRupiah(parseIndonesianRupiah(e.amount) ?? 0n)+(e.category==='service_volume'?' (volume)':e.category==='service_fee'?' (biaya jasa)':e.category==='sale'?' (penjualan)':e.category==='expense'?' (pengeluaran)':e.category==='cash_balance'?' (legacy kas akhir)':e.category==='electronic_balance'?' (legacy saldo elektronik)':e.category==='total_balance'?' (saldo total)':''));
  return 'Draf rekap'+(d.shiftLabel?' — shift '+d.shiftLabel:'')+':\n'+rows.join('\n')+(detail.length?'\n\nRincian:\n'+detail.join('\n'):'')+'\n\nTidak ada transaksi atau stok RMCS yang diubah.';
 }
 function keyboard(id:string,revision:number):InlineKeyboard{return{inline_keyboard:[[{text:'Konfirmasi & Simpan',callback_data:'rcms:ok:'+id+':'+revision},{text:'Koreksi Rekap',callback_data:'rcms:edit:'+id+':'+revision}],[{text:'Batal',callback_data:'rcms:cancel:'+id+':'+revision}]]};}
@@ -281,6 +282,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
    const report=await tx.telegramShiftReport.create({data:{draftId:draft.id,userId:actor.linkedUserId,telegramIdentityId:actor.identityId,chatId,shiftLabel:data.shiftLabel,payload},select:{id:true}});reportIdResult=report.id;
    postings=await postTelegramInventory(tx,report.id,actor.linkedUserId,actor.identityId,data,shiftStart,new Date());
    await tx.telegramShiftReport.update({where:{id:report.id},data:{payload:{...payload,inventoryPostings:postings} as object}});
+   await setCombinedBalance(tx,{targetBalance:BigInt(recapTotals(data).total_balance),createdById:actor.linkedUserId,sourceDraftId:draft.id,note:'Saldo total diperbarui dari rekap shift yang dikonfirmasi.'});
    await tx.telegramDraft.update({where:{id:draft.id},data:{status:'CONFIRMED',confirmedAt:new Date()}});
    await tx.telegramSession.deleteMany({where:{telegramIdentityId:actor.identityId,chatId,draftId:draft.id}});
   },{isolationLevel:'Serializable',timeout:20000});
@@ -293,7 +295,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
  await answerTelegramCallback(c.id,'Rekap dikonfirmasi dan stok diperbarui.');
  const summary=postings.map(posting=>{const ids=posting.lineId.split(',');const label=ids.map(id=>(data.inventoryLines??[]).find(line=>line.id===id)?.label).filter(Boolean).join(' / ');return '• '+label+': '+posting.appliedQty+' unit dikurangi';}).join('\n');
  const correctionHelp=postings.map(posting=>' /koreksi '+reportIdResult+' '+posting.lineId+' <jumlah-baru> <alasan>').join('\n');
- await sendTelegramMessage(chatId,'✅ REKAP BERHASIL DISIMPAN'+(data.shiftLabel?'\nShift '+data.shiftLabel:'')+(summary?'\n\n'+summary:'\n\nTidak ada perubahan stok.')+'\n\nAdmin TF + TD: '+formatTelegramRupiah(BigInt(recapTotals(data).service_fee))+'\nPengeluaran: '+formatTelegramRupiah(BigInt(recapTotals(data).expense))+(postings.length?'\n\nID laporan: '+reportIdResult+'\nKoreksi stok setelah disimpan:'+correctionHelp:''));
+ await sendTelegramMessage(chatId,'✅ REKAP BERHASIL DISIMPAN'+(data.shiftLabel?'\nShift '+data.shiftLabel:'')+(summary?'\n\n'+summary:'\n\nTidak ada perubahan stok.')+'\n\nAdmin TF + TD: '+formatTelegramRupiah(BigInt(recapTotals(data).service_fee))+'\nPengeluaran: '+formatTelegramRupiah(BigInt(recapTotals(data).expense))+'\nSaldo total (kas + elektronik): '+formatTelegramRupiah(BigInt(recapTotals(data).total_balance))+(postings.length?'\n\nID laporan: '+reportIdResult+'\nKoreksi stok setelah disimpan:'+correctionHelp:''));
 }
 async function processUpdate(u:TelegramUpdate){
  const id=telegramId(u.update_id);if(id===null)throw new Error('Invalid Telegram update_id');

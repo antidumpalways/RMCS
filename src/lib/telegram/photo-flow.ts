@@ -40,7 +40,7 @@ async function mutate<T>(sessionId:string,draftId:string,fn:(draft:RecapDraft)=>
  }
  return null;
 }
-const categoryLabel=(category:string)=>({service_volume:'Volume jasa',service_fee:'Biaya jasa',sale:'Penjualan',expense:'Pengeluaran',cash_balance:'Saldo kas',electronic_balance:'Saldo elektronik'} as Record<string,string>)[category]??category;
+const categoryLabel=(category:string)=>({service_volume:'Volume jasa',service_fee:'Biaya jasa',sale:'Penjualan',expense:'Pengeluaran',cash_balance:'Saldo kas',electronic_balance:'Saldo elektronik',total_balance:'Saldo total'} as Record<string,string>)[category]??category;
 function reviewText(r:RecapPhotoReview){
  if(r.status==='FAILED')return'Foto belum berhasil dibaca. Anda bisa mengetik rekap manual.';
  const amounts=r.entries.map(e=>'• '+categoryLabel(e.category)+' ('+e.label+'): '+formatTelegramRupiah(parseIndonesianRupiah(e.amount)??0n));
@@ -50,7 +50,7 @@ function reviewText(r:RecapPhotoReview){
  return'📸 Foto berhasil dibaca.'+warning+'\n\n'+(amounts.length?amounts.join('\n'):'Belum ada nominal yang bisa dipastikan.')+unclear+'\n\nBaris sumber:\n'+(lines.length?lines.join('\n'):'(tidak ada baris terbaca)')+'\n\nPeriksa hasil sebelum memasukkannya ke draf.';
 }
 function makeKeyboard(draftId:string,r:RecapPhotoReview,d:RecapDraft,revision:number):InlineKeyboard{
- const conflicts=findVisionConflicts(d.entries,r.entries),inventoryConflicts=findInventoryConflicts(d.inventoryLines??[],r.inventoryLines??[]),hasConflicts=conflicts.length>0||inventoryConflicts.length>0,balance=conflicts.some(e=>e.category==='cash_balance'||e.category==='electronic_balance');
+ const conflicts=findVisionConflicts(d.entries,r.entries),inventoryConflicts=findInventoryConflicts(d.inventoryLines??[],r.inventoryLines??[]),hasConflicts=conflicts.length>0||inventoryConflicts.length>0,balance=conflicts.some(e=>e.category==='cash_balance'||e.category==='electronic_balance'||e.category==='total_balance');
  const btn=(label:string,action:VisionAction)=>({text:label,callback_data:visionCallback(action,draftId,r.id,revision)});
  const rows:Array<Array<{text:string;callback_data:string}>>=[];
  if(r.status==='CORRECTING'){rows.push([btn('Selesai koreksi','finish'),btn('Koreksi lagi','correct')]);if(hasConflicts)rows.push([btn('Ganti nilai','replace'),...(balance?[]:[btn('Tambahkan','supplement')]),btn('Abaikan','skip')]);}
@@ -166,8 +166,8 @@ export async function handleTelegramVisionCallback(c:Callback,identityId:string)
  });
  if(!completed?.value){await answerTelegramCallback(c.id,'Draf berubah atau foto sudah diproses. Periksa pesan terbaru.');return;}
  await answerTelegramCallback(c.id,'Pembacaan foto dimasukkan ke draf.');
- const issues=recapIssues(completed.draft),labels:{[K in keyof ReturnType<typeof recapTotals>]:string}={service_volume:'Volume jasa',service_fee:'Biaya jasa',sale:'Penjualan barang',expense:'Pengeluaran',cash_balance:'Saldo kas akhir',electronic_balance:'Saldo elektronik akhir'};
- const summary='Draf rekap:\n'+(Object.keys(labels) as (keyof typeof labels)[]).map(k=>labels[k]+': '+formatTelegramRupiah(BigInt(recapTotals(completed.draft)[k]))).join('\n')+'\n\nTidak ada transaksi atau stok RMCS yang diubah.';
+ const issues=recapIssues(completed.draft),labels:{[K in keyof ReturnType<typeof recapTotals>]:string}={service_volume:'Volume jasa',service_fee:'Biaya jasa',sale:'Penjualan barang',expense:'Pengeluaran',cash_balance:'Saldo kas akhir',electronic_balance:'Saldo elektronik akhir',total_balance:'Saldo total (kas + elektronik)'};
+ const summary='Draf rekap:\n'+(Object.keys(labels) as (keyof typeof labels)[]).filter(k=>k!=='cash_balance'&&k!=='electronic_balance').map(k=>labels[k]+': '+formatTelegramRupiah(BigInt(recapTotals(completed.draft)[k]))).join('\n')+'\n\nTidak ada transaksi atau stok RMCS yang diubah.';
  await sendTelegramMessage(chatId,summary+(issues.length?'\n\nPerlu dilengkapi:\n• '+issues.join('\n• '):'\n\nPeriksa lalu konfirmasi.'),issues.length?undefined:{inline_keyboard:[[{text:'Konfirmasi rekap',callback_data:'rcms:ok:'+row.id+':'+completed.revision},{text:'Batal',callback_data:'rcms:cancel:'+row.id+':'+completed.revision}]]});
 }
 export function visionCallbackFromData(data:string|undefined){return parseVisionCallback(data);}

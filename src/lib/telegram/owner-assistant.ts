@@ -337,6 +337,16 @@ function actionQuery(action: OwnerAgentAction): string | null {
   return 'query' in action ? action.query : null;
 }
 function sameActions(left: OwnerAgentAction[], right: OwnerAgentAction[]) { return JSON.stringify(left) === JSON.stringify(right); }
+function uniqueMessages(parts: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  return parts.map(part => part?.trim() ?? '').filter(part => {
+    if (!part) return false;
+    const key = part.toLocaleLowerCase('id-ID').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).join('\n\n');
+}
 function rememberOwnerReply(state: OwnerChatState, reply: string) {
   const assistantTurn = [...state.history].reverse().find(message => message.role === 'assistant');
   if (assistantTurn) assistantTurn.content = reply.slice(0, 1200);
@@ -486,24 +496,17 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
   const build = (action: AssistantAction, title: string, lines: Array<{ label: string; value: string; emphasis?: boolean }>, payload: Record<string, unknown>) => ({ draft: { action, title, lines, payload } as AssistantDraft });
 
   if (kind === 'balance_update') {
-    const rawAccount = text('account', 40)?.toLowerCase();
-    if (rawAccount && ['dana', 'gopay', 'ovo', 'bca', 'bri', 'mandiri', 'bank'].includes(rawAccount)) return { clarification: 'Saat ini saya hanya mencatat saldo elektronik total, belum saldo per aplikasi atau rekening. Mau perbarui saldo elektronik total?' };
-    const account = rawAccount && ['cash', 'kas', 'tunai'].includes(rawAccount) ? 'CASH'
-      : rawAccount && ['electronic', 'elektronik', 'transfer', 'ewallet'].includes(rawAccount) ? 'ELECTRONIC' : null;
-    if (!account) return { clarification: 'Saldo yang ingin diperbarui yang mana: kas/cash atau saldo elektronik total?' };
     const actualBalance = amount('actualBalance');
-    if (actualBalance === null) return { clarification: 'Sebutkan jumlah saldo aktualnya, misalnya “update saldo cash jadi 1,85 juta”.' };
+    if (actualBalance === null) return { clarification: 'Sebutkan saldo total kas + elektronik yang benar sekarang, misalnya “saldo total 25 juta 168 ribu”.' };
     const settings = await prisma.settings.upsert({ where: { id: 1 }, update: {}, create: { id: 1, storeName: 'R CELL', cashInitial: 0n, balanceInitial: 0n } });
-    const currentBalance = account === 'CASH' ? await computeCash() : settings.balanceInitial;
-    const label = account === 'CASH' ? 'Kas/cash' : 'Saldo elektronik total';
+    const currentBalance = await computeCash() + settings.balanceInitial;
     const note = text('note', 240);
-    return build('balance.update', 'Draf pembaruan saldo', [
-      { label: 'Jenis saldo', value: label },
-      { label: 'Saldo tercatat', value: formatIdr(currentBalance) },
-      { label: 'Saldo aktual awal shift', value: formatIdr(actualBalance), emphasis: true },
+    return build('balance.update', 'Draf pembaruan saldo total', [
+      { label: 'Saldo tercatat (kas + elektronik)', value: formatIdr(currentBalance) },
+      { label: 'Saldo total aktual', value: formatIdr(actualBalance), emphasis: true },
       { label: 'Selisih penyesuaian', value: formatIdr(actualBalance - currentBalance), emphasis: true },
       ...(note ? [{ label: 'Catatan', value: note }] : []),
-    ], { account, actualBalance: actualBalance.toString(), expectedBalance: currentBalance.toString(), ...(note ? { note } : {}) });
+    ], { actualBalance: actualBalance.toString(), expectedBalance: currentBalance.toString(), ...(note ? { note } : {}) });
   }
   if (kind === 'sale_create' || kind === 'sale_edit' || kind === 'sale_return') {
     const saleId = number('saleId', 1);
@@ -1232,8 +1235,23 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
       // Clarification context remains available in the saved conversation history.
       const activeDraft = state.proposalDraftId
         ? await prisma.telegramDraft.findUnique({ where: { id: state.proposalDraftId } }) : null;
-      const currentProposal = ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'].includes(activeDraft?.kind ?? '') && activeDraft?.status === 'PENDING' && activeDraft.expiresAt > new Date()
-        ? state.actions : [];
+      const hasActiveProposal = ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'].includes(activeDraft?.kind ?? '') && activeDraft?.status === 'PENDING' && activeDraft.expiresAt > new Date();
+      const lastAssistantMessage = state.history.at(-1)?.role === 'assistant' ? state.history.at(-1)?.content ?? '' : '';
+      const awaitingBalanceClarification = !state.proposalDraftId &&
+        state.actions.some(action => action.kind === 'propose_business_action' && action.action === 'balance_update') &&
+        /saldo|cash|kas|elektronik|akun|pecah|pisah|nominal/i.test(lastAssistantMessage);
+      const currentProposal = hasActiveProposal || awaitingBalanceClarification ? state.actions : [];
+      const pendingTotalBalance = currentProposal.find((action): action is Extract<OwnerAgentAction, { kind: 'propose_business_action' }> => action.kind === 'propose_business_action' && action.action === 'balance_update');
+      const aggregateBalanceFollowUp = /dianggap\s+satu|satu\s+(?:aja|saja)|jangan\s+(?:dibeda|dipisah|dipecah)|gabung(?:an)?|pecah.+terserah|terserah/i.test(text)
+        && !/\d/.test(text);
+      if (pendingTotalBalance && aggregateBalanceFollowUp) {
+        state.actions = [pendingTotalBalance];
+        state.selected = [];
+        state.pendingMatches = [];
+        const followUpReply = 'Siap, saya pertahankan sebagai satu saldo gabungan kas + elektronik. Tidak perlu memilih akun atau membagi nominal.';
+        state.history = [...state.history, { role: 'user' as const, content: text }, { role: 'assistant' as const, content: followUpReply }].slice(-12);
+        return await renderOwnerActions(chatId, ownerId, rowId, state, followUpReply, priorActions);
+      }
       const memories = await prisma.assistantMemory.findMany({ where: { active: true }, orderBy: { id: 'desc' }, take: 30, select: { kind: true, term: true, content: true } });
       const memoryContext = memories.map(memory => JSON.stringify({ kind: memory.kind, term: memory.term, content: memory.content })).join(' ');
       const turn = await interpretOwnerTurn({ text, history: state.history, currentActions: currentProposal, memoryContext,
@@ -1245,8 +1263,9 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
       state.actions = turn.clarification && !validatedActions.some(action => action.kind === 'request_clarification')
         ? [...validatedActions, { kind: 'request_clarification', question: turn.clarification }] : validatedActions;
       state.selected = state.selected.filter(item => queryForAction(state.actions[item.actionIndex]) === item.query);
-      const reply = [turn.reply, turn.clarification].filter(Boolean).join('\n');
-      const historyReply = state.actions.length ? 'Saya sudah meninjau permintaan. Rencana perubahan hanya akan diterapkan setelah tombol konfirmasi ditekan.' : reply;
+      const reply = uniqueMessages([turn.reply, turn.clarification]);
+      const hasBalanceAction = state.actions.some(action => action.kind === 'propose_business_action' && action.action === 'balance_update');
+      const historyReply = state.actions.length && !hasBalanceAction ? 'Saya sudah meninjau permintaan. Rencana perubahan hanya akan diterapkan setelah tombol konfirmasi ditekan.' : reply;
       state.history = [...state.history, { role: 'user' as const, content: text }, { role: 'assistant' as const, content: historyReply }].slice(-12);
       return await renderOwnerActions(chatId, ownerId, rowId, state, reply, priorActions);
     } catch (error) {

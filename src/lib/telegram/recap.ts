@@ -1,4 +1,4 @@
-export type RecapCategory = 'service_volume' | 'service_fee' | 'sale' | 'expense' | 'cash_balance' | 'electronic_balance';
+export type RecapCategory = 'service_volume' | 'service_fee' | 'sale' | 'expense' | 'cash_balance' | 'electronic_balance' | 'total_balance';
 export type RecapEntry = { category: RecapCategory; label: string; amount: string; operation: 'add' | 'correct' | 'set' };
 export type RecapInventoryLine = { id:string; sourceText:string; label:string; quantity:number; unit:string; productId:number|null; candidateProductIds:number[]; mappingStatus:'UNMATCHED'|'MATCHED'|'AMBIGUOUS'|'OWNER_REVIEW'; coverage:'UNDECIDED'|'INCLUDES_APP_SALES'|'UNRECORDED_ONLY'|'OWNER_REVIEW'; recordedWebQty?:number; appliedQty?:number };
 export type RecapInventoryExtraction = { sourceText:string; label:string; quantity:number|string|null; unit:string|null; operation:'add'|'correct'|'set'|null; ambiguity?:string|null };
@@ -7,9 +7,11 @@ export type RecapExtraction = { shiftLabel?: string | null; entries: RecapEntry[
 export type RecapVisionLine={lineNumber:number;sourceText:string;lineType:'entry'|'subtotal'|'note'|'unreadable';category:RecapCategory|null;label:string|null;amount:string|null;quantity:string|null;unit:string|null;accountName:string|null;note:string|null;correctionTarget:string|null;operation:'add'|'correct'|'set'|null;ambiguity:string|null};
 export type RecapPhotoReview={id:string;fileId:string;fileUniqueId:string;sha256:string;mimeType:string;caption:string|null;quality?:'clear'|'mixed'|'unreadable';sourceLines:RecapVisionLine[];entries:RecapEntry[];inventoryLines?:RecapInventoryExtraction[];unresolved:string[];status:'PROCESSING'|'PENDING_REVIEW'|'CORRECTING'|'MERGED'|'IGNORED'|'FAILED';metrics?:{latencyMs:number;promptTokens:number;completionTokens:number;approximateInputTokens:number;failureCode?:string};createdAt:string;correctionMessages?:string[]};
 export type RecapTotals = Record<RecapCategory, string>;
-const categories = new Set<RecapCategory>(['service_volume','service_fee','sale','expense','cash_balance','electronic_balance']);
+const categories = new Set<RecapCategory>(['service_volume','service_fee','sale','expense','cash_balance','electronic_balance','total_balance']);
 export const emptyRecap = (): RecapDraft => ({shiftLabel:null,entries:[],inventoryLines:[],unresolved:[],messages:[],processedUpdateIds:[]});
 export function parseIndonesianRupiah(s:string):bigint|null {
+ const compound=/^(?:rp\s*)?(\d+(?:[.,]\d+)?)\s*(jt|juta|m)\s*(?:\+\s*)?(\d+(?:[.,]\d+)?)\s*(rb|ribu|k)$/i.exec(s.trim());
+ if(compound){const first=parseIndonesianRupiah(compound[1]+compound[2]),second=parseIndonesianRupiah(compound[3]+compound[4]);return first===null||second===null||first+second>1000000000000n?null:first+second;}
  const m=/^(?:rp\s*)?(\d+(?:[.,]\d+)*)(jt|juta|m|rb|ribu|k)?$/i.exec(s.trim()); if(!m)return null;
  const [,n,u='']=m; let value:bigint;
  if(u){if(!/^\d+(?:[.,]\d{1,2})?$/.test(n))return null;const [w,f='']=n.split(/[.,]/);if(f.length>2)return null;const k=['jt','juta','m'].includes(u.toLowerCase())?1000000n:1000n;value=BigInt(w)*k+(f?BigInt((f+'0').slice(0,2))*k/100n:0n);}
@@ -31,8 +33,18 @@ export function normalizeExtraction(v:unknown):RecapExtraction {
     ambiguity: typeof item.ambiguity === 'string' ? item.ambiguity.slice(0, 180) : null }];
   }).slice(0, 50) : [];
   return { shiftLabel: typeof r.shiftLabel === 'string' ? r.shiftLabel.slice(0, 40) : null,
-   entries: Array.isArray(r.entries) ? r.entries.filter(valid).map(e => ({ ...e, label: e.label.trim().toLowerCase() })) : [],
-   inventoryLines, unresolved: Array.isArray(r.unresolved) ? r.unresolved.filter((x): x is string => typeof x === 'string').map(x => x.slice(0, 180)).slice(0, 8) : [],
+   entries: (() => {
+    const rawEntries = Array.isArray(r.entries) ? r.entries.filter(valid) : [];
+    const balanceEntries = rawEntries.filter(e => e.category === 'total_balance' || e.category === 'cash_balance' || e.category === 'electronic_balance');
+    const explicitTotal = balanceEntries.filter(e => e.category === 'total_balance');
+    const combinedEntries = explicitTotal.length ? explicitTotal : balanceEntries;
+    const otherEntries = rawEntries.filter(e => e.category !== 'total_balance' && e.category !== 'cash_balance' && e.category !== 'electronic_balance')
+      .map(e => ({ ...e, label: e.label.trim().toLowerCase() }));
+    if (!combinedEntries.length) return otherEntries;
+    const total = combinedEntries.reduce((sum, entry) => sum + (parseIndonesianRupiah(entry.amount) ?? 0n), 0n);
+    return [...otherEntries, { category: 'total_balance' as const, label: 'saldo total', amount: total.toString(),
+      operation: combinedEntries.some(entry => entry.operation === 'correct') ? 'correct' as const : 'set' as const }];
+   })(),   inventoryLines, unresolved: Array.isArray(r.unresolved) ? r.unresolved.filter((x): x is string => typeof x === 'string').map(x => x.slice(0, 180)).slice(0, 8) : [],
    resolved: Array.isArray(r.resolved) ? r.resolved.filter((x): x is string => typeof x === 'string').map(x => x.slice(0, 180)).slice(0, 8) : [] };
 }
 export function applyExtraction(d:RecapDraft,x:RecapExtraction,message:string,updateId?:string):RecapDraft {
@@ -46,22 +58,28 @@ export function applyExtraction(d:RecapDraft,x:RecapExtraction,message:string,up
  return {shiftLabel:x.shiftLabel??d.shiftLabel,entries,inventoryLines,unresolved:[...new Set([...d.unresolved.filter(q=>!x.resolved?.some(r=>q.toLowerCase().includes(r.toLowerCase())||r.toLowerCase().includes(q.toLowerCase()))),...x.unresolved])].slice(-12),messages:[...d.messages,message.slice(0,1000)].slice(-30),processedUpdateIds:[...(d.processedUpdateIds??[]),...(updateId?[updateId]:[])]};
 }
 export function recapTotals(d:RecapDraft):RecapTotals {
- const t:RecapTotals={service_volume:'0',service_fee:'0',sale:'0',expense:'0',cash_balance:'0',electronic_balance:'0'};
- for(const e of d.entries){const n=parseIndonesianRupiah(e.amount);if(n!==null)t[e.category]=(BigInt(t[e.category])+n).toString();}return t;
+ const t:RecapTotals={service_volume:'0',service_fee:'0',sale:'0',expense:'0',cash_balance:'0',electronic_balance:'0',total_balance:'0'};
+ for(const e of d.entries){const n=parseIndonesianRupiah(e.amount);if(n!==null)t[e.category]=(BigInt(t[e.category])+n).toString();}
+ const hasCombined=d.entries.some(e=>e.category==='total_balance');
+ if(!hasCombined)t.total_balance=(BigInt(t.cash_balance)+BigInt(t.electronic_balance)).toString();
+ return t;
 }
 export function buildAggregateReport(d:RecapDraft) {
  return {shiftLabel:d.shiftLabel,entries:d.entries.map(e=>({...e})),inventoryLines:(d.inventoryLines??[]).map(e=>({...e,candidateProductIds:[...e.candidateProductIds]})),totals:recapTotals(d),messages:[...d.messages],photoEvidence:(d.photoReviews??[]).map(p=>({ ...p, sourceLines:p.sourceLines.map(line=>({...line})), entries:p.entries.map(e=>({...e})) }))};
 }export function canFinalizeRecap(d:RecapDraft):boolean { return recapIssues(d).length===0; }
 export function recapIssues(d:RecapDraft):string[] {
- const a=[...d.unresolved];if(!d.entries.some(e=>e.category==='cash_balance'))a.push('Saldo kas akhir belum disebutkan.');
- if(!d.entries.some(e=>e.category==='electronic_balance'))a.push('Saldo elektronik akhir belum disebutkan (atau tulis saldo elektronik 0).');
+ const a=[...d.unresolved];
+ const hasTotal=d.entries.some(e=>e.category==='total_balance');
+ const hasLegacyCash=d.entries.some(e=>e.category==='cash_balance');
+ const hasLegacyElectronic=d.entries.some(e=>e.category==='electronic_balance');
+ if(!hasTotal&&!(hasLegacyCash&&hasLegacyElectronic))a.push('Saldo total kas + elektronik belum disebutkan.');
  if(!d.entries.length&&!(d.inventoryLines?.length))a.push('Belum ada angka rekap yang terbaca.');for(const line of d.inventoryLines??[]){if(line.mappingStatus!=='MATCHED')a.push('Produk '+line.label+' belum dipastikan di katalog.');if(line.coverage==='UNDECIDED')a.push('Cakupan penjualan RMCS untuk '+line.label+' belum dikonfirmasi.');if(line.coverage==='OWNER_REVIEW'||line.mappingStatus==='OWNER_REVIEW')a.push('Produk '+line.label+' menunggu tinjauan owner.');}return [...new Set(a)];
 }
 export async function extractRecapMessage(text:string,d:RecapDraft):Promise<RecapExtraction>{
  const key=process.env.DEEPSEEK_API_KEY;if(!key)return deterministicExtraction(text);
  const response=await fetch('https://api.deepseek.com/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({
   model:process.env.DEEPSEEK_MODEL||'deepseek-flash',response_format:{type:'json_object'},max_tokens:500,
-   messages:[{role:'system',content:'Pahami bahasa sehari-hari, singkatan, typo ringan, pesan bertahap, dan koreksi seperti ‘eh tadi salah, axis bukan 7 tapi 5 pcs’ atau ‘saldo cash akhir 2jt’. Gunakan konteks draft untuk menerapkan koreksi pada baris yang benar; jika target atau satuan tidak jelas, tandai unresolved dan jangan menebak. Ekstrak laporan shift informal Indonesia sebagai JSON {"shiftLabel":string|null,"entries":[{"category":"service_volume|service_fee|sale|expense|cash_balance|electronic_balance","label":string,"amount":string,"operation":"add|correct|set"}],"inventoryLines":[{"sourceText":string,"label":string,"quantity":integer|null,"unit":string|null,"operation":"add|correct|set","ambiguity":string|null}],"unresolved":[string],"resolved":[string]}. Ekstrak unit produk hanya jika jumlah dan satuan tertulis eksplisit. Jangan infer jumlah dari nominal; nominal penjualan tetap aggregate sale terpisah. Unit yang tak jelas wajib ambiguity. Jangan menebak produk/SKU. Tandai nilai bertentangan unresolved. Jangan buat profit atau fakta. Pertahankan nominal asli. service_volume=pokok jasa; service_fee=admin; sale=omzet barang; expense=pengeluaran; cash_balance=kas akhir; electronic_balance=saldo elektronik akhir. Koreksi eksplisit correct; saldo set; aktivitas add. Draft angka keuangan: '+JSON.stringify(d.entries)+' Draft barang dan jumlah sebelumnya: '+JSON.stringify((d.inventoryLines??[]).map(line=>({label:line.label,quantity:line.quantity,unit:line.unit,sourceText:line.sourceText})))+' Klarifikasi: '+JSON.stringify(d.unresolved)+'. Isi resolved hanya untuk persoalan yang dijawab. Pesan terbaru: '+text}],stream:false
+   messages:[{role:'system',content:'Pahami bahasa sehari-hari, singkatan, typo ringan, pesan bertahap, dan koreksi seperti ‘eh tadi salah, axis bukan 7 tapi 5 pcs’ atau ‘saldo cash akhir 2jt’. Gunakan konteks draft untuk menerapkan koreksi pada baris yang benar; jika target atau satuan tidak jelas, tandai unresolved dan jangan menebak. Ekstrak laporan shift informal Indonesia sebagai JSON {"shiftLabel":string|null,"entries":[{"category":"service_volume|service_fee|sale|expense|cash_balance|electronic_balance|total_balance","label":string,"amount":string,"operation":"add|correct|set"}],"inventoryLines":[{"sourceText":string,"label":string,"quantity":integer|null,"unit":string|null,"operation":"add|correct|set","ambiguity":string|null}],"unresolved":[string],"resolved":[string]}. Ekstrak unit produk hanya jika jumlah dan satuan tertulis eksplisit. Jangan infer jumlah dari nominal; nominal penjualan tetap aggregate sale terpisah. Unit yang tak jelas wajib ambiguity. Jangan menebak produk/SKU. Tandai nilai bertentangan unresolved. Jangan buat profit atau fakta. Pertahankan nominal asli. service_volume=pokok jasa; service_fee=admin; sale=omzet barang; expense=pengeluaran; cash_balance=kas; electronic_balance=saldo elektronik. Jika ada dua nominal kas dan elektronik, keduanya dijumlahkan menjadi saldo gabungan; untuk satu angka gunakan total_balance. Usahakan minta dan catat satu angka saldo total saja. Koreksi eksplisit correct; saldo set; aktivitas add. Draft angka keuangan: '+JSON.stringify(d.entries)+' Draft barang dan jumlah sebelumnya: '+JSON.stringify((d.inventoryLines??[]).map(line=>({label:line.label,quantity:line.quantity,unit:line.unit,sourceText:line.sourceText})))+' Klarifikasi: '+JSON.stringify(d.unresolved)+'. Isi resolved hanya untuk persoalan yang dijawab. Pesan terbaru: '+text}],stream:false
  }),signal:AbortSignal.timeout(15000)});
  if(!response.ok)throw new Error('AI rekap tidak tersedia. Pesan belum disimpan; coba lagi.');
  const data=await response.json() as {choices?:{message?:{content?:string}}[]};
@@ -74,8 +92,9 @@ export function deterministicExtraction(text:string):RecapExtraction{
  const correction=/\b(rokok|pulsa|tf|transfer|tarik)\b(?:\s+\w+){0,3}\s+salah\s+bukan\s+(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)\s+(?:tapi|tp)\s+(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i.exec(rest);
  if(correction){const key=correction[1].toLowerCase();const category:RecapCategory=key==='rokok'?'sale':'service_volume';const label=key==='tf'||key==='transfer'?'transfer keluar':key==='tarik'?'tarik tunai':key;entries.push({category,label,amount:correction[3],operation:'correct'});rest=rest.replace(correction[0],' ');}
  const specs:Array<[RecapCategory,string,RegExp,'add'|'set']>=[
- ['cash_balance','kas',/(?:saldo\s*)?(?:cash|kas)(?:\s*(?:akhir|sisa))?\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'set'],
- ['electronic_balance','dana',/(?:saldo\s*)?(dana|gopay|ovo|rekening|elektronik)(?:\s*(?:akhir|sisa))?\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'set'],
+ ['total_balance','saldo total',/(?:saldo\s*(?:total(?:\s*nya)?|gabungan|sekarang(?:\s+total(?:\s*nya)?)?|akhir)|total\s+saldo)\s*[:=]?\s*(\d[\d.,]*\s*(?:(?:jt|juta|m)\s*)?(?:\d[\d.,]*\s*(?:rb|ribu|k))?)/i,'set'],
+
+ ['total_balance','saldo elektronik',/(?:saldo\s*)?(?:cash|kas|dana|gopay|ovo|rekening|elektronik)(?:\s*(?:akhir|sisa))?\s*[:=]?\s*(\d[\d.,]*\s*(?:(?:jt|juta|m)\s*)?(?:\d[\d.,]*\s*(?:rb|ribu|k))?)/i,'set'],
  ['service_fee','admin transfer',/(?:admin|fee)\s*(?:tf|transfer)?\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
  ['service_fee','admin tarik tunai',/(?:admin|fee)\s*(?:tarik(?:\s*tunai)?)\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
  ['expense','pengeluaran',/(?:pengeluaran|biaya)\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
@@ -86,6 +105,11 @@ export function deterministicExtraction(text:string):RecapExtraction{
  ['service_volume','tarik tunai',/tarik(?:\s*tunai)?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add']];
  for(const [category,label,re,operation] of specs){const m=re.exec(rest);if(!m)continue;const amount=m[m.length-1].trim();if(parseIndonesianRupiah(amount)!==null)entries.push({category,label,amount,operation});else unresolved.push('Nominal '+amount+' ambigu.');rest=rest.replace(m[0],' ');}
  for(const m of rest.matchAll(/([\w-]+)\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/gi)){if(!['shift','pagi','siang','malam','eh','tadi','salah','bukan','tapi'].includes(m[1].toLowerCase()))unresolved.push('Kategori '+m[1]+' perlu diperjelas: omzet barang, volume jasa, atau biaya.');}
- if(!entries.length&&!inventoryLines.length&&!unresolved.length)unresolved.push('Belum ada nominal rekap yang terbaca.');
+ const balanceEntries=entries.filter(entry=>entry.category==='cash_balance'||entry.category==='electronic_balance'||entry.category==='total_balance');
+ if(balanceEntries.length){
+  const total=balanceEntries.reduce((sum,entry)=>sum+(parseIndonesianRupiah(entry.amount)??0n),0n);
+  for(let i=entries.length-1;i>=0;i--)if(entries[i].category==='cash_balance'||entries[i].category==='electronic_balance'||entries[i].category==='total_balance')entries.splice(i,1);
+  entries.push({category:'total_balance',label:'saldo total',amount:total.toString(),operation:balanceEntries.some(entry=>entry.operation==='correct')?'correct':'set'});
+ } if(!entries.length&&!inventoryLines.length&&!unresolved.length)unresolved.push('Belum ada nominal rekap yang terbaca.');
  return {shiftLabel:/\b(pagi|siang|malam)\b/i.exec(text)?.[1]?.toLowerCase()??null,entries,inventoryLines,unresolved};
 }

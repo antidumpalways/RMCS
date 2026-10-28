@@ -3,7 +3,7 @@ export type VisionLine={lineNumber:number;sourceText:string;lineType:'entry'|'su
 export type VisionExtraction={quality:'clear'|'mixed'|'unreadable';lines:VisionLine[];entries:RecapEntry[];inventoryLines:RecapInventoryExtraction[];unresolved:string[]};
 export type VisionMetrics={latencyMs:number;promptTokens:number;completionTokens:number;approximateInputTokens:number;failureCode?:string};
 export class VisionExtractionError extends Error{constructor(readonly code:string,readonly metrics:VisionMetrics,message:string){super(message);}}
-const validCategories=new Set<RecapCategory>(['service_volume','service_fee','sale','expense','cash_balance','electronic_balance']);
+const validCategories=new Set<RecapCategory>(['service_volume','service_fee','sale','expense','cash_balance','electronic_balance','total_balance']);
 const nullableString=(v:unknown):v is string|null=>v===null||(typeof v==='string'&&v.length<=500);
 export function validateVisionExtraction(value:unknown):VisionExtraction{
  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('malformed_json');
@@ -32,14 +32,21 @@ export function validateVisionExtraction(value:unknown):VisionExtraction{
   if(hasQuantity&&!line.amount)continue;
   if(!line.category||!line.label||!line.amount||!line.operation){unresolved.push('Baris '+line.lineNumber+' belum lengkap: '+line.sourceText);continue;}
   if(parseIndonesianRupiah(line.amount)===null){unresolved.push('Nominal pada baris '+line.lineNumber+' perlu diperjelas: '+line.sourceText);continue;}
-  entries.push({category:line.category,label:line.label.trim().toLowerCase(),amount:line.amount,operation:line.operation});
+  entries.push({category:line.category==='cash_balance'||line.category==='electronic_balance'?'total_balance':line.category,label:line.category==='cash_balance'||line.category==='electronic_balance'?'komponen saldo':'saldo total',amount:line.amount,operation:line.operation});
  }
- if(root.quality==='unreadable'&&!unresolved.length)unresolved.push('Tulisan pada foto belum terbaca jelas.');
+ const balanceEntries=entries.filter(entry=>entry.category==='total_balance');
+ if(balanceEntries.length){
+  const explicitTotals=balanceEntries.filter(entry=>entry.label==='saldo total');
+  const balanceValues=explicitTotals.length?explicitTotals:balanceEntries;
+  const total=balanceValues.reduce((sum,entry)=>sum+(parseIndonesianRupiah(entry.amount)??0n),0n);
+  for(let i=entries.length-1;i>=0;i--)if(entries[i].category==='total_balance')entries.splice(i,1);
+  entries.push({category:'total_balance',label:'saldo total',amount:total.toString(),operation:'set'});
+ } if(root.quality==='unreadable'&&!unresolved.length)unresolved.push('Tulisan pada foto belum terbaca jelas.');
  return{quality:root.quality as VisionExtraction['quality'],lines,entries,inventoryLines,unresolved:[...new Set(unresolved)].slice(0,30)};
 }
 const prompt=[
-'Baca satu foto buku rekap shift toko. Kembalikan JSON saja dengan bentuk {"quality":"clear|mixed|unreadable","lines":[{"lineNumber":1,"sourceText":"transkripsi persis atau [tidak terbaca]","lineType":"entry|subtotal|note|unreadable","category":"service_volume|service_fee|sale|expense|cash_balance|electronic_balance atau null","label":"deskripsi atau null","amount":"nominal persis atau null","quantity":"jumlah barang jika tertulis atau null","unit":"satuan jika tertulis atau null","accountName":"nama akun seperti DANA atau null","note":"catatan asli atau null","correctionTarget":"baris yang dikoreksi atau null","operation":"add|correct|set atau null","ambiguity":"alasan ketidakjelasan atau null"}]}.',
-'Buat satu elemen per baris, pertahankan urutan dan sourceText. Jangan mengarang atau memperbaiki tulisan. Tulis nominal persis seperti 2,5jt. Jangan hitung subtotal/total dan jangan jadikan subtotal sebagai entry; simpan sebagai lineType subtotal. service_volume adalah pokok jasa transfer/tarik/topup; service_fee biaya admin; sale barang dagang; expense pengeluaran; cash_balance kas akhir; electronic_balance saldo akhir akun elektronik. Saldo gunakan set, aktivitas baru add, koreksi eksplisit correct. Jika tidak terbaca, pertahankan sourceText [tidak terbaca] disertai nomor baris dan isi ambiguity. Laporan foto bukan bukti transaksi.'
+'Baca satu foto buku rekap shift toko. Kembalikan JSON saja dengan bentuk {"quality":"clear|mixed|unreadable","lines":[{"lineNumber":1,"sourceText":"transkripsi persis atau [tidak terbaca]","lineType":"entry|subtotal|note|unreadable","category":"service_volume|service_fee|sale|expense|cash_balance|electronic_balance|total_balance atau null","label":"deskripsi atau null","amount":"nominal persis atau null","quantity":"jumlah barang jika tertulis atau null","unit":"satuan jika tertulis atau null","accountName":"nama akun seperti DANA atau null","note":"catatan asli atau null","correctionTarget":"baris yang dikoreksi atau null","operation":"add|correct|set atau null","ambiguity":"alasan ketidakjelasan atau null"}]}.',
+'Buat satu elemen per baris, pertahankan urutan dan sourceText. Jangan mengarang atau memperbaiki tulisan. Tulis nominal persis seperti 2,5jt. Jangan hitung subtotal/total dan jangan jadikan subtotal sebagai entry; simpan sebagai lineType subtotal. service_volume adalah pokok jasa transfer/tarik/topup; service_fee biaya admin; sale barang dagang; expense pengeluaran; cash_balance kas; electronic_balance saldo elektronik; total_balance saldo total gabungan kas dan elektronik. Saldo gunakan set, aktivitas baru add, koreksi eksplisit correct. Bila buku menulis kas dan elektronik sebagai dua baris, pertahankan masing-masing sesuai tulisan; aplikasi akan menggabungkannya secara deterministik menjadi satu saldo total. Jangan meminta pemilihan akun. Jika tidak terbaca, pertahankan sourceText [tidak terbaca] disertai nomor baris dan isi ambiguity. Laporan foto bukan bukti transaksi.'
 ].join(' ');
 export async function extractHandwrittenImage(bytes:Uint8Array,mimeType:string,caption?:string|null):Promise<{extraction:VisionExtraction;metrics:VisionMetrics}>{
  const apiKey=process.env.DEEPSEEK_API_KEY;

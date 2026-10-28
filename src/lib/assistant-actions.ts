@@ -5,6 +5,7 @@ import { getCurrentUser } from '@/lib/auth';
 import { isAssistantAction, formatIDR, isMemoryKind, MEMORY_KIND_LABELS } from '@/lib/assistant-draft';
 import { applyCatalogDraft, recordCartSale, recordShiftStockCheck, replaceSaleFromChat } from '@/lib/actions';
 import { withAssistantAuthorization } from '@/lib/assistant-authorization';
+import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { Prisma } from '@prisma/client';
 import {
   addDebtPayment, addStock, adjustStock, applyCatalogCleanup, applyStockOpname, bulkUpdatePrices,
@@ -291,49 +292,15 @@ async function subcategoryDelete(payload: Record<string, unknown>) {
 }
 
 async function updateBalance(payload: Record<string, unknown>, userId: number, sourceDraftId?: string) {
-  const account = payload.account === 'CASH' || payload.account === 'cash' ? 'CASH'
-    : payload.account === 'ELECTRONIC' || payload.account === 'electronic' ? 'ELECTRONIC' : null;
-  if (!account) throw new Error('Jenis saldo tidak valid.');
   const newBalance = priceValue(payload.actualBalance);
   const expectedRaw = payload.expectedBalance;
   if (typeof expectedRaw !== 'string' || !/^-?\d{1,16}$/.test(expectedRaw)) throw new Error('Saldo pembanding pada draf tidak valid.');
   const expectedBalance = BigInt(expectedRaw);
   const note = optionalText(payload.note, 240) ?? null;
-  return prisma.$transaction(async tx => {
-    const settings = await tx.settings.upsert({
-      where: { id: 1 }, update: {}, create: { id: 1, storeName: 'R CELL', cashInitial: 0n, balanceInitial: 0n },
-    });
-    let previousBalance: bigint;
-    let cashNet = 0n;
-    if (account === 'CASH') {
-      const [sales, services, debtPayments, expenses] = await Promise.all([
-        tx.saleTransaction.aggregate({ _sum: { totalRevenue: true } }),
-        tx.serviceTransaction.aggregate({ _sum: { profit: true } }),
-        tx.debtPayment.aggregate({ _sum: { amount: true } }),
-        tx.expense.aggregate({ _sum: { amount: true } }),
-      ]);
-      cashNet = (sales._sum.totalRevenue ?? 0n) + (services._sum.profit ?? 0n)
-        + (debtPayments._sum.amount ?? 0n) - (expenses._sum.amount ?? 0n);
-      previousBalance = settings.cashInitial + cashNet;
-    } else {
-      previousBalance = settings.balanceInitial;
-    }
-    if (previousBalance !== expectedBalance) {
-      throw new Error('Saldo berubah sejak draf dibuat. Minta asisten cek ulang agar selisihnya tidak salah.');
-    }
-    const delta = newBalance - previousBalance;
-    await tx.settings.update({
-      where: { id: 1 },
-      data: account === 'CASH'
-        ? { cashInitial: newBalance - cashNet }
-        : { balanceInitial: newBalance },
-    });
-    await tx.balanceAdjustment.create({
-      data: { account, previousBalance, newBalance, delta, note, createdById: userId, sourceDraftId: sourceDraftId ?? null },
-    });
-    const label = account === 'CASH' ? 'Kas/cash' : 'Saldo elektronik total';
-    return { ok: true as const, message: label + ' diperbarui dari ' + formatIDR(previousBalance) + ' menjadi ' + formatIDR(newBalance) + '. Selisih ' + formatIDR(delta) + ' dicatat di riwayat penyesuaian.' };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  const result = await prisma.$transaction(tx => setCombinedBalance(tx, {
+    targetBalance: newBalance, expectedBalance, createdById: userId, sourceDraftId, note,
+  }), { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  return { ok: true as const, message: 'Saldo gabungan kas + elektronik diperbarui dari ' + formatIDR(result.previousBalance) + ' menjadi ' + formatIDR(result.newBalance) + '. Selisih ' + formatIDR(result.delta) + ' dicatat di riwayat penyesuaian.' };
 }
 async function memorySave(payload: Record<string, unknown>, userId: number) {
   if (!isMemoryKind(payload.kind)) throw new Error('Jenis memori tidak dikenali.');
