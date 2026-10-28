@@ -16,14 +16,19 @@ export type OwnerAgentTurn = { reply: string; actions: OwnerAgentAction[]; clari
 export type OwnerChatMessage = { role: 'user' | 'assistant'; content: string };
 
 export class OwnerAgentTurnValidationError extends Error {
-  constructor(readonly reason: string, readonly field?: string, readonly actionIndex?: number) {
+  constructor(readonly reason: string, readonly field?: string, readonly actionIndex?: number, readonly validationValue?: string) {
     super('OWNER_AGENT_INVALID'); this.name = 'OwnerAgentTurnValidationError';
   }
 }
 
-function invalidTurn(reason: string, field?: string, actionIndex?: number): never {
-  throw new OwnerAgentTurnValidationError(reason, field, actionIndex);
+function invalidTurn(reason: string, field?: string, actionIndex?: number, validationValue?: string): never {
+  throw new OwnerAgentTurnValidationError(reason, field, actionIndex, validationValue);
 }
+
+const productDetailActionAliases = new Set([
+  'get_price', 'get_product_price', 'check_price', 'check_product_price', 'lookup_product_price',
+  'get_product_info', 'product_details',
+]);
 
 const safeText = (value: unknown, limit = 180): string | null =>
   typeof value === 'string' && value.trim() ? value.trim().replace(/\s+/g, ' ').slice(0, limit) : null;
@@ -49,11 +54,21 @@ export function validateOwnerAgentTurn(value: unknown): OwnerAgentTurn {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) invalidTurn('action_must_be_object', undefined, actionIndex);
     const action = entry as Record<string, unknown>;
     const query = safeText(action.query);
-    switch (action.kind) {
+    const kind = typeof action.kind === 'string' ? action.kind.trim().toLowerCase() : action.kind;
+    if (typeof kind === 'string' && productDetailActionAliases.has(kind)) {
+      if (!query) invalidTurn('query_missing_or_invalid', 'query', actionIndex);
+      // Price/info lookups are read-only and use the existing product-detail path.
+      actions.push({ kind: 'get_product_details', query });
+      continue;
+    }
+    switch (kind) {
       case 'search_products':
+        if (!query) invalidTurn('query_missing_or_invalid', 'query', actionIndex);
+        actions.push({ kind: 'search_products', query });
+        break;
       case 'get_product_details':
         if (!query) invalidTurn('query_missing_or_invalid', 'query', actionIndex);
-        actions.push({ kind: action.kind, query });
+        actions.push({ kind: 'get_product_details', query });
         break;
       case 'get_inventory':
         actions.push({ kind: 'get_inventory', query: safeText(action.query) });
@@ -89,7 +104,8 @@ export function validateOwnerAgentTurn(value: unknown): OwnerAgentTurn {
         actions.push({ kind: 'request_clarification', question });
         break;
       }
-      default: invalidTurn('action_kind_unsupported', 'kind', actionIndex);
+      default: invalidTurn('action_kind_unsupported', 'kind', actionIndex,
+        typeof kind === 'string' ? kind.slice(0, 60).replace(/[^a-z0-9_-]/g, '?') : typeof kind);
     }
   }
   return { reply, actions, clarification: safeText(raw.clarification, 500) };
@@ -112,14 +128,14 @@ export function planStockInPricing(action: Extract<OwnerAgentAction, { kind: 'pr
 
 export class OwnerAgentUnavailable extends Error {
   readonly diagnostics: { stage: string; category: string; status?: number; durationMs: number;
-    model: string; finishReason?: string | null; validationReason?: string; validationField?: string; actionIndex?: number;
+    model: string; finishReason?: string | null; validationReason?: string; validationField?: string; validationValue?: string; actionIndex?: number;
     usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number } };
   constructor(diagnostics: OwnerAgentUnavailable['diagnostics']) {
     super('OWNER_AGENT_UNAVAILABLE'); this.name = 'OwnerAgentUnavailable'; this.diagnostics = diagnostics;
   }
 }
 
-const instructions = `You are R-CELL's Indonesian conversational store assistant. Understand intent from informal Indonesian, slang, abbreviations, typos and natural follow-ups. Do not make the owner use command syntax. Return JSON only: {"reply":"short natural Indonesian reply","clarification":null|string,"actions":[...]}. Extract up to 8 actions in the order requested. For each intent use one of: search_products {query}; get_product_details {query}; get_low_stock; get_inventory {query|null}; propose_stock_in {query,quantity,unitCost,sellPrice,margin,supplier}; propose_stock_adjustment {query,targetStock,reason}; propose_price_update {query,field,amount}; propose_location_change {query,location}; get_business_report {date,shift}; request_clarification {question}. Prices must be strings as written (e.g. 50rb); quantities integers. Only extract facts the owner actually stated. Never invent a product, ID, stock, price, expense, profit, or transaction. For stock corrections, require a reason the owner explicitly gave and copy that reason verbatim; otherwise set reason=null and ask. In a stock-in request, an unqualified “harga 50rb, margin 20rb” means sellPrice=50rb and margin=20rb; derive unitCost as sellPrice minus margin. Map to unitCost only when the owner says modal/harga modal/harga beli. If both sellPrice and margin are stated for stock-in, preserve both; the application will derive unit cost deterministically and disclose it. If a follow-up changes sellPrice and the prior proposal stated a margin, preserve that margin and recalculate the derived cost; if the owner may mean to change the margin too, ask. Corrections update the existing proposal instead of adding a duplicate action. Treat the current proposal list as the complete prior draft and return the complete updated action list. If the owner answers a prior clarification, resolve it and remove the answered clarification action. Do not reactivate cancelled or rejected proposals from message history unless the owner explicitly asks to make that change again. If context is unclear or required values are missing, ask a concise question and do not invent values. A casual acknowledgement such as “oke” never authorizes a database write; writes always require the owner's Telegram confirmation button. If user cancels, return an empty actions array and explain cancellation.`;
+const instructions = `You are R-CELL's Indonesian conversational store assistant. Understand intent from informal Indonesian, slang, abbreviations, typos and natural follow-ups. Do not make the owner use command syntax. Return JSON only: {"reply":"short natural Indonesian reply","clarification":null|string,"actions":[...]}. Extract up to 8 actions in the order requested. For each intent use one of: search_products {query}; get_product_details {query}; get_low_stock; get_inventory {query|null}; propose_stock_in {query,quantity,unitCost,sellPrice,margin,supplier}; propose_stock_adjustment {query,targetStock,reason}; propose_price_update {query,field,amount}; propose_location_change {query,location}; get_business_report {date,shift}; request_clarification {question}. For any question asking the current product price, price list, or product information, use get_product_details with the product name in query; never invent a separate price action. Prices must be strings as written (e.g. 50rb); quantities integers. Only extract facts the owner actually stated. Never invent a product, ID, stock, price, expense, profit, or transaction. For stock corrections, require a reason the owner explicitly gave and copy that reason verbatim; otherwise set reason=null and ask. In a stock-in request, an unqualified “harga 50rb, margin 20rb” means sellPrice=50rb and margin=20rb; derive unitCost as sellPrice minus margin. Map to unitCost only when the owner says modal/harga modal/harga beli. If both sellPrice and margin are stated for stock-in, preserve both; the application will derive unit cost deterministically and disclose it. If a follow-up changes sellPrice and the prior proposal stated a margin, preserve that margin and recalculate the derived cost; if the owner may mean to change the margin too, ask. Corrections update the existing proposal instead of adding a duplicate action. Treat the current proposal list as the complete prior draft and return the complete updated action list. If the owner answers a prior clarification, resolve it and remove the answered clarification action. Do not reactivate cancelled or rejected proposals from message history unless the owner explicitly asks to make that change again. If context is unclear or required values are missing, ask a concise question and do not invent values. A casual acknowledgement such as “oke” never authorizes a database write; writes always require the owner's Telegram confirmation button. If user cancels, return an empty actions array and explain cancellation.`;
 
 export async function interpretOwnerTurn(input: {
   text: string; history: OwnerChatMessage[]; currentActions: OwnerAgentAction[];
@@ -172,6 +188,7 @@ export async function interpretOwnerTurn(input: {
       const validation = error instanceof OwnerAgentTurnValidationError ? {
         validationReason: error.reason,
         ...(error.field ? { validationField: error.field } : {}),
+        ...(error.validationValue ? { validationValue: error.validationValue } : {}),
         ...(error.actionIndex !== undefined ? { actionIndex: error.actionIndex } : {}),
       } : { validationReason: 'unexpected_validator_error' };
       throw diagnose('schema_validation', stage, { ...extra, ...validation });
