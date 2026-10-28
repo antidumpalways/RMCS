@@ -3,6 +3,7 @@
 // tidak ada yang tersimpan sampai owner/karyawan menekan konfirmasi.
 
 export type AssistantAction =
+  | 'catalog.update'
   | 'catalog.delete'
   | 'catalog.cleanup'
   | 'category.create'
@@ -11,6 +12,8 @@ export type AssistantAction =
   | 'subcategory.create'
   | 'subcategory.rename'
   | 'subcategory.delete'
+  | 'sale.create'
+  | 'sale.edit'
   | 'sale.return'
   | 'price.bulk'
   | 'stock.in'
@@ -38,10 +41,10 @@ export type AssistantDraft = {
 };
 
 const ASSISTANT_ACTIONS: readonly AssistantAction[] = [
-  'catalog.delete', 'catalog.cleanup',
+  'catalog.update', 'catalog.delete', 'catalog.cleanup',
   'category.create', 'category.rename', 'category.delete',
   'subcategory.create', 'subcategory.rename', 'subcategory.delete',
-  'sale.return', 'price.bulk', 'stock.in', 'stock.adjust',
+  'sale.create', 'sale.edit', 'sale.return', 'price.bulk', 'stock.in', 'stock.adjust',
   'opname.record', 'opname.apply', 'opname.review', 'opname.delete',
   'debt.create', 'debt.pay', 'debt.delete',
   'expense.create', 'service.create', 'shift.close',
@@ -78,3 +81,4 @@ const idr = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR',
 export function formatIDR(value: bigint | number | string) {
   return idr.format(Number(value));
 }
+

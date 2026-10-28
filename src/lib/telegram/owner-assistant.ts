@@ -1,10 +1,19 @@
+Warning: truncated output (original token count: 28525)
+Total output lines: 1338
+
 import { prisma } from '@/lib/prisma';
+import { withTelegramOwnerUser } from '@/lib/auth';
+import { withAssistantAuthorization } from '@/lib/assistant-authorization';
+import { applyAssistantDraft } from '@/lib/assistant-actions';
+import { isAssistantAction, type AssistantAction, type AssistantDraft } from '@/lib/assistant-draft';
+import { saleSnapshotSignature } from '@/lib/sale-chat';
+import { analyzeCatalog, cleanupsForKinds, AUDIT_KINDS, type AuditKind } from '@/lib/catalog-audit';
 import { jakartaTodayBounds } from '@/lib/sale-chat';
 import { catalogSearchTerms, rankCatalogProducts } from '@/lib/catalog-search';
 import { respectsNumericAttributes, semanticCatalogSearch } from '@/lib/semantic-catalog';
 import { answerTelegramCallback, sendTelegramMessage, type InlineKeyboard } from './client';
 import { parseOwnerRupiah, telegramOwnerAuthorized, validateOwnerIntent, type OwnerIntent } from './owner-intent';
-import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerChatMessage } from './owner-agent';
+import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerBusinessKind, type OwnerChatMessage } from './owner-agent';
 
 type OwnerMessage = { chat: { id: number; type: string }; from?: { id: number; first_name?: string; last_name?: string }; text?: string };
 type OwnerCallback = { id: string; from: { id: number }; data?: string; message?: { chat: { id: number; type: string } } };
@@ -199,7 +208,7 @@ async function showBusinessReport(requestedDate: string | null, shift: string | 
   const start = requestedDate ? new Date(requestedDate + 'T00:00:00+07:00') : today.start;
   const end = new Date(start.getTime() + 86_400_000);
   const shiftFilter = shift ? { user: { is: { shift: { equals: shift, mode: 'insensitive' as const } } } } : {};
-  const [sales, services, expenses, productRows, recapReports] = await Promise.all([
+  const [sales, services, expenses, productRows, recapReports, inventoryProducts] = await Promise.all([
     prisma.saleTransaction.findMany({ where: { createdAt: { gte: start, lt: end }, ...shiftFilter }, select: { totalRevenue: true, totalProfit: true } }),
     prisma.serviceTransaction.findMany({ where: { createdAt: { gte: start, lt: end }, ...shiftFilter }, select: { profit: true } }),
     prisma.expense.findMany({ where: { createdAt: { gte: start, lt: end }, ...shiftFilter }, select: { amount: true } }),
@@ -207,6 +216,7 @@ async function showBusinessReport(requestedDate: string | null, shift: string | 
       _sum: { qty: true, revenue: true }, orderBy: { _sum: { revenue: 'desc' } }, take: 8 }),
     prisma.telegramShiftReport.findMany({ where: { confirmedAt: { gte: start, lt: end },
       ...(shift ? { shiftLabel: { equals: shift, mode: 'insensitive' as const } } : {}) }, select: { payload: true } }),
+    prisma.product.findMany({ select: { stock: true, costPrice: true, sellPrice: true } }),
   ]);
   const salesRevenue = sales.reduce((sum, sale) => sum + sale.totalRevenue, 0n);
   const goodsProfit = sales.reduce((sum, sale) => sum + sale.totalProfit, 0n);
@@ -214,6 +224,8 @@ async function showBusinessReport(requestedDate: string | null, shift: string | 
   const totalRevenue = salesRevenue + serviceProfit;
   const grossProfit = goodsProfit + serviceProfit;
   const totalExpenses = expenses.reduce((sum, expense) => sum + expense.amount, 0n);
+  const totalModalInventory = inventoryProducts.reduce((sum, product) => sum + product.costPrice * BigInt(product.stock), 0n);
+  const totalRetailInventory = inventoryProducts.reduce((sum, product) => sum + product.sellPrice * BigInt(product.stock), 0n);
   const recapSales = recapReports.reduce((sum, report) => sum + reportedRecapTotal(report.payload, 'sale'), 0n);
   const recapFees = recapReports.reduce((sum, report) => sum + reportedRecapTotal(report.payload, 'service_fee'), 0n);
   const recapExpenses = recapReports.reduce((sum, report) => sum + reportedRecapTotal(report.payload, 'expense'), 0n);
@@ -224,7 +236,10 @@ async function showBusinessReport(requestedDate: string | null, shift: string | 
     (row._sum.qty ?? 0) + ' unit · ' + formatIdr(row._sum.revenue ?? 0n));
   return 'Ringkasan tercatat — ' + date + ' (WIB)' + (shift ? ' · shift ' + shift : '') + '\nOmzet barang + admin jasa: ' + formatIdr(totalRevenue) +
     '\nLaba kotor tercatat: ' + formatIdr(grossProfit) + '\nPengeluaran: ' + formatIdr(totalExpenses) +
-    '\nLaba setelah pengeluaran: ' + formatIdr(grossProfit - totalExpenses) +
+    '\nProfit tercatat setelah pengeluaran: ' + formatIdr(grossProfit - totalExpenses) +
+    '\nSnapshot persediaan saat ini (' + inventoryProducts.length + ' produk):' +
+    '\nTotal modal stok: ' + formatIdr(totalModalInventory) +
+    '\nNilai inventory pada harga jual: ' + formatIdr(totalRetailInventory) +
     '\n\nBarang teratas:\n' + (breakdown.length ? breakdown.join('\n') : 'Belum ada penjualan barang tercatat.') +
     '\n\nRekap shift Telegram terkonfirmasi (dilaporkan terpisah, tidak dijumlahkan):\nOmzet barang: ' + formatIdr(recapSales) +
     '\nAdmin jasa: ' + formatIdr(recapFees) + '\nPengeluaran: ' + formatIdr(recapExpenses) +
@@ -248,8 +263,8 @@ async function showProductIntent(chatId: bigint, ownerId: number, intent: OwnerI
     if (products.length > 3000) return sendTelegramMessage(chatId, 'Katalog melebihi batas kalkulasi laporan. Nilai persediaan belum dihitung.');
     const modal = products.reduce((sum, product) => sum + product.costPrice * BigInt(product.stock), 0n);
     const retail = products.reduce((sum, product) => sum + product.sellPrice * BigInt(product.stock), 0n);
-    return sendTelegramMessage(chatId, 'Nilai persediaan saat ini (' + products.length + ' produk):\nModal stok: ' + formatIdr(modal) +
-      '\nNilai jual stok: ' + formatIdr(retail) + '\nPotensi selisih jual-modal: ' + formatIdr(retail - modal));
+    return sendTelegramMessage(chatId, 'Nilai persediaan saat ini (' + products.length + ' produk):\nTotal modal stok: ' + formatIdr(modal) +
+      '\nNilai inventory pada harga jual: ' + formatIdr(retail) + '\nSelisih nilai jual dan modal: ' + formatIdr(retail - modal));
   }
   if (intent.kind === 'business_report_today') return sendTelegramMessage(BigInt(ownerId), await showBusinessReport(intent.date, intent.shift));
   if (intent.kind !== 'product_info' && intent.kind !== 'stock_in' && intent.kind !== 'stock_adjust' &&
@@ -453,182 +468,37 @@ async function planProductCreate(action: Extract<OwnerAgentAction, { kind: 'prop
   return { operation, label };
 }
 
-async function createBatchDraft(chatId: bigint, ownerId: number, operations: OwnerBatchOperation[], labels: string[]) {
-  const batch: OwnerBatch = { version: 2, ownerId: String(ownerId), operations, labels };
-  const row = await prisma.telegramDraft.create({ data: { chatId, kind: 'OWNER_OPERATION', payload: batch as object,
-    status: 'PENDING', expiresAt: new Date(Date.now() + DRAFT_TTL) }, select: { id: true } });
-  const preview = `Rencana perubahan (${operations.length} langkah):\n${operations.map((operation, index) =>
-    `${index + 1}. ${isProductCreate(operation) ? operation.name : operation.productName} — ${labels[index]}`).join('\n')}\n\nBelum ada yang diubah. Tinjau semua rincian lalu tekan tombol konfirmasi untuk menerapkan semuanya sekaligus.`;
-  return { draftId: row.id, preview };
-}
+async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<string, unknown>, ownerId: number): Promise<{ draft?: AssistantDraft; clarification?: string }> {
+  const text = (key: string, max = 160) => typeof data[key] === 'string' && (data[key] as string).trim() ? (data[key] as string).trim().slice(0, max) : null;
+  const number = (key: string, min = 0) => Number.isSafeInteger(data[key]) && (data[key] as number) >= min ? data[key] as number : null;
+  const amount = (key: string) => {
+    const raw = data[key];
+    return typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0 ? BigInt(raw) : typeof raw === 'string' ? parseOwnerRupiah(raw) : null;
+  };
+  const product = async (name: string) => {
+    const catalog = await getCatalog();
+    const matches = await findProductCandidates(name, catalog);
+    return { catalog, matches };
+  };
+  const chooseProduct = async (name: string) => {
+    const { matches } = await product(name);
+    if (matches.length !== 1) return { issue: matches.length ? `Nama “${name}” cocok ke beberapa barang: ${matches.map(item => item.name).join(', ')}. Sebutkan varian yang tepat.` : `Barang “${name}” belum ditemukan di katalog.` };
+    return { product: matches[0] };
+  };
+  const build = (action: AssistantAction, title: string, lines: Array<{ label: string; value: string; emphasis?: boolean }>, payload: Record<string, unknown>) => ({ draft: { action, title, lines, payload } as AssistantDraft });
 
-function queryForAction(action: OwnerAgentAction): string | null {
-  if ('query' in action) return action.query;
-  return null;
-}
-
-async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string, state: OwnerChatState,
-  reply: string, priorActions: OwnerAgentAction[]) {
-  const previousDraftId = state.proposalDraftId;
-  const existing = previousDraftId ? await prisma.telegramDraft.findUnique({ where: { id: previousDraftId } }) : null;
-  if (sameActions(priorActions, state.actions) && existing?.kind === 'OWNER_OPERATION' && existing.status === 'PENDING' && existing.expiresAt > new Date() && state.preview) {
-    await saveOwnerChatState(rowId, chatId, state);
-    return sendTelegramMessage(chatId, `${reply}\n\n${state.preview}`, ownerActionKeyboard(previousDraftId!));
-  }
-  state.proposalDraftId = null; state.preview = null; state.pendingMatches = [];
-  const catalog = state.actions.some(action => 'query' in action || action.kind === 'get_low_stock') ? await getCatalog() : [];
-  if (catalog.length > 3000) {
-    state.proposalDraftId = null;
-    await saveOwnerChatState(rowId, chatId, state);
-    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
-    return sendTelegramMessage(chatId, 'Katalog terlalu besar untuk ditinjau dengan aman sekarang. Belum ada perubahan data; coba pecah permintaan menjadi satu barang per pesan.');
-  }
-  const operations: OwnerBatchOperation[] = [], labels: string[] = [], responses: string[] = [];
-  let clarification: string | null = null;
-  for (let index = 0; index < state.actions.length; index++) {
-    const action = state.actions[index];
-    if (action.kind === 'request_clarification') { clarification ??= action.question; continue; }
-    if (action.kind === 'get_business_report') { responses.push(await showBusinessReport(action.date, action.shift)); continue; }
-    if (action.kind === 'get_low_stock') {
-      const lowStock = catalog.filter(product => product.stock <= product.minStock).sort((a, b) => a.stock - b.stock);
-      responses.push(lowStock.length
-        ? `Barang yang perlu dicek stoknya (${lowStock.length}):\n${lowStock.slice(0, 25).map(product => `• ${product.name}: ${product.stock} (minimum ${product.minStock})${product.location?.name ? ` · ${product.location.name}` : ''}`).join('\n')}${lowStock.length > 25 ? `\n…dan ${lowStock.length - 25} barang lain.` : ''}`
-        : 'Tidak ada barang yang mencapai batas stok minimum saat ini.');
-      continue;
-    }
-    if (action.kind === 'get_inventory' && !action.query) {
-      const modal = catalog.reduce((sum, product) => sum + product.costPrice * BigInt(product.stock), 0n);
-      const retail = catalog.reduce((sum, product) => sum + product.sellPrice * BigInt(product.stock), 0n);
-      responses.push(`Nilai stok dari katalog RMCS (${catalog.length} produk): modal ${formatIdr(modal)}; nilai jual ${formatIdr(retail)}.`);
-      continue;
-    }
-    if (action.kind === 'propose_product_create') {
-      const planned = await planProductCreate(action, ownerId);
-      if (planned.clarification) clarification ??= planned.clarification;
-      else if (planned.operation && planned.label) { operations.push(planned.operation); labels.push(planned.label); }
-      continue;
-    }
-    const query = queryForAction(action);
-    if (!query) { clarification ??= 'Barang yang dimaksud belum jelas. Sebutkan nama, SKU, atau ciri barangnya.'; continue; }
-    let products: CatalogProduct[] = [];
-    const selectedId = selectedProduct(state, index, query);
-    if (selectedId) products = catalog.filter(product => product.id === selectedId);
-    if (!products.length) products = await findProductCandidates(query, catalog);
-    if (!products.length) {
-      if (action.kind.startsWith('propose_')) clarification ??= `Saya belum menemukan “${query}” di katalog RMCS. Perubahan tetap ditahan; sebutkan nama atau SKU yang lebih tepat.`;
-      else responses.push(`Saya belum menemukan barang “${query}” di katalog RMCS.`);
-      continue;
-    }
-    if (products.length > 1 && (action.kind.startsWith('propose_') || action.kind === 'get_product_details' || action.kind === 'get_inventory')) {
-      state.pendingMatches.push({ actionIndex: index, query, candidateIds: products.map(product => product.id) });
-      continue;
-    }
-    if (action.kind === 'search_products') {
-      responses.push(`Hasil katalog untuk “${query}”:\n${products.slice(0, 5).map(product => `• ${product.name} · stok ${product.stock} · ${formatIdr(product.sellPrice)}`).join('\n')}`);
-    } else if (action.kind === 'get_product_details' || action.kind === 'get_inventory') {
-      responses.push(productDescription(products[0]));
-    } else if (action.kind.startsWith('propose_')) {
-      const proposal = await planOwnerOperations(action, products[0], ownerId);
-      if (proposal.operations.length) { operations.push(...proposal.operations); labels.push(...proposal.labels); }
-      else responses.push(...proposal.labels);
-      clarification ??= proposal.clarification ?? null;
-    }
-  }
-  if (!clarification && operations.length > 1 && operations.some(isProductCreate)) {
-    clarification = 'Pembuatan produk baru sebaiknya ditinjau terpisah dari perubahan barang lain. Kirim permintaan produk baru saja terlebih dahulu.';
-  }
-  if (!clarification && operations.length > 1) {
-    const seen = new Set<string>();
-    for (const operation of operations.filter((item): item is OwnerOperation => !isProductCreate(item))) {
-      const fields = operation.kind === 'STOCK_IN' ? ['stock', 'costPrice']
-        : operation.kind === 'STOCK_ADJUST' ? ['stock']
-          : operation.kind === 'LOCATION_MOVE' ? ['location'] : [operation.proposed.field ?? 'price'];
-      for (const field of fields) {
-        const key = `${operation.productId}:${field}`;
-        if (seen.has(key)) { clarification = `Ada beberapa perubahan yang saling bertabrakan untuk ${operation.productName}. Pisahkan menjadi beberapa pesan agar setiap pratinjau jelas.`; break; }
-        seen.add(key);
-      }
-      if (clarification) break;
-    }
-  }
-  // Read-only tools run first; a second, bounded model turn can now answer from their actual RMCS evidence.
-  // Mutations keep the application-authored preview and never rely on model-generated execution claims.
-  let userFacingReply = reply;
-  if (responses.length && !clarification && !state.actions.some(action => action.kind.startsWith('propose_'))) {
-    const latestRequest = [...state.history].reverse().find(message => message.role === 'user')?.content ?? '';
-    userFacingReply = await composeOwnerReply({ text: latestRequest, history: state.history.slice(0, -2), evidence: responses,
-      apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL }) ?? reply;
-  }
-  const content = [userFacingReply, ...responses].filter(Boolean).join('\n\n');
-  if (state.pendingMatches.length) {
-    rememberOwnerReply(state, content);
-    await saveOwnerChatState(rowId, chatId, state);
-    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
-    for (const pending of state.pendingMatches) {
-      const matches = catalog.filter(product => pending.candidateIds.includes(product.id));
-      await sendTelegramMessage(chatId, `Saya menemukan beberapa barang untuk “${pending.query}”. Pilih yang tepat; rincian permintaan tetap tersimpan.`,
-        agentCandidateKeyboard(ownerId, pending.actionIndex, matches));
-    }
-    if (content) await sendTelegramMessage(chatId, content);
-    return;
-  }
-  if (clarification) {
-    rememberOwnerReply(state, [content, clarification, 'Belum ada perubahan.'].filter(Boolean).join('\n\n'));
-    await saveOwnerChatState(rowId, chatId, state);
-    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
-    return sendTelegramMessage(chatId, [content, clarification, 'Belum ada perubahan.'].filter(Boolean).join('\n\n'));
-  }
-  if (operations.length) {
-    const batch = await createBatchDraft(chatId, ownerId, operations, labels);
-    state.proposalDraftId = batch.draftId; state.preview = batch.preview;
-    rememberOwnerReply(state, [content, batch.preview].filter(Boolean).join('\n\n'));
-    try { await saveOwnerChatState(rowId, chatId, state); }
-    catch (error) {
-      await cancelSupersededDraft(batch.draftId, chatId);
-      throw error;
-    }
-    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
-    return sendTelegramMessage(chatId, [content, batch.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(batch.draftId));
-  }
-  // A completed read-only request should not be replayed as the next turn's proposal.
-  rememberOwnerReply(state, content || 'Saya belum menangkap maksudnya. Coba ceritakan dengan kata-kata sendiri; kalau ada angka yang belum jelas, saya akan tanyakan.');
-  state.actions = []; state.selected = []; state.pendingMatches = [];
-  await saveOwnerChatState(rowId, chatId, state);
-  if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
-  return sendTelegramMessage(chatId, content || 'Saya belum menangkap maksudnya. Coba ceritakan dengan kata-kata sendiri; kalau ada angka yang belum jelas, saya akan tanyakan.');
-}
-
-async function cancelSupersededDraft(draftId: string, chatId: bigint) {
-  await prisma.telegramDraft.updateMany({ where: { id: draftId, chatId, kind: 'OWNER_OPERATION', status: 'PENDING' },
-    data: { status: 'CANCELLED' } });
-}
-
-function parseOperation(value: unknown): OwnerOperation | null {
-  if (!value || typeof value !== 'object') return null;
-  const operation = value as Partial<OwnerOperation>;
-  if (operation.version !== 1 || !['STOCK_IN', 'STOCK_ADJUST', 'PRICE_UPDATE', 'LOCATION_MOVE'].includes(operation.kind ?? '') ||
-      !Number.isSafeInteger(operation.productId) || !operation.expected || !operation.proposed || !/^\d{1,20}$/.test(operation.ownerId ?? '')) return null;
-  return operation as OwnerOperation;
-}
-
-function parseOwnerProductCreate(value: unknown): OwnerProductCreate | null {
-  if (!value || typeof value !== 'object') return null;
-  const operation = value as Partial<OwnerProductCreate>;
-  if (operation.version !== 1 || operation.kind !== 'PRODUCT_CREATE' || typeof operation.ownerId !== 'string' || !/^\d{1,20}$/.test(operation.ownerId) ||
-      !Number.isSafeInteger(operation.categoryId) || (operation.categoryId ?? 0) <= 0 || typeof operation.categoryName !== 'string' || !operation.categoryName.trim() ||
-      typeof operation.name !== 'string' || !operation.name.trim() || operation.name.length > 180 ||
-      !(operation.subcategoryId === null || (typeof operation.subcategoryId === 'number' && Number.isSafeInteger(operation.subcategoryId) && operation.subcategoryId > 0)) ||
-      !(operation.locationId === null || (typeof operation.locationId === 'number' && Number.isSafeInteger(operation.locationId) && operation.locationId > 0)) ||
-      typeof operation.costPrice !== 'string' || !/^\d{1,13}$/.test(operation.costPrice) || BigInt(operation.costPrice) <= 0n || BigInt(operation.costPrice) > 1_000_000_000_000n ||
-      typeof operation.sellPrice !== 'string' || !/^\d{1,13}$/.test(operation.sellPrice) || BigInt(operation.sellPrice) <= 0n || BigInt(operation.sellPrice) > 1_000_000_000_000n ||
-      !Number.isSafeInteger(operation.stock) || (operation.stock ?? 0) <= 0 || (operation.stock ?? 1_000_001) > 1_000_000 ||
-      !Number.isSafeInteger(operation.minStock) || (operation.minStock ?? -1) < 0 || (operation.minStock ?? 1_000_001) > 1_000_000 ||
-      !(operation.sku === null || (typeof operation.sku === 'string' && operation.sku.length <= 80)) ||
-      !(operation.provider === null || (typeof operation.provider === 'string' && operation.provider.length <= 80)) ||
-      !(operation.validity === null || (typeof operation.validity === 'string' && operation.validity.length <= 80)) ||
-      !(operation.subcategoryName === null || (typeof operation.subcategoryName === 'string' && operation.subcategoryName.length <= 100)) ||
-      !(operation.locationName === null || (typeof operation.locationName === 'string' && operation.locationName.length <= 100)) ||
-      (operation.subcategoryId === null && operation.subcategoryName !== null) || (operation.locationId === null && operation.locationName !== null)) return null;
+  if (kind === 'sale_create' || kind === 'sale_edit' || kind === 'sale_return') {
+    const saleId = number('saleId', 1);
+    const rawItems = data.items;
+    if (!Array.isArray(rawItems) || !rawItems.length || rawItems.length > 50 || !rawItems.every(item => item && typeof item === 'object')) return { clarification: 'Sebutkan barang dan jumlahnya dengan jelas.' };
+    if (kind === 'sale_create') {
+      const resolvedItems: Array<{ product: CatalogProduct; qty: number }> = [];
+      for (const raw of rawItems as Array<Record<string, unknown>>) {
+        const name = typeof raw.productName === 'string' ? raw.productName.trim() : '', qty = raw.qty;
+        if (!name || !Number.isSafeInteger(qty) || (qty as number) <= 0) return { clarification: 'Penjualan perlu nama barang dan jumlah terjual yang jelas.' };
+        const resolved = await chooseProduct(name); if (!resolved.product) return { clarification: resolved.issue };
+        const prior = resolvedItems.find(item => item.product.id === resolved.product!.id);
+        if (prior) prior.qty += qty as number; else resolvedItems.push({ …8525 tokens truncated…l && operation.subcategoryName !== null) || (operation.locationId === null && operation.locationName !== null)) return null;
   return operation as OwnerProductCreate;
 }
 
@@ -758,12 +628,48 @@ async function confirmBatchOperation(callback: OwnerCallback, ownerId: number, d
   } else await answerTelegramCallback(callback.id, 'Tombol ini sudah dipakai atau kedaluwarsa.');
 }
 
+function assistantDraftPreview(draft: AssistantDraft) {
+  return `${draft.title}\n${draft.lines.map(line => `${line.label}: ${line.value}`).join('\n')}\n\nBelum ada perubahan. Konfirmasi hanya jika rinciannya benar.`;
+}
+
+async function createAssistantActionDraft(chatId: bigint, ownerId: number, draft: AssistantDraft) {
+  const payload = { version: 1, kind: 'OWNER_ASSISTANT_ACTION', ownerId: String(ownerId), action: draft.action, payload: JSON.parse(JSON.stringify(draft.payload)), preview: assistantDraftPreview(draft) };
+  const row = await prisma.telegramDraft.create({ data: { chatId, kind: 'OWNER_ASSISTANT_ACTION', payload, status: 'PENDING', expiresAt: new Date(Date.now() + DRAFT_TTL) }, select: { id: true } });
+  return { draftId: row.id, preview: payload.preview };
+}
+
+async function confirmAssistantAction(callback: OwnerCallback, ownerId: number, row: { id: string; chatId: bigint; payload: unknown }) {
+  const saved = row.payload as { version?: number; kind?: string; ownerId?: string; action?: unknown; payload?: unknown; preview?: unknown };
+  if (saved.version !== 1 || saved.kind !== 'OWNER_ASSISTANT_ACTION' || saved.ownerId !== String(ownerId) || !isAssistantAction(saved.action) || !saved.payload || typeof saved.payload !== 'object') {
+    return answerTelegramCallback(callback.id, 'Draf perubahan tidak valid. Tidak ada yang dijalankan.');
+  }
+  const claimed = await prisma.telegramDraft.updateMany({ where: { id: row.id, chatId: row.chatId, kind: 'OWNER_ASSISTANT_ACTION', status: 'PENDING', expiresAt: { gt: new Date() } }, data: { status: 'PROCESSING' } });
+  if (claimed.count !== 1) return answerTelegramCallback(callback.id, 'Konfirmasi ini sudah dipakai atau draf kedaluwarsa.');
+  try {
+    const linkedOwners = await prisma.user.findMany({ where: { role: 'owner', active: true }, select: { id: true, username: true, shift: true, telegramUserId: true }, take: 2 });
+    const linked = linkedOwners.filter(user => user.telegramUserId === BigInt(ownerId));
+    const owner = linked.length === 1 ? linked[0] : linkedOwners.length === 1 ? linkedOwners[0] : null;
+    if (!owner) throw new Error('Akun owner RMCS belum dapat dipastikan. Hubungkan Telegram owner ke akun RMCS.');
+    await withTelegramOwnerUser({ id: owner.id, username: owner.username, role: 'owner', shift: owner.shift }, () =>
+      withAssistantAuthorization(() => applyAssistantDraft({ action: saved.action, payload: saved.payload })));
+    await prisma.telegramDraft.update({ where: { id: row.id }, data: { status: 'CONFIRMED', confirmedAt: new Date() } });
+    await answerTelegramCallback(callback.id, 'Perubahan berhasil diterapkan.');
+    return sendTelegramMessage(row.chatId, '✅ ' + (typeof saved.preview === 'string' ? saved.preview.split('\n')[0] : 'Perubahan') + ' berhasil diterapkan di RMCS.');
+  } catch (error) {
+    await prisma.telegramDraft.updateMany({ where: { id: row.id, status: 'PROCESSING' }, data: { status: 'FAILED' } });
+    console.error(JSON.stringify({ event: 'telegram_owner_action_failed', action: saved.action, error: error instanceof Error ? error.message : 'unknown' }));
+    await answerTelegramCallback(callback.id, 'Perubahan tidak dikonfirmasi sebagai berhasil. Periksa data RMCS sebelum mencoba ulang.');
+    return sendTelegramMessage(row.chatId, `⚠️ ${error instanceof Error ? error.message : 'Perubahan gagal.'}\nDraf tidak dijalankan ulang otomatis.`);
+  }
+}
+
 async function confirmOperation(callback: OwnerCallback, ownerId: number, draftId: string) {
   const chatId = BigInt(callback.message!.chat.id);
   const row = await prisma.telegramDraft.findUnique({ where: { id: draftId } });
-  if (!row || row.chatId !== chatId || row.kind !== 'OWNER_OPERATION' || row.status !== 'PENDING' || row.expiresAt <= new Date()) {
+  if (!row || row.chatId !== chatId || !['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'].includes(row.kind) || row.status !== 'PENDING' || row.expiresAt <= new Date()) {
     return answerTelegramCallback(callback.id, 'Draf tidak aktif. Tidak ada perubahan.');
   }
+  if (row.kind === 'OWNER_ASSISTANT_ACTION') return confirmAssistantAction(callback, ownerId, row);
   const batch = validateBatch(row.payload);
   if (batch) return confirmBatchOperation(callback, ownerId, draftId, batch);
   const operation = parseOperation(row.payload);
@@ -903,7 +809,7 @@ export async function handleOwnerCallback(callback: OwnerCallback, ownerId: numb
   if (!action) return answerTelegramCallback(callback.id, 'Tombol tidak dikenali.');
   const draftId = action[2], chatId = BigInt(chat.id);
   if (action[1] === 'cancel') {
-    const changed = await prisma.telegramDraft.updateMany({ where: { id: draftId, chatId, kind: 'OWNER_OPERATION', status: 'PENDING' }, data: { status: 'CANCELLED' } });
+    const changed = await prisma.telegramDraft.updateMany({ where: { id: draftId, chatId, kind: { in: ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'] }, status: 'PENDING' }, data: { status: 'CANCELLED' } });
     if (changed.count) {
       const stateId = ownerConversationId(ownerId), stateRow = await prisma.telegramDraft.findUnique({ where: { id: stateId } });
       const state = stateRow?.kind === 'OWNER_CONVERSATION' && stateRow.chatId === chatId ? parseOwnerChatState(stateRow.payload, ownerId) : null;
@@ -937,7 +843,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
     if (claimed.count !== 1) return sendTelegramMessage(chatId, 'Saya sedang menyusun pesan sebelumnya. Tunggu sebentar lalu kirim lagi; belum ada perubahan yang diterapkan.');
     try {
       if (command?.[1].toLowerCase() === 'batal') {
-        if (state.proposalDraftId) await prisma.telegramDraft.updateMany({ where: { id: state.proposalDraftId, chatId, kind: 'OWNER_OPERATION', status: 'PENDING' }, data: { status: 'CANCELLED' } });
+        if (state.proposalDraftId) await prisma.telegramDraft.updateMany({ where: { id: state.proposalDraftId, chatId, kind: { in: ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'] }, status: 'PENDING' }, data: { status: 'CANCELLED' } });
         state.actions = []; state.selected = []; state.pendingMatches = []; state.proposalDraftId = null; state.preview = null;
         state.history = [...state.history, { role: 'user' as const, content: text }, { role: 'assistant' as const, content: 'Rencana dibatalkan.' }].slice(-12);
         await saveOwnerChatState(rowId, chatId, state);
@@ -948,9 +854,11 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
       // Clarification context remains available in the saved conversation history.
       const activeDraft = state.proposalDraftId
         ? await prisma.telegramDraft.findUnique({ where: { id: state.proposalDraftId } }) : null;
-      const currentProposal = activeDraft?.kind === 'OWNER_OPERATION' && activeDraft.status === 'PENDING' && activeDraft.expiresAt > new Date()
+      const currentProposal = ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'].includes(activeDraft?.kind ?? '') && activeDraft?.status === 'PENDING' && activeDraft.expiresAt > new Date()
         ? state.actions : [];
-      const turn = await interpretOwnerTurn({ text, history: state.history, currentActions: currentProposal,
+      const memories = await prisma.assistantMemory.findMany({ where: { active: true }, orderBy: { id: 'desc' }, take: 30, select: { kind: true, term: true, content: true } });
+      const memoryContext = memories.map(memory => JSON.stringify({ kind: memory.kind, term: memory.term, content: memory.content })).join(' ');
+      const turn = await interpretOwnerTurn({ text, history: state.history, currentActions: currentProposal, memoryContext,
         apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL });
       const ownerEvidence = [...state.history.filter(message => message.role === 'user').map(message => message.content), text]
         .join(' ').toLocaleLowerCase('id-ID').replace(/\s+/g, ' ');
@@ -1070,3 +978,4 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
     throw error;
   }
 }
+

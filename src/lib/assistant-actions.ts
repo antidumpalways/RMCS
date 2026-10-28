@@ -3,7 +3,7 @@
 import { prisma } from '@/lib/prisma';
 import { getCurrentUser } from '@/lib/auth';
 import { isAssistantAction, formatIDR, isMemoryKind, MEMORY_KIND_LABELS } from '@/lib/assistant-draft';
-import { applyCatalogDraft, recordShiftStockCheck, replaceSaleFromChat } from '@/lib/actions';
+import { applyCatalogDraft, recordCartSale, recordShiftStockCheck, replaceSaleFromChat } from '@/lib/actions';
 import { withAssistantAuthorization } from '@/lib/assistant-authorization';
 import {
   addDebtPayment, addStock, adjustStock, applyCatalogCleanup, applyStockOpname, bulkUpdatePrices,
@@ -52,6 +52,28 @@ async function deleteCatalogProduct(payload: Record<string, unknown>) {
   return { ok: true as const, message: `Barang “${product.name}” dihapus dari katalog.` };
 }
 
+async function catalogUpdate(payload: Record<string, unknown>) {
+  const id = positiveId(payload.productId);
+  const current = await prisma.product.findUnique({ where: { id }, select: { name: true, categoryId: true, subcategoryId: true, sku: true, provider: true, validity: true, minStock: true } });
+  if (!current) throw new Error('Barang tidak ditemukan di katalog.');
+  const name = payload.name === undefined ? current.name : optionalText(payload.name, 180);
+  if (!name) throw new Error('Nama barang baru tidak valid.');
+  const categoryId = payload.categoryId === undefined ? current.categoryId : positiveId(payload.categoryId);
+  const category = await prisma.category.findUnique({ where: { id: categoryId }, select: { id: true } });
+  if (!category) throw new Error('Kategori tidak ditemukan.');
+  const subcategoryId = payload.subcategoryId === undefined ? current.subcategoryId : payload.subcategoryId === null ? null : positiveId(payload.subcategoryId);
+  if (subcategoryId !== null && !await prisma.subcategory.findFirst({ where: { id: subcategoryId, categoryId }, select: { id: true } })) throw new Error('Subkategori tidak sesuai dengan kategori.');
+  const sku = payload.sku === undefined ? current.sku : optionalText(payload.sku, 80) ?? null;
+  const duplicate = await prisma.product.findFirst({ where: { id: { not: id }, categoryId, name: { equals: name, mode: 'insensitive' } }, select: { id: true } });
+  if (duplicate) throw new Error(`Barang “${name}” sudah ada di kategori tersebut.`);
+  await prisma.product.update({ where: { id }, data: {
+    name, categoryId, subcategoryId, sku,
+    ...(payload.provider === undefined ? {} : { provider: optionalText(payload.provider, 80) ?? null }),
+    ...(payload.validity === undefined ? {} : { validity: optionalText(payload.validity, 80) ?? null }),
+    ...(payload.minStock === undefined ? {} : { minStock: Number.isSafeInteger(payload.minStock) && (payload.minStock as number) >= 0 && (payload.minStock as number) <= 1_000_000 ? payload.minStock as number : (() => { throw new Error('Batas stok minimum tidak valid.'); })() }),
+  } });
+  return { ok: true as const, message: `Informasi barang “${current.name}” diperbarui.` };
+}
 async function bulkPrice(payload: Record<string, unknown>) {
   const margin = payload.marginPercent;
   if (typeof margin !== 'number' || !Number.isFinite(margin) || margin < 0 || margin > 1000) {
@@ -295,6 +317,7 @@ export async function applyAssistantDraft(input: { action?: unknown; payload?: u
 
   return withAssistantAuthorization(async () => {
     switch (action) {
+      case 'catalog.update': return catalogUpdate(payload);
       case 'catalog.delete': return deleteCatalogProduct(payload);
       case 'catalog.cleanup': return catalogCleanup(payload);
       case 'category.create': return categoryCreate(payload);
@@ -303,6 +326,15 @@ export async function applyAssistantDraft(input: { action?: unknown; payload?: u
       case 'subcategory.create': return subcategoryCreate(payload);
       case 'subcategory.rename': return subcategoryRename(payload);
       case 'subcategory.delete': return subcategoryDelete(payload);
+      case 'sale.create': {
+        const result = await recordCartSale(payload.items as { productId: number; qty: number }[], payload.expectedPrices as { productId: number; sellPrice: string }[]);
+        if ('error' in result) throw new Error(result.error);
+        return { ok: true as const, message: `Penjualan #${result.saleId} berhasil dicatat.`, };
+      }
+      case 'sale.edit': {
+        const result = await replaceSaleFromChat(payload as unknown as Parameters<typeof replaceSaleFromChat>[0]);
+        return { ok: true as const, message: `Penjualan #${result.saleId} berhasil dikoreksi.` };
+      }
       case 'sale.return': return saleReturn(payload);
       case 'price.bulk': return bulkPrice(payload);
       case 'stock.in': return stockIn(payload);
@@ -343,3 +375,4 @@ export async function applyAssistantStockCheck(input: Parameters<typeof recordSh
   if (!me) throw new Error('Sesi berakhir. Silakan masuk kembali.');
   return withAssistantAuthorization(() => recordShiftStockCheck(input));
 }
+

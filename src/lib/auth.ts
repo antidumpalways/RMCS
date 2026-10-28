@@ -1,6 +1,7 @@
 // Session cookie sederhana. Untuk production, gunakan NextAuth/JWT.
 import { cookies } from 'next/headers';
 import { prisma } from './prisma';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 const COOKIE_NAME = 'rcms_uid';
 
@@ -11,7 +12,16 @@ export type SessionUser = {
   shift: string | null;
 };
 
+const telegramOwnerContext = new AsyncLocalStorage<SessionUser>();
+
+export function withTelegramOwnerUser<T>(user: SessionUser, run: () => Promise<T>) {
+  if (user.role !== 'owner') throw new Error('Akses owner diperlukan.');
+  return telegramOwnerContext.run(user, run);
+}
+
 export async function getCurrentUser(): Promise<SessionUser | null> {
+  const telegramOwner = telegramOwnerContext.getStore();
+  if (telegramOwner) return telegramOwner;
   const store = await cookies();
   const uid = store.get(COOKIE_NAME)?.value;
   if (!uid) return null;
@@ -45,3 +55,4 @@ export async function clearSession() {
 export function maskValue(value: number | bigint): string {
   return 'Rp ••••••••';
 }
+
