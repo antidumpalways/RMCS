@@ -298,3 +298,11 @@ SELECT username, role, shift, active FROM "User";
 ## 📝 License
 
 Private / internal use untuk R-CELL.
+
+
+### Telegram grup R-CELL
+
+- Set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_ALLOWED_GROUP_IDS`, `TELEGRAM_BOT_USERNAME`, dan `DEEPSEEK_API_KEY` pada environment deployment. Username bot ditulis tanpa `@`.
+- Agar pesan biasa seperti “aku mau rekap shift pagi” dapat diterima, buka `@BotFather` → `/setprivacy` → pilih bot → **Disable**, lalu keluarkan dan tambahkan kembali bot ke grup privat. Telegram secara default hanya mengirim pesan yang ditujukan ke bot; lihat [Bots FAQ](https://core.telegram.org/bots/faq).
+- Bot tetap hanya memproses grup yang tercantum di `TELEGRAM_ALLOWED_GROUP_IDS`. Di luar sesi rekap, ia diam pada obrolan biasa; untuk cek harga/stok, sebut `@username_bot` atau balas pesan bot.
+- Saat sesi rekap aktif, karyawan dapat mengetik rangkuman dan koreksi dalam bahasa biasa. Rekap masih memerlukan tombol konfirmasi. Pertanyaan grup hanya boleh membaca info katalog yang aman; perubahan katalog dan laporan finansial tetap melalui owner.

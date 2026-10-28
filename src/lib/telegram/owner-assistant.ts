@@ -8,7 +8,7 @@ import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStock
 
 type OwnerMessage = { chat: { id: number; type: string }; from?: { id: number; first_name?: string; last_name?: string }; text?: string };
 type OwnerCallback = { id: string; from: { id: number }; data?: string; message?: { chat: { id: number; type: string } } };
-type CatalogProduct = {
+export type CatalogProduct = {
   id: number; name: string; sku: string | null; provider: string | null; validity: string | null;
   stock: number; minStock: number; costPrice: bigint; sellPrice: bigint; locationId: number | null;
   updatedAt: Date; category: { name: string }; location: { name: string } | null;
@@ -64,7 +64,7 @@ function agentCandidateKeyboard(ownerId: number, actionIndex: number, products: 
   }]));
 }
 
-async function getCatalog(): Promise<CatalogProduct[]> {
+export async function getCatalog(): Promise<CatalogProduct[]> {
   const startedAt = Date.now();
   try {
     return await prisma.product.findMany({
@@ -981,5 +981,92 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
   } catch (error) {
     if (!(error instanceof OwnerAssistantDatabaseError)) logOwnerDiagnostic('conversation_state_read', 'state_access_error', startedAt);
     return sendTelegramMessage(chatId, 'Maaf, saya belum bisa memeriksa data toko sekarang. Tidak ada perubahan yang diterapkan; coba lagi sebentar.');
+  }
+}
+
+
+type GroupAssistantState = { version: 1; history: OwnerChatMessage[]; lastReply?: string; processedUpdateIds?: string[] };
+type GroupReadAction = Extract<OwnerAgentAction, { kind: 'search_products' | 'get_product_details' | 'get_inventory' | 'get_low_stock' }>;
+function isGroupReadAction(action: OwnerAgentAction): action is GroupReadAction {
+  return action.kind === 'search_products' || action.kind === 'get_product_details' || action.kind === 'get_inventory' || action.kind === 'get_low_stock';
+}
+const GROUP_ASSISTANT_TTL = 7 * 24 * 60 * 60_000;
+function groupAssistantId(chatId: bigint, identityId: string) { return `group-assistant-${chatId}-${identityId}`; }
+function groupProductLine(product: CatalogProduct) {
+  return `• ${product.name}${product.sku ? ` · SKU ${product.sku}` : ''} · ${product.category.name}${product.provider ? ` · ${product.provider}` : ''}${product.validity ? ` · ${product.validity}` : ''} · stok ${product.stock} unit · harga jual ${formatIdr(product.sellPrice)}${product.location?.name ? ` · ${product.location.name}` : ''}`;
+}
+
+/** Read-only group assistant; catalog changes and financial reports remain owner-only. */
+export async function handleGroupAssistantMessage(input: { chatId: bigint; identityId: string; text: string; updateId: string }) {
+  const id = groupAssistantId(input.chatId, input.identityId), now = new Date();
+  const initial: GroupAssistantState = { version: 1, history: [], processedUpdateIds: [] };
+  let existing = await prisma.telegramDraft.findUnique({ where: { id } });
+  if (!existing) {
+    try {
+      existing = await prisma.telegramDraft.create({ data: { id, chatId: input.chatId, telegramIdentityId: input.identityId,
+        kind: 'GROUP_ASSISTANT', payload: initial as object, status: 'PENDING', expiresAt: new Date(Date.now() + GROUP_ASSISTANT_TTL) } });
+    } catch (error) { if ((error as { code?: string }).code !== 'P2002') throw error; }
+  }
+  const claimed = await prisma.telegramDraft.updateMany({ where: { id, chatId: input.chatId, kind: 'GROUP_ASSISTANT', status: 'PENDING' },
+    data: { status: 'PROCESSING' } });
+  if (claimed.count !== 1) return sendTelegramMessage(input.chatId, 'Saya sedang memeriksa pertanyaan sebelumnya. Coba kirim lagi sebentar.');
+  const claimedRow = await prisma.telegramDraft.findUnique({ where: { id } });
+  const payload = claimedRow?.payload;
+  const state: GroupAssistantState = claimedRow?.expiresAt && claimedRow.expiresAt > now && payload && typeof payload === 'object' &&
+    (payload as GroupAssistantState).version === 1 && Array.isArray((payload as GroupAssistantState).history)
+      ? { ...initial, ...(payload as GroupAssistantState), history: (payload as GroupAssistantState).history.slice(-12),
+          processedUpdateIds: Array.isArray((payload as GroupAssistantState).processedUpdateIds) ? (payload as GroupAssistantState).processedUpdateIds!.slice(-80) : [] }
+      : initial;
+  if (state.processedUpdateIds?.includes(input.updateId)) {
+    await prisma.telegramDraft.update({ where: { id }, data: { status: 'PENDING' } });
+    return sendTelegramMessage(input.chatId, state.lastReply ?? 'Pesan itu sudah diproses.');
+  }
+  try {
+    const turn = await interpretOwnerTurn({ text: input.text, history: state.history, currentActions: [],
+      apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL });
+    let reply = '';
+    if (turn.actions.some(action => !isGroupReadAction(action))) {
+      reply = 'Di grup saya hanya bisa membantu cek informasi barang. Untuk menambah atau mengubah katalog, harga, dan stok, minta owner melakukannya lewat chat pribadi.';
+    } else if (turn.clarification) {
+      reply = turn.clarification;
+    } else if (!turn.actions.length) {
+      reply = 'Saya bisa bantu cek harga dan stok barang di grup. Untuk menambah atau mengubah produk, stok, harga, atau lokasi, minta owner lewat chat pribadi.';
+    } else {
+      const catalog = await getCatalog();
+      const evidence: string[] = [];
+      for (const action of turn.actions.filter(isGroupReadAction)) {
+        if (action.kind === 'get_low_stock') {
+          const low = catalog.filter(product => product.stock <= product.minStock).slice(0, 15);
+          evidence.push(low.length ? 'Barang yang perlu diperhatikan: ' + low.map(product => `${product.name}: ${product.stock} unit (batas ${product.minStock})`).join('; ')
+            : 'Tidak ada barang yang berada pada atau di bawah batas stok minimum.');
+          continue;
+        }
+        const query = action.query;
+        if (!query) { evidence.push('Sebutkan nama barang yang ingin dicek stoknya.'); continue; }
+        const matches = await findProductCandidates(query, catalog);
+        if (!matches.length) { evidence.push(`Saya belum menemukan barang “${query}” di katalog RMCS.`); continue; }
+        if (matches.length > 1 && action.kind !== 'search_products') {
+          evidence.push(`Ada beberapa barang yang cocok dengan “${query}”: ${matches.slice(0, 5).map(groupProductLine).join(' | ')}. Sebutkan nama atau variannya supaya saya bisa memastikan.`);
+          continue;
+        }
+        evidence.push((action.kind === 'search_products' ? 'Hasil pencarian: ' : 'Data barang: ') + matches.slice(0, 5).map(groupProductLine).join('\n'));
+      }
+      reply = await composeOwnerReply({ text: input.text, history: state.history, evidence,
+        apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL }) ?? evidence.join('\n');
+      if (evidence.length) reply += '\n\n' + evidence.join('\n');
+    }
+    const response = reply.slice(0, 3500);
+    const nextHistory: OwnerChatMessage[] = [...state.history, { role: 'user', content: input.text.slice(0, 1000) },
+      { role: 'assistant', content: response.slice(0, 1200) }];
+    state.history = nextHistory.slice(-12);
+    state.lastReply = response;
+    state.processedUpdateIds = [...(state.processedUpdateIds ?? []), input.updateId].slice(-80);
+    await prisma.telegramDraft.update({ where: { id }, data: { payload: state as object, status: 'PENDING', expiresAt: new Date(Date.now() + GROUP_ASSISTANT_TTL) } });
+    return sendTelegramMessage(input.chatId, response);
+  } catch (error) {
+    await prisma.telegramDraft.updateMany({ where: { id, kind: 'GROUP_ASSISTANT', status: 'PROCESSING' },
+      data: { status: 'PENDING', expiresAt: new Date(Date.now() + GROUP_ASSISTANT_TTL) } });
+    if (error instanceof OwnerAgentUnavailable) return sendTelegramMessage(input.chatId, 'Maaf, saya belum berhasil memahami pertanyaan itu. Coba sebutkan nama barang dan apakah ingin cek harga atau stok.');
+    throw error;
   }
 }

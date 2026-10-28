@@ -55,7 +55,7 @@ test('final response stage receives exact RMCS evidence and cannot return action
     } });
   assert.equal(reply, 'Paket Axis 13GB harganya Rp25.000 dan stoknya 4.');
   assert.match(body?.messages?.[1]?.content ?? '', /Paket Data Axis 13GB · stok 4 · harga jual Rp25\.000/);
-  assert.match(body?.messages?.[0]?.content ?? '', /using only the supplied evidence/);
+  assert.match(body?.messages?.[0]?.content ?? '', /use only the supplied RMCS evidence for factual answers/);
 });
 
 test('new product request is validated into a catalog creation action without inventing missing fields', () => {

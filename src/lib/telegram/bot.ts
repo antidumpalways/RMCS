@@ -8,14 +8,14 @@ import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, 
 import { prepareInventoryReview, postTelegramInventory, inventoryPreview, TelegramInventoryError } from '@/lib/services/telegram-inventory';
 import { shiftOpening } from '@/lib/automation';
 import { identifyTelegramActor, configuredTelegramOwners, type TelegramActor } from './identity';
-import { handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
+import { handleGroupAssistantMessage, handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
 import { authorizedOwnerPrivateChat } from './owner-intent';
 
 type TelegramChat={id:number;type:string};
-type TelegramUser={id:number;first_name?:string;last_name?:string;username?:string};
+type TelegramUser={id:number;first_name?:string;last_name?:string;username?:string;is_bot?:boolean};
 type TelegramPhoto={file_id:string;file_unique_id:string;width:number;height:number;file_size?:number};
 type TelegramDocument={file_id:string;file_unique_id:string;file_name?:string;mime_type?:string;file_size?:number};
-type TelegramMessage={message_id:number;chat:TelegramChat;from?:TelegramUser;sender_chat?:TelegramChat;text?:string;caption?:string;photo?:TelegramPhoto[];document?:TelegramDocument;media_group_id?:string;reply_to_message?:{message_id:number}};
+type TelegramMessage={message_id:number;chat:TelegramChat;from?:TelegramUser;sender_chat?:TelegramChat;text?:string;caption?:string;photo?:TelegramPhoto[];document?:TelegramDocument;media_group_id?:string;reply_to_message?:{message_id:number;from?:TelegramUser}};
 type TelegramCallback={id:string;from:TelegramUser;data?:string;message?:TelegramMessage};
 type TelegramUpdate={update_id:number;message?:TelegramMessage;callback_query?:TelegramCallback};
 const SESSION_TTL=12*60*60_000, UPDATE_LEASE=2*60_000;
@@ -32,6 +32,11 @@ async function claimUpdate(updateId:bigint):Promise<'CLAIMED'|'PROCESSED'|'BUSY'
  return disposition;
 }
 function groupAllowed(c:TelegramChat){return allowedTelegramGroup(c.id,c.type,process.env.TELEGRAM_ALLOWED_GROUP_IDS);}
+function configuredBotUsername(){return (process.env.TELEGRAM_BOT_USERNAME??'').trim().replace(/^@/,'').toLocaleLowerCase('id-ID');}
+function escapeRegex(value:string){return value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
+function stripBotMention(text:string){const username=configuredBotUsername();return username?text.replace(new RegExp('@'+escapeRegex(username),'ig'),' ').replace(/\s+/g,' ').trim():text.trim();}
+function addressedToGroupAssistant(m:TelegramMessage){const username=configuredBotUsername();if(!username)return false;const mention=!!m.text&&new RegExp('@'+escapeRegex(username)+'\\b','i').test(m.text);const reply=m.reply_to_message?.from;return mention||!!reply?.is_bot&&reply.username?.toLocaleLowerCase('id-ID')===username;}
+function naturalRecapStart(text:string){const clean=text.trim().replace(/^@\w+\s*/,'');const match=/^(?:(?:halo|hai)\s+)?(?:(?:aku|saya|kami)\s+)?(?:(?:mau|ingin|boleh|tolong)\s+)?(?:(?:mulai|buka|buat|lanjut)\s+)?(?:rekap|laporan|lapor)(?:\s+(?:shift|hari\s+ini|penjualan|jualan))?(?:\s+(pagi|siang|malam))?[.!?]*$/i.exec(clean);return match?{shiftLabel:match[1]?.toLocaleLowerCase('id-ID')??null}:null;}
 function formatDraft(d:RecapDraft):string{
  const totals=recapTotals(d);
  const labels:{[K in keyof typeof totals]:string}={service_volume:'Volume jasa',service_fee:'Biaya jasa',sale:'Penjualan barang',expense:'Pengeluaran',cash_balance:'Saldo kas akhir',electronic_balance:'Saldo elektronik akhir'};
@@ -115,7 +120,7 @@ async function handleInventoryCallback(c:TelegramCallback,actor:TelegramActor,ch
  }
  await sendReportDraft(chatId,actor,session.id,row.id);return true;
 }
-async function openReport(chatId:bigint,actor:TelegramActor){
+async function openReport(chatId:bigint,actor:TelegramActor,shiftLabel:string|null=null){
  let session=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId,telegramIdentityId:actor.identityId}}});
  if(session&&session.expiresAt<=new Date()){
   if(session.draftId)await prisma.telegramDraft.updateMany({where:{id:session.draftId,status:'PENDING'},data:{status:'EXPIRED'}});
@@ -226,7 +231,7 @@ async function handleCorrectionCallback(c:TelegramCallback,actor:TelegramActor,c
 }
 async function handleCommand(m:TelegramMessage,actor:TelegramActor,command:string,args:string){
  const chatId=telegramId(m.chat.id);if(chatId===null)return;
- if(command==='start')return sendTelegramMessage(chatId,'Perintah: /rekap untuk mulai atau melanjutkan laporan, /status untuk melihat draf, /koreksi untuk meminta koreksi stok, /batal untuk membatalkan.');
+ if(command==='start')return sendTelegramMessage(chatId,'Mulai rekap dengan /rekap atau tulis “aku mau rekap shift pagi”. Saat sesi aktif, kirim catatan dan koreksi dengan bahasa biasa. /status melihat draf, /koreksi meminta koreksi stok, dan /batal membatalkan. Untuk cek harga atau stok barang di luar sesi, sebut @'+(process.env.TELEGRAM_BOT_USERNAME??'bot').replace(/^@/,'')+' atau balas pesan bot.');
  if(command==='rekap')return openReport(chatId,actor);
  if(command==='koreksi')return requestReportCorrection(chatId,actor,args);
  if(command==='status'){
@@ -331,11 +336,22 @@ async function processUpdate(u:TelegramUpdate){
  if(!groupAllowed(chat))return false;
  const senderId=authorizedTelegramGroupSender({chatId:chat.id,chatType:chat.type,senderId:from.id,senderChatId:m?.sender_chat?.id,configuredGroups:process.env.TELEGRAM_ALLOWED_GROUP_IDS});
  if(senderId===null)return false;
+ const startRequest=m?naturalRecapStart(m.text??m.caption??''):null;
+ const assistantRequest=m?addressedToGroupAssistant(m):false;
+ // Ignore ordinary group chatter before creating Telegram identities or update rows.
+ if(!c&&!command&&!startRequest&&!assistantRequest){
+  const existingIdentity=await prisma.telegramIdentity.findUnique({where:{telegramUserId:senderId},select:{id:true}});
+  if(!existingIdentity)return false;
+  const active=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId:BigInt(chat.id),telegramIdentityId:existingIdentity.id}},select:{state:true,draftId:true,expiresAt:true}});
+  if(!active||active.state!=='REPORTING'||!active.draftId||active.expiresAt<=new Date())return false;
+ }
  const claim=await claimUpdate(id);if(claim==='PROCESSED')return true;if(claim==='BUSY')throw new TelegramUpdateBusy();
  try{
   const actor=await identifyTelegramActor(from,BigInt(chat.id));if(!actor)throw new Error('Invalid sender id');
   if(c)await handleCallback(c,actor);
   else if(m&&command)await handleCommand(m,actor,command.command,command.args);
+  else if(m&&startRequest){await openReport(BigInt(chat.id),actor,startRequest.shiftLabel);if(m.photo||m.document)await handleTelegramPhoto(m,actor.identityId,id);}
+  else if(m&&assistantRequest&&m.text){const text=stripBotMention(m.text);await handleGroupAssistantMessage({chatId:BigInt(chat.id),identityId:actor.identityId,text:text||'Tanya apa yang bisa saya bantu soal barang?',updateId:id.toString()});}
   else if(m&&(m.photo||m.document))await handleTelegramPhoto(m,actor.identityId,id);
   else if(m)await recordReportMessage(m,actor,id);
   await prisma.telegramUpdate.update({where:{updateId:id},data:{status:'PROCESSED',processedAt:new Date(),leaseUntil:null,lastError:null}});
