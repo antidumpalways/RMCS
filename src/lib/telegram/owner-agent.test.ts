@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveUnitCost, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction } from './owner-agent';
+import { composeOwnerReply, deriveUnitCost, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, validateOwnerAgentTurn, type OwnerAgentAction } from './owner-agent';
 
 function jsonResponse(content: string, status = 200) {
   return new Response(JSON.stringify({ model: 'deepseek-flash', usage: { prompt_tokens: 20, completion_tokens: 14, total_tokens: 34 },
@@ -43,6 +43,58 @@ test('conversational correction receives earlier context and returns a replaceme
   assert.equal(turn.actions.length, 1);
   assert.equal(turn.actions[0].kind, 'propose_price_update');
   if (turn.actions[0].kind === 'propose_price_update') assert.equal(turn.actions[0].amount, '55rb');
+});
+
+test('final response stage receives exact RMCS evidence and cannot return actions', async () => {
+  const evidence = 'Paket Data Axis 13GB · stok 4 · harga jual Rp25.000';
+  let body: { messages?: Array<{ role: string; content: string }> } | undefined;
+  const reply = await composeOwnerReply({ text: 'cek harga axis 13 gb', evidence: [evidence], apiKey: 'test-only',
+    fetcher: async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return jsonResponse(JSON.stringify({ reply: 'Paket Axis 13GB harganya Rp25.000 dan stoknya 4.' }));
+    } });
+  assert.equal(reply, 'Paket Axis 13GB harganya Rp25.000 dan stoknya 4.');
+  assert.match(body?.messages?.[1]?.content ?? '', /Paket Data Axis 13GB · stok 4 · harga jual Rp25\.000/);
+  assert.match(body?.messages?.[0]?.content ?? '', /using only the supplied evidence/);
+});
+
+test('new product request is validated into a catalog creation action without inventing missing fields', () => {
+  const turn = validateOwnerAgentTurn({ reply: 'Saya siapkan produk baru untuk ditinjau.', clarification: null, actions: [
+    { kind: 'propose_product_create', name: 'Voucher Telkomsel 7GB 5 Hari', category: 'Voucher', subcategory: null,
+      sku: null, provider: 'Telkomsel', validity: '5 hari', location: null, quantity: 20,
+      unitCost: null, sellPrice: '20rb', margin: '2500', minStock: null },
+  ] });
+  assert.equal(turn.actions[0].kind, 'propose_product_create');
+  if (turn.actions[0].kind === 'propose_product_create') {
+    assert.equal(turn.actions[0].sellPrice, '20rb');
+    assert.equal(turn.actions[0].unitCost, null);
+    assert.equal(turn.actions[0].quantity, 20);
+  }
+});
+
+test('schema-invalid model output gets one constrained repair attempt', async () => {
+  let calls = 0;
+  const turn = await interpretOwnerTurn({ text: 'tambah barang voucher baru', history: [], currentActions: [], apiKey: 'test-only',
+    fetcher: async (_url, init) => {
+      calls++;
+      if (calls === 1) return jsonResponse(JSON.stringify({ reply: '', actions: [{ kind: 'create_product' }] }));
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+      assert.match(body.messages.at(-1)?.content ?? '', /invalid_response/);
+      return jsonResponse(JSON.stringify({ reply: 'Saya tanya beberapa detail dulu.', clarification: 'Nama produknya apa?', actions: [] }));
+    } });
+  assert.equal(calls, 2);
+  assert.equal(turn.reply, 'Saya tanya beberapa detail dulu.');
+  assert.deepEqual(turn.actions, []);
+});
+
+test('invalid JSON gets one repair attempt before returning a safe clarification', async () => {
+  let calls = 0;
+  const turn = await interpretOwnerTurn({ text: 'cek harga Axis 13gb', history: [], currentActions: [], apiKey: 'test-only',
+    fetcher: async () => ++calls === 1 ? jsonResponse('{broken') : jsonResponse(JSON.stringify({
+      reply: 'Saya cek dulu ya.', clarification: 'Yang 7 hari atau 30 hari?', actions: [],
+    })) });
+  assert.equal(calls, 2);
+  assert.equal(turn.clarification, 'Yang 7 hari atau 30 hari?');
 });
 
 test('margin example derives modal arithmetically without floating point', () => {

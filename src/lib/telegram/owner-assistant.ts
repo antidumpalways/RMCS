@@ -4,7 +4,7 @@ import { catalogSearchTerms, rankCatalogProducts } from '@/lib/catalog-search';
 import { respectsNumericAttributes, semanticCatalogSearch } from '@/lib/semantic-catalog';
 import { answerTelegramCallback, sendTelegramMessage, type InlineKeyboard } from './client';
 import { parseOwnerRupiah, telegramOwnerAuthorized, validateOwnerIntent, type OwnerIntent } from './owner-intent';
-import { interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerChatMessage } from './owner-agent';
+import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerChatMessage } from './owner-agent';
 
 type OwnerMessage = { chat: { id: number; type: string }; from?: { id: number; first_name?: string; last_name?: string }; text?: string };
 type OwnerCallback = { id: string; from: { id: number }; data?: string; message?: { chat: { id: number; type: string } } };
@@ -21,7 +21,11 @@ type OwnerOperation = {
     field?: 'sellPrice' | 'costPrice'; amount?: string; targetLocationId?: number; targetLocationName?: string };
 };
 type OwnerSelection = { version: 1; intent: OwnerIntent; candidateIds: number[] };
-type OwnerBatch = { version: 2; ownerId: string; operations: OwnerOperation[]; labels: string[] };
+type OwnerProductCreate = { version: 1; kind: 'PRODUCT_CREATE'; ownerId: string; name: string; categoryId: number; categoryName: string;
+  subcategoryId: number | null; subcategoryName: string | null; sku: string | null; provider: string | null; validity: string | null;
+  locationId: number | null; locationName: string | null; costPrice: string; sellPrice: string; stock: number; minStock: number };
+type OwnerBatchOperation = OwnerOperation | OwnerProductCreate;
+type OwnerBatch = { version: 2; ownerId: string; operations: OwnerBatchOperation[]; labels: string[] };
 type OwnerChatState = { version: 1; ownerId: string; history: OwnerChatMessage[]; actions: OwnerAgentAction[];
   selected: Array<{ actionIndex: number; query: string; productId: number }>; pendingMatches: Array<{ actionIndex: number; query: string; candidateIds: number[] }>;
   proposalDraftId: string | null; preview: string | null };
@@ -189,7 +193,7 @@ async function prepareProductIntent(chatId: bigint, ownerId: bigint, intent: Own
   }
 }
 
-async function showBusinessReport(chatId: bigint, requestedDate: string | null, shift: string | null) {
+async function showBusinessReport(requestedDate: string | null, shift: string | null): Promise<string> {
   const today = jakartaTodayBounds();
   const date = requestedDate ?? today.date;
   const start = requestedDate ? new Date(requestedDate + 'T00:00:00+07:00') : today.start;
@@ -218,14 +222,14 @@ async function showBusinessReport(chatId: bigint, requestedDate: string | null, 
   const nameById = new Map(names.map(product => [product.id, product.name]));
   const breakdown = productRows.map(row => '• ' + (nameById.get(row.productId) ?? 'Barang dihapus') + ': ' +
     (row._sum.qty ?? 0) + ' unit · ' + formatIdr(row._sum.revenue ?? 0n));
-  return sendTelegramMessage(chatId, 'Ringkasan tercatat — ' + date + ' (WIB)' + (shift ? ' · shift ' + shift : '') + '\nOmzet barang + admin jasa: ' + formatIdr(totalRevenue) +
+  return 'Ringkasan tercatat — ' + date + ' (WIB)' + (shift ? ' · shift ' + shift : '') + '\nOmzet barang + admin jasa: ' + formatIdr(totalRevenue) +
     '\nLaba kotor tercatat: ' + formatIdr(grossProfit) + '\nPengeluaran: ' + formatIdr(totalExpenses) +
     '\nLaba setelah pengeluaran: ' + formatIdr(grossProfit - totalExpenses) +
     '\n\nBarang teratas:\n' + (breakdown.length ? breakdown.join('\n') : 'Belum ada penjualan barang tercatat.') +
     '\n\nRekap shift Telegram terkonfirmasi (dilaporkan terpisah, tidak dijumlahkan):\nOmzet barang: ' + formatIdr(recapSales) +
     '\nAdmin jasa: ' + formatIdr(recapFees) + '\nPengeluaran: ' + formatIdr(recapExpenses) +
     '\nJumlah laporan: ' + recapReports.length +
-    '\n\nLaba hanya dihitung dari transaksi yang menyimpan harga jual dan modal. Angka rekap agregat tidak digabung dengan transaksi Web App agar tidak menghitung ganda.');
+    '\n\nLaba hanya dihitung dari transaksi yang menyimpan harga jual dan modal. Angka rekap agregat tidak digabung dengan transaksi Web App agar tidak menghitung ganda.';
 }
 
 async function showProductIntent(chatId: bigint, ownerId: number, intent: OwnerIntent) {
@@ -247,7 +251,7 @@ async function showProductIntent(chatId: bigint, ownerId: number, intent: OwnerI
     return sendTelegramMessage(chatId, 'Nilai persediaan saat ini (' + products.length + ' produk):\nModal stok: ' + formatIdr(modal) +
       '\nNilai jual stok: ' + formatIdr(retail) + '\nPotensi selisih jual-modal: ' + formatIdr(retail - modal));
   }
-  if (intent.kind === 'business_report_today') return showBusinessReport(BigInt(ownerId), intent.date, intent.shift);
+  if (intent.kind === 'business_report_today') return sendTelegramMessage(BigInt(ownerId), await showBusinessReport(intent.date, intent.shift));
   if (intent.kind !== 'product_info' && intent.kind !== 'stock_in' && intent.kind !== 'stock_adjust' &&
       intent.kind !== 'price_update' && intent.kind !== 'location_move') {
     return sendTelegramMessage(BigInt(ownerId), 'Saya belum memahami maksudnya. Coba tanya stok/harga, barang masuk, koreksi stok beserta alasan, ubah harga, atau laporan hari ini.');
@@ -320,6 +324,10 @@ function actionQuery(action: OwnerAgentAction): string | null {
   return 'query' in action ? action.query : null;
 }
 function sameActions(left: OwnerAgentAction[], right: OwnerAgentAction[]) { return JSON.stringify(left) === JSON.stringify(right); }
+function rememberOwnerReply(state: OwnerChatState, reply: string) {
+  const assistantTurn = [...state.history].reverse().find(message => message.role === 'assistant');
+  if (assistantTurn) assistantTurn.content = reply.slice(0, 1200);
+}
 function selectedProduct(state: OwnerChatState, index: number, query: string): number | null {
   return state.selected.find(item => item.actionIndex === index && item.query === query)?.productId ?? null;
 }
@@ -329,7 +337,7 @@ function validateBatch(value: unknown): OwnerBatch | null {
   const batch = value as Partial<OwnerBatch>;
   if (batch.version !== 2 || !/^\d{1,20}$/.test(batch.ownerId ?? '') || !Array.isArray(batch.operations) ||
       !batch.operations.length || !Array.isArray(batch.labels) || batch.operations.length !== batch.labels.length ||
-      !batch.operations.every(operation => parseOperation(operation) !== null) || !batch.labels.every(label => typeof label === 'string')) return null;
+      !batch.operations.every(operation => parseBatchOperation(operation) !== null) || !batch.labels.every(label => typeof label === 'string')) return null;
   return batch as OwnerBatch;
 }
 
@@ -392,12 +400,65 @@ export async function planOwnerOperations(action: OwnerAgentAction, product: Cat
   return { operations: [], labels: [] };
 }
 
-async function createBatchDraft(chatId: bigint, ownerId: number, operations: OwnerOperation[], labels: string[]) {
+async function planProductCreate(action: Extract<OwnerAgentAction, { kind: 'propose_product_create' }>, ownerId: number) {
+  const name = action.name?.trim();
+  if (!name) return { clarification: 'Nama produk yang akan dibuat belum jelas. Sebutkan nama barangnya.' };
+  if (!action.category?.trim()) return { clarification: `Kategori untuk “${name}” belum disebutkan. Sebutkan kategori yang sudah ada di katalog.` };
+  if (!action.quantity || action.quantity < 1) return { clarification: `Berapa stok awal “${name}” yang ingin dimasukkan?` };
+  if (action.quantity > 1_000_000) return { clarification: 'Stok awal melewati batas sistem. Periksa jumlahnya.' };
+  const sellPrice = parseOwnerRupiah(action.sellPrice);
+  const explicitCost = parseOwnerRupiah(action.unitCost);
+  const margin = parseOwnerRupiah(action.margin);
+  if (sellPrice === null || sellPrice <= 0n) return { clarification: `Harga jual “${name}” belum jelas. Sebutkan nominalnya.` };
+  if (margin !== null && (margin <= 0n || margin >= sellPrice)) return { clarification: `Margin untuk “${name}” tidak cocok dengan harga jual. Pastikan kedua nominalnya.` };
+  const derivedCost = margin === null ? null : sellPrice - margin;
+  if (explicitCost !== null && derivedCost !== null && explicitCost !== derivedCost) {
+    return { clarification: `Modal ${formatIdr(explicitCost)} tidak sama dengan harga jual dikurangi margin (${formatIdr(derivedCost)}). Mana yang benar?` };
+  }
+  const costPrice = explicitCost ?? derivedCost;
+  if (costPrice === null || costPrice <= 0n) return { clarification: `Sebutkan modal per unit “${name}”, atau harga jual dan margin agar modalnya bisa dihitung.` };
+
+  const category = await prisma.category.findFirst({ where: { name: { equals: action.category.trim(), mode: 'insensitive' } }, select: { id: true, name: true } });
+  if (!category) {
+    const categories = await prisma.category.findMany({ select: { name: true }, orderBy: { sortOrder: 'asc' }, take: 50 });
+    return { clarification: `Kategori “${action.category}” belum ada di katalog. Kategori yang tersedia: ${categories.map(item => item.name).join(', ') || 'belum ada'}. Sebutkan salah satunya; saya tidak membuat kategori otomatis.` };
+  }
+  let subcategory: { id: number; name: string } | null = null;
+  if (action.subcategory) {
+    subcategory = await prisma.subcategory.findFirst({ where: { categoryId: category.id, name: { equals: action.subcategory, mode: 'insensitive' } }, select: { id: true, name: true } });
+    if (!subcategory) {
+      const available = await prisma.subcategory.findMany({ where: { categoryId: category.id }, select: { name: true }, orderBy: { name: 'asc' }, take: 50 });
+      return { clarification: `Subkategori “${action.subcategory}” tidak ditemukan di ${category.name}. Pilihan yang tersedia: ${available.map(item => item.name).join(', ') || 'tidak ada'}.` };
+    }
+  }
+  let location: { id: number; name: string } | null = null;
+  if (action.location) {
+    location = await prisma.location.findFirst({ where: { name: { equals: action.location, mode: 'insensitive' } }, select: { id: true, name: true } });
+    if (!location) {
+      const locations = await prisma.location.findMany({ select: { name: true }, orderBy: { name: 'asc' }, take: 50 });
+      return { clarification: `Lokasi “${action.location}” belum ada. Pilihan: ${locations.map(item => item.name).join(', ') || 'belum ada'}.` };
+    }
+  }
+  const duplicate = await prisma.product.findFirst({ where: { OR: [
+    { categoryId: category.id, name: { equals: name, mode: 'insensitive' } }, ...(action.sku ? [{ sku: action.sku }] : [])] }, select: { id: true, name: true } });
+  if (duplicate) return { clarification: `“${duplicate.name}” sudah ada di katalog. Saya tahan pembuatan agar tidak membuat barang ganda; kalau maksudnya menambah stok, kirim “tambah stok ${duplicate.name} ${action.quantity} pcs”.` };
+  const minStock = action.minStock ?? 3;
+  if (minStock > 1_000_000) return { clarification: 'Batas stok minimum melewati batas sistem.' };
+  const operation: OwnerProductCreate = { version: 1, kind: 'PRODUCT_CREATE', ownerId: String(ownerId), name,
+    categoryId: category.id, categoryName: category.name, subcategoryId: subcategory?.id ?? null,
+    subcategoryName: subcategory?.name ?? null, sku: action.sku?.trim() || null, provider: action.provider?.trim() || null,
+    validity: action.validity?.trim() || null, locationId: location?.id ?? null, locationName: location?.name ?? null,
+    costPrice: costPrice.toString(), sellPrice: sellPrice.toString(), stock: action.quantity, minStock };
+  const label = `Produk baru · ${category.name}${subcategory ? ` / ${subcategory.name}` : ''}; stok awal ${action.quantity}; minimum ${minStock}; modal ${formatIdr(costPrice)}/unit; harga jual ${formatIdr(sellPrice)}/unit${margin !== null ? `; margin ${formatIdr(margin)}/unit` : ''}${location ? `; lokasi ${location.name}` : ''}${operation.sku ? `; SKU ${operation.sku}` : ''}`;
+  return { operation, label };
+}
+
+async function createBatchDraft(chatId: bigint, ownerId: number, operations: OwnerBatchOperation[], labels: string[]) {
   const batch: OwnerBatch = { version: 2, ownerId: String(ownerId), operations, labels };
   const row = await prisma.telegramDraft.create({ data: { chatId, kind: 'OWNER_OPERATION', payload: batch as object,
     status: 'PENDING', expiresAt: new Date(Date.now() + DRAFT_TTL) }, select: { id: true } });
   const preview = `Rencana perubahan (${operations.length} langkah):\n${operations.map((operation, index) =>
-    `${index + 1}. ${operation.productName} — ${labels[index]}`).join('\n')}\n\nBelum ada yang diubah. Tinjau semua rincian lalu tekan tombol konfirmasi untuk menerapkan semuanya sekaligus.`;
+    `${index + 1}. ${isProductCreate(operation) ? operation.name : operation.productName} — ${labels[index]}`).join('\n')}\n\nBelum ada yang diubah. Tinjau semua rincian lalu tekan tombol konfirmasi untuk menerapkan semuanya sekaligus.`;
   return { draftId: row.id, preview };
 }
 
@@ -422,12 +483,12 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     return sendTelegramMessage(chatId, 'Katalog terlalu besar untuk ditinjau dengan aman sekarang. Belum ada perubahan data; coba pecah permintaan menjadi satu barang per pesan.');
   }
-  const operations: OwnerOperation[] = [], labels: string[] = [], responses: string[] = [];
+  const operations: OwnerBatchOperation[] = [], labels: string[] = [], responses: string[] = [];
   let clarification: string | null = null;
   for (let index = 0; index < state.actions.length; index++) {
     const action = state.actions[index];
     if (action.kind === 'request_clarification') { clarification ??= action.question; continue; }
-    if (action.kind === 'get_business_report') { await showBusinessReport(chatId, action.date, action.shift); continue; }
+    if (action.kind === 'get_business_report') { responses.push(await showBusinessReport(action.date, action.shift)); continue; }
     if (action.kind === 'get_low_stock') {
       const lowStock = catalog.filter(product => product.stock <= product.minStock).sort((a, b) => a.stock - b.stock);
       responses.push(lowStock.length
@@ -439,6 +500,12 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       const modal = catalog.reduce((sum, product) => sum + product.costPrice * BigInt(product.stock), 0n);
       const retail = catalog.reduce((sum, product) => sum + product.sellPrice * BigInt(product.stock), 0n);
       responses.push(`Nilai stok dari katalog RMCS (${catalog.length} produk): modal ${formatIdr(modal)}; nilai jual ${formatIdr(retail)}.`);
+      continue;
+    }
+    if (action.kind === 'propose_product_create') {
+      const planned = await planProductCreate(action, ownerId);
+      if (planned.clarification) clarification ??= planned.clarification;
+      else if (planned.operation && planned.label) { operations.push(planned.operation); labels.push(planned.label); }
       continue;
     }
     const query = queryForAction(action);
@@ -467,9 +534,12 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       clarification ??= proposal.clarification ?? null;
     }
   }
+  if (!clarification && operations.length > 1 && operations.some(isProductCreate)) {
+    clarification = 'Pembuatan produk baru sebaiknya ditinjau terpisah dari perubahan barang lain. Kirim permintaan produk baru saja terlebih dahulu.';
+  }
   if (!clarification && operations.length > 1) {
     const seen = new Set<string>();
-    for (const operation of operations) {
+    for (const operation of operations.filter((item): item is OwnerOperation => !isProductCreate(item))) {
       const fields = operation.kind === 'STOCK_IN' ? ['stock', 'costPrice']
         : operation.kind === 'STOCK_ADJUST' ? ['stock']
           : operation.kind === 'LOCATION_MOVE' ? ['location'] : [operation.proposed.field ?? 'price'];
@@ -481,8 +551,17 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       if (clarification) break;
     }
   }
-  const content = [state.actions.length ? '' : reply, ...responses].filter(Boolean).join('\n\n');
+  // Read-only tools run first; a second, bounded model turn can now answer from their actual RMCS evidence.
+  // Mutations keep the application-authored preview and never rely on model-generated execution claims.
+  let userFacingReply = reply;
+  if (responses.length && !clarification && !state.actions.some(action => action.kind.startsWith('propose_'))) {
+    const latestRequest = [...state.history].reverse().find(message => message.role === 'user')?.content ?? '';
+    userFacingReply = await composeOwnerReply({ text: latestRequest, history: state.history.slice(0, -2), evidence: responses,
+      apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL }) ?? reply;
+  }
+  const content = [userFacingReply, ...responses].filter(Boolean).join('\n\n');
   if (state.pendingMatches.length) {
+    rememberOwnerReply(state, content);
     await saveOwnerChatState(rowId, chatId, state);
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     for (const pending of state.pendingMatches) {
@@ -494,6 +573,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     return;
   }
   if (clarification) {
+    rememberOwnerReply(state, [content, clarification, 'Belum ada perubahan.'].filter(Boolean).join('\n\n'));
     await saveOwnerChatState(rowId, chatId, state);
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     return sendTelegramMessage(chatId, [content, clarification, 'Belum ada perubahan.'].filter(Boolean).join('\n\n'));
@@ -501,6 +581,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
   if (operations.length) {
     const batch = await createBatchDraft(chatId, ownerId, operations, labels);
     state.proposalDraftId = batch.draftId; state.preview = batch.preview;
+    rememberOwnerReply(state, [content, batch.preview].filter(Boolean).join('\n\n'));
     try { await saveOwnerChatState(rowId, chatId, state); }
     catch (error) {
       await cancelSupersededDraft(batch.draftId, chatId);
@@ -509,6 +590,9 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     return sendTelegramMessage(chatId, [content, batch.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(batch.draftId));
   }
+  // A completed read-only request should not be replayed as the next turn's proposal.
+  rememberOwnerReply(state, content || 'Saya belum menangkap maksudnya. Coba ceritakan dengan kata-kata sendiri; kalau ada angka yang belum jelas, saya akan tanyakan.');
+  state.actions = []; state.selected = []; state.pendingMatches = [];
   await saveOwnerChatState(rowId, chatId, state);
   if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
   return sendTelegramMessage(chatId, content || 'Saya belum menangkap maksudnya. Coba ceritakan dengan kata-kata sendiri; kalau ada angka yang belum jelas, saya akan tanyakan.');
@@ -525,6 +609,35 @@ function parseOperation(value: unknown): OwnerOperation | null {
   if (operation.version !== 1 || !['STOCK_IN', 'STOCK_ADJUST', 'PRICE_UPDATE', 'LOCATION_MOVE'].includes(operation.kind ?? '') ||
       !Number.isSafeInteger(operation.productId) || !operation.expected || !operation.proposed || !/^\d{1,20}$/.test(operation.ownerId ?? '')) return null;
   return operation as OwnerOperation;
+}
+
+function parseOwnerProductCreate(value: unknown): OwnerProductCreate | null {
+  if (!value || typeof value !== 'object') return null;
+  const operation = value as Partial<OwnerProductCreate>;
+  if (operation.version !== 1 || operation.kind !== 'PRODUCT_CREATE' || typeof operation.ownerId !== 'string' || !/^\d{1,20}$/.test(operation.ownerId) ||
+      !Number.isSafeInteger(operation.categoryId) || (operation.categoryId ?? 0) <= 0 || typeof operation.categoryName !== 'string' || !operation.categoryName.trim() ||
+      typeof operation.name !== 'string' || !operation.name.trim() || operation.name.length > 180 ||
+      !(operation.subcategoryId === null || (typeof operation.subcategoryId === 'number' && Number.isSafeInteger(operation.subcategoryId) && operation.subcategoryId > 0)) ||
+      !(operation.locationId === null || (typeof operation.locationId === 'number' && Number.isSafeInteger(operation.locationId) && operation.locationId > 0)) ||
+      typeof operation.costPrice !== 'string' || !/^\d{1,13}$/.test(operation.costPrice) || BigInt(operation.costPrice) <= 0n || BigInt(operation.costPrice) > 1_000_000_000_000n ||
+      typeof operation.sellPrice !== 'string' || !/^\d{1,13}$/.test(operation.sellPrice) || BigInt(operation.sellPrice) <= 0n || BigInt(operation.sellPrice) > 1_000_000_000_000n ||
+      !Number.isSafeInteger(operation.stock) || (operation.stock ?? 0) <= 0 || (operation.stock ?? 1_000_001) > 1_000_000 ||
+      !Number.isSafeInteger(operation.minStock) || (operation.minStock ?? -1) < 0 || (operation.minStock ?? 1_000_001) > 1_000_000 ||
+      !(operation.sku === null || (typeof operation.sku === 'string' && operation.sku.length <= 80)) ||
+      !(operation.provider === null || (typeof operation.provider === 'string' && operation.provider.length <= 80)) ||
+      !(operation.validity === null || (typeof operation.validity === 'string' && operation.validity.length <= 80)) ||
+      !(operation.subcategoryName === null || (typeof operation.subcategoryName === 'string' && operation.subcategoryName.length <= 100)) ||
+      !(operation.locationName === null || (typeof operation.locationName === 'string' && operation.locationName.length <= 100)) ||
+      (operation.subcategoryId === null && operation.subcategoryName !== null) || (operation.locationId === null && operation.locationName !== null)) return null;
+  return operation as OwnerProductCreate;
+}
+
+function parseBatchOperation(value: unknown): OwnerBatchOperation | null {
+  return parseOperation(value) ?? parseOwnerProductCreate(value);
+}
+
+function isProductCreate(operation: OwnerBatchOperation): operation is OwnerProductCreate {
+  return operation.kind === 'PRODUCT_CREATE';
 }
 
 async function confirmBatchOperation(callback: OwnerCallback, ownerId: number, draftId: string, batch: OwnerBatch) {
@@ -544,7 +657,8 @@ async function confirmBatchOperation(callback: OwnerCallback, ownerId: number, d
         data: { status: 'PROCESSING' },
       });
       if (claimed.count !== 1) return 'USED';
-      const productIds = [...new Set(batch.operations.map(operation => operation.productId))].sort((a, b) => a - b);
+      const existingOperations = batch.operations.filter((operation): operation is OwnerOperation => !isProductCreate(operation));
+      const productIds = [...new Set(existingOperations.map(operation => operation.productId))].sort((a, b) => a - b);
       for (const productId of productIds) await tx.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', productId);
       const products = new Map<number, { id: number; name: string; stock: number; costPrice: bigint; sellPrice: bigint;
         locationId: number | null; updatedAt: Date; location: { name: string } | null }>();
@@ -553,6 +667,19 @@ async function confirmBatchOperation(callback: OwnerCallback, ownerId: number, d
         if (product) products.set(productId, product);
       }
       for (const operation of batch.operations) {
+        if (isProductCreate(operation)) {
+          const category = await tx.category.findUnique({ where: { id: operation.categoryId }, select: { name: true } });
+          const subcategory = operation.subcategoryId ? await tx.subcategory.findUnique({ where: { id: operation.subcategoryId }, select: { name: true, categoryId: true } }) : null;
+          const location = operation.locationId ? await tx.location.findUnique({ where: { id: operation.locationId }, select: { name: true } }) : null;
+          const duplicate = await tx.product.findFirst({ where: {
+            OR: [{ categoryId: operation.categoryId, name: { equals: operation.name, mode: 'insensitive' } }, ...(operation.sku ? [{ sku: operation.sku }] : [])] }, select: { id: true } });
+          if (!category || category.name !== operation.categoryName ||
+              (operation.subcategoryId !== null && (!subcategory || subcategory.categoryId !== operation.categoryId || subcategory.name !== operation.subcategoryName)) ||
+              (operation.locationId !== null && (!location || location.name !== operation.locationName)) || duplicate) {
+            throw new Error('OWNER_DRAFT_INVALID');
+          }
+          continue;
+        }
         const product = products.get(operation.productId);
         if (!product || product.name !== operation.productName || product.stock !== operation.expected.stock ||
             product.costPrice.toString() !== operation.expected.costPrice || product.sellPrice.toString() !== operation.expected.sellPrice ||
@@ -563,6 +690,15 @@ async function confirmBatchOperation(callback: OwnerCallback, ownerId: number, d
         }
       }
       for (const operation of batch.operations) {
+        if (isProductCreate(operation)) {
+          const product = await tx.product.create({ data: { name: operation.name, categoryId: operation.categoryId,
+            subcategoryId: operation.subcategoryId, sku: operation.sku, provider: operation.provider, validity: operation.validity,
+            locationId: operation.locationId, costPrice: BigInt(operation.costPrice), sellPrice: BigInt(operation.sellPrice),
+            stock: operation.stock, minStock: operation.minStock } });
+          await tx.inventoryMovement.create({ data: { productId: product.id, type: 'IN', qty: operation.stock,
+            costAtTime: BigInt(operation.costPrice), note: 'Stok awal produk Telegram owner ' + ownerId, userId: null } });
+          continue;
+        }
         const product = products.get(operation.productId)!;
         if (operation.kind === 'STOCK_IN') {
           const quantity = operation.proposed.quantity, cost = operation.proposed.unitCost;
@@ -594,11 +730,17 @@ async function confirmBatchOperation(callback: OwnerCallback, ownerId: number, d
         }
       }
       await tx.telegramDraft.update({ where: { id: draftId }, data: { status: 'CONFIRMED', confirmedAt: new Date() } });
+      if (conversationState?.proposalDraftId === draftId) {
+        conversationState.actions = []; conversationState.selected = []; conversationState.pendingMatches = [];
+        conversationState.proposalDraftId = null; conversationState.preview = null;
+        conversationState.history = [...conversationState.history, { role: 'assistant' as const, content: 'Perubahan sudah diterapkan setelah konfirmasi owner.' }].slice(-12);
+        await tx.telegramDraft.update({ where: { id: ownerConversationId(ownerId) }, data: { payload: conversationState as object } });
+      }
       return 'APPLIED';
     }, { isolationLevel: 'Serializable', timeout: 15_000 });
   } catch (error) {
     const message = (error as Error).message;
-    if (message === 'OWNER_DRAFT_INVALID' || message === 'OWNER_LOCATION_STALE') {
+    if (message === 'OWNER_DRAFT_INVALID' || message === 'OWNER_LOCATION_STALE' || ['P2002', 'P2034'].includes((error as { code?: string }).code ?? '')) {
       await prisma.telegramDraft.updateMany({ where: { id: draftId, chatId, status: { in: ['PENDING', 'PROCESSING'] } }, data: { status: 'FAILED' } });
       return answerTelegramCallback(callback.id, 'Rencana sudah tidak valid. Tidak ada perubahan diterapkan. Kirim ulang pesan untuk meninjau nilai terbaru.');
     }
@@ -606,7 +748,10 @@ async function confirmBatchOperation(callback: OwnerCallback, ownerId: number, d
   }
   if (result === 'APPLIED') {
     await answerTelegramCallback(callback.id, 'Semua perubahan berhasil diterapkan.');
-    await sendTelegramMessage(chatId, `✅ ${batch.operations.length} perubahan diterapkan ke katalog RMCS. Perubahan stok memiliki catatan audit.`);
+    const createdProducts = batch.operations.filter(isProductCreate);
+    await sendTelegramMessage(chatId, createdProducts.length
+      ? `✅ Produk ${createdProducts.map(product => `“${product.name}”`).join(', ')} berhasil ditambahkan ke katalog dengan stok awal ${createdProducts.map(product => product.stock).join(', ')} unit. Catatan stok awal sudah dibuat.`
+      : `✅ ${batch.operations.length} perubahan diterapkan ke katalog RMCS. Perubahan stok memiliki catatan audit.`);
   } else if (result === 'STALE') {
     await answerTelegramCallback(callback.id, 'Data berubah; tidak ada perubahan diterapkan.');
     await sendTelegramMessage(chatId, 'Data barang berubah sejak pratinjau dibuat. Tidak ada perubahan diterapkan; kirim ulang permintaan agar data terbaru diperiksa.');
@@ -671,6 +816,15 @@ async function confirmOperation(callback: OwnerCallback, ownerId: number, draftI
           note: 'Lokasi Telegram owner ' + ownerId + ': ' + (operation.expected.locationName ?? 'belum ditentukan') + ' → ' + location.name, userId: null } });
       }
       await tx.telegramDraft.update({ where: { id: row.id }, data: { status: 'CONFIRMED', confirmedAt: new Date() } });
+      const conversation = await tx.telegramDraft.findUnique({ where: { id: ownerConversationId(ownerId) } });
+      const conversationState = conversation?.kind === 'OWNER_CONVERSATION' && conversation.chatId === chatId
+        ? parseOwnerChatState(conversation.payload, ownerId) : null;
+      if (conversationState?.proposalDraftId === draftId) {
+        conversationState.actions = []; conversationState.selected = []; conversationState.pendingMatches = [];
+        conversationState.proposalDraftId = null; conversationState.preview = null;
+        conversationState.history = [...conversationState.history, { role: 'assistant' as const, content: 'Perubahan sudah diterapkan setelah konfirmasi owner.' }].slice(-12);
+        await tx.telegramDraft.update({ where: { id: ownerConversationId(ownerId) }, data: { payload: conversationState as object } });
+      }
       return 'APPLIED';
     }, { isolationLevel: 'Serializable', timeout: 15_000 });
   } catch (error) {
@@ -790,7 +944,13 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
         return sendTelegramMessage(chatId, 'Rencana dibatalkan. Data RMCS tidak berubah.');
       }
       const priorActions = state.actions;
-      const turn = await interpretOwnerTurn({ text, history: state.history, currentActions: state.actions,
+      // Only pass actions back as an active draft while a real, unexpired confirmation draft exists.
+      // Clarification context remains available in the saved conversation history.
+      const activeDraft = state.proposalDraftId
+        ? await prisma.telegramDraft.findUnique({ where: { id: state.proposalDraftId } }) : null;
+      const currentProposal = activeDraft?.kind === 'OWNER_OPERATION' && activeDraft.status === 'PENDING' && activeDraft.expiresAt > new Date()
+        ? state.actions : [];
+      const turn = await interpretOwnerTurn({ text, history: state.history, currentActions: currentProposal,
         apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL });
       const ownerEvidence = [...state.history.filter(message => message.role === 'user').map(message => message.content), text]
         .join(' ').toLocaleLowerCase('id-ID').replace(/\s+/g, ' ');

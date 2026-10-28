@@ -6,6 +6,7 @@ let productReadCount = 0;
 let businessWriteCounts = { product: 0, movement: 0 };
 let throwCatalogQuery = false;
 let fakeProducts: unknown[] = [];
+let fakeCategories: Array<{ id: number; name: string }> = [];
 let draftSequence = 0;
 const fakeDrafts = new Map<string, Record<string, unknown>>();
 async function modules() {
@@ -39,6 +40,14 @@ async function modules() {
         if (throwCatalogQuery) throw new Error('synthetic database failure with private details');
         return fakeProducts;
       }
+      if (params.model === 'Product' && params.action === 'findFirst') return null;
+      if (params.model === 'Category' && params.action === 'findFirst') {
+        const name = String(params.args.where.name.equals ?? '').toLocaleLowerCase('id-ID');
+        return fakeCategories.find(category => category.name.toLocaleLowerCase('id-ID') === name) ?? null;
+      }
+      if (params.model === 'Category' && params.action === 'findMany') return fakeCategories;
+      if (params.model === 'Subcategory' && params.action === 'findFirst') return null;
+      if (params.model === 'Location' && params.action === 'findFirst') return null;
       if (params.model === 'Product' && params.action === 'update') { businessWriteCounts.product++; return {}; }
       if (params.model === 'InventoryMovement' && params.action === 'create') { businessWriteCounts.movement++; return {}; }
       return next(params);
@@ -145,6 +154,29 @@ test('AI failure preserves the existing pending proposal and its confirmation dr
   });
 });
 
+test('a new capability question does not reactivate an unresolved older product action', async () => {
+  const { handleTelegramWebhook } = await modules();
+  process.env.TELEGRAM_OWNER_IDS = '700123';
+  process.env.DEEPSEEK_API_KEY = 'test-api-key';
+  fakeDrafts.clear(); productReadCount = 0;
+  fakeDrafts.set('owner-agent-700123', { id: 'owner-agent-700123', chatId: 700123n, kind: 'OWNER_CONVERSATION',
+    payload: { version: 1, ownerId: '700123', history: [
+      { role: 'user', content: 'tambah barang voucher X 20rb stok 10' },
+      { role: 'assistant', content: 'Saya belum menemukan X di katalog RMCS.' },
+    ], actions: [{ kind: 'propose_stock_in', query: 'voucher X', quantity: 10, unitCost: '15rb', sellPrice: '20rb', margin: null, supplier: null }],
+    selected: [], pendingMatches: [], proposalDraftId: null, preview: null }, status: 'PENDING', expiresAt: new Date(Date.now() + 60_000) });
+  const deepseek = JSON.stringify({ reply: 'Bisa. Saya dapat menyiapkan perubahan katalog untuk dikonfirmasi owner.', clarification: null, actions: [] });
+  await withTelegramFetch(async sent => {
+    await webhook(handleTelegramWebhook, privateUpdate(915, 'jadi kamu belum bisa edit stok atau tambah barang baru ya?'));
+    assert.equal(sent.length, 1);
+    assert.match(String(sent[0].text), /Bisa/);
+    assert.doesNotMatch(String(sent[0].text), /belum menemukan/);
+    assert.equal(productReadCount, 0);
+    const payload = fakeDrafts.get('owner-agent-700123')?.payload as { actions?: unknown[] };
+    assert.deepEqual(payload.actions, []);
+  }, deepseek);
+});
+
 test('catalog database errors are logged by sanitized stage and do not leak exception text', async () => {
   const { handleTelegramWebhook } = await modules();
   process.env.TELEGRAM_OWNER_IDS = '700123';
@@ -196,6 +228,86 @@ test('Telegram update-to-response: natural multi-field stock request creates one
     assert.equal(businessWriteCounts.product, 0);
     assert.equal(businessWriteCounts.movement, 0);
   }, deepseek);
+});
+
+test('owner can stage a new catalog product with verified category and computed modal, without writing before confirmation', async () => {
+  const { handleTelegramWebhook } = await modules();
+  process.env.TELEGRAM_OWNER_IDS = '700123';
+  process.env.DEEPSEEK_API_KEY = 'test-api-key';
+  fakeDrafts.clear(); draftSequence = 0;
+  fakeCategories = [{ id: 3, name: 'Voucher' }];
+  businessWriteCounts = { product: 0, movement: 0 };
+  const deepseek = JSON.stringify({ reply: 'Saya siapkan produk baru untuk diperiksa.', clarification: null, actions: [
+    { kind: 'propose_product_create', name: 'Voucher Telkomsel 7GB 5 Hari', category: 'Voucher', subcategory: null,
+      sku: null, provider: 'Telkomsel', validity: '5 hari', location: null, quantity: 20,
+      unitCost: null, sellPrice: '20rb', margin: '2500', minStock: null },
+  ] });
+  await withTelegramFetch(async sent => {
+    const result = await webhook(handleTelegramWebhook, privateUpdate(911, 'tambah barang voucher Telkomsel 7gb 5 hari harga 20rb margin 2500 stok 20'));
+    assert.equal(result.status, 200);
+    assert.equal(sent.length, 1);
+    assert.match(String(sent[0].text), /Voucher Telkomsel 7GB 5 Hari/);
+    assert.match(String(sent[0].text), /stok awal 20/);
+    assert.match(String(sent[0].text), /modal Rp\s17\.500/);
+    assert.match(String(sent[0].text), /Belum ada yang diubah/);
+    const keyboard = sent[0].reply_markup as { inline_keyboard?: Array<Array<{ callback_data: string }>> };
+    assert.match(keyboard.inline_keyboard?.[0]?.[0]?.callback_data ?? '', /^rcms:owner:confirm:/);
+    assert.deepEqual(businessWriteCounts, { product: 0, movement: 0 });
+  }, deepseek);
+});
+
+test('confirmed new product and opening stock are applied once when confirmation is repeated', async () => {
+  const { prisma, handleTelegramWebhook } = await modules();
+  process.env.TELEGRAM_OWNER_IDS = '700123';
+  process.env.DEEPSEEK_API_KEY = 'test-api-key';
+  fakeDrafts.clear(); draftSequence = 0;
+  fakeCategories = [{ id: 3, name: 'Voucher' }];
+  businessWriteCounts = { product: 0, movement: 0 };
+  const deepseek = JSON.stringify({ reply: 'Saya siapkan barang baru untuk diperiksa.', clarification: null, actions: [
+    { kind: 'propose_product_create', name: 'Voucher Telkomsel 7GB 5 Hari', category: 'Voucher', subcategory: null,
+      sku: null, provider: 'Telkomsel', validity: '5 hari', location: null, quantity: 20,
+      unitCost: null, sellPrice: '20rb', margin: '2500', minStock: null },
+  ] });
+  const originalTransaction = prisma.$transaction;
+  const tx = {
+    telegramDraft: {
+      findUnique: async ({ where }: { where: { id: string } }) => fakeDrafts.get(where.id) ?? null,
+      updateMany: async ({ where, data }: { where: { id: string; status: string }; data: Record<string, unknown> }) => {
+        const row = fakeDrafts.get(where.id);
+        if (!row || row.status !== where.status) return { count: 0 };
+        fakeDrafts.set(where.id, { ...row, ...data }); return { count: 1 };
+      },
+      update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+        const row = fakeDrafts.get(where.id) ?? { id: where.id };
+        fakeDrafts.set(where.id, { ...row, ...data }); return fakeDrafts.get(where.id);
+      },
+    },
+    category: { findUnique: async () => fakeCategories[0] },
+    subcategory: { findUnique: async () => null },
+    location: { findUnique: async () => null },
+    product: { findFirst: async () => null, create: async () => { businessWriteCounts.product++; return { id: 999 }; } },
+    inventoryMovement: { create: async () => { businessWriteCounts.movement++; return {}; } },
+  };
+  (prisma as unknown as { $transaction: unknown }).$transaction = async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx);
+  try {
+    const deepLink = /^rcms:owner:confirm:/;
+    let callbackData = '';
+    await withTelegramFetch(async sent => {
+      await webhook(handleTelegramWebhook, privateUpdate(912, 'tambah produk voucher Telkomsel 7gb harga 20rb margin 2500 stok 20'));
+      const keyboard = sent[0].reply_markup as { inline_keyboard?: Array<Array<{ callback_data: string }>> };
+      callbackData = keyboard.inline_keyboard?.[0]?.[0]?.callback_data ?? '';
+      assert.match(callbackData, deepLink);
+      const callback = (updateId: number) => ({ update_id: updateId, callback_query: { id: `callback-${updateId}`,
+        from: { id: 700123 }, data: callbackData, message: { message_id: 100, chat: { id: 700123, type: 'private' } } } });
+      await webhook(handleTelegramWebhook, callback(913));
+      assert.deepEqual(businessWriteCounts, { product: 1, movement: 1 });
+      await webhook(handleTelegramWebhook, callback(914));
+      assert.deepEqual(businessWriteCounts, { product: 1, movement: 1 });
+    }, deepseek);
+  } finally {
+    (prisma as unknown as { $transaction: unknown }).$transaction = originalTransaction;
+    businessWriteCounts = { product: 0, movement: 0 };
+  }
 });
 
 test('Telegram follow-up correction revises the persistent preview instead of duplicating the old operation', async () => {
