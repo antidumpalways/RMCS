@@ -126,8 +126,9 @@ function ownerMenuKeyboard(page: OwnerMenuPage = 'home'): InlineKeyboard {
   return keyboard(rows);
 }
 async function showOwnerMenu(chatId: bigint, page: OwnerMenuPage = 'home') {
+  if (page === 'home') return sendTelegramMessage(chatId, OWNER_MENU_PAGES.home.title + '\nPilih kelompok fitur:', ownerMenuKeyboard(page));
   const content = OWNER_MENU_PAGES[page];
-  return sendTelegramMessage(chatId, page === 'home' ? content.title + '\nPilih kelompok fitur:' : '【' + content.title + '】\n\n' + content.body + '\n\nPilih fitur, lalu kirim rincian yang diminta.', ownerMenuKeyboard(page));
+  return sendTelegramMessage(chatId, '【' + content.title + '】\n\n' + content.body + '\n\nPilih fitur, lalu kirim rincian yang diminta.', ownerMenuKeyboard(page));
 }
 function ownerActionKeyboard(draftId: string): InlineKeyboard {
   return keyboard([[{ text: 'Ya, terapkan perubahan', callback_data: 'rcms:owner:confirm:' + draftId }],
