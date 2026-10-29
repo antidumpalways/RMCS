@@ -1,6 +1,27 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 
+type CombinedBalanceReader = Pick<Prisma.TransactionClient, 'saleTransaction' | 'serviceTransaction' | 'debtPayment' | 'expense' | 'balanceAdjustment'>;
+
+export async function recordedCombinedMovementsBetween(db: CombinedBalanceReader, from: Date, to: Date) {
+  const where = { createdAt: { gte: from, lte: to } };
+  const [sales, services, payments, expenses, adjustments] = await Promise.all([
+    db.saleTransaction.aggregate({ where, _sum: { totalRevenue: true } }),
+    db.serviceTransaction.aggregate({ where, _sum: { profit: true } }),
+    db.debtPayment.aggregate({ where, _sum: { amount: true } }),
+    db.expense.aggregate({ where, _sum: { amount: true } }),
+    db.balanceAdjustment.aggregate({ where: { ...where, account: { in: ['CASH', 'ELECTRONIC', 'TOTAL'] } }, _sum: { delta: true } }),
+  ]);
+  const movement = {
+    sales: sales._sum.totalRevenue ?? 0n,
+    serviceFees: services._sum.profit ?? 0n,
+    debtPayments: payments._sum.amount ?? 0n,
+    expenses: expenses._sum.amount ?? 0n,
+    adjustments: adjustments._sum.delta ?? 0n,
+  };
+  return { ...movement, net: movement.sales + movement.serviceFees + movement.debtPayments - movement.expenses + movement.adjustments };
+}
+
 export async function combinedBalanceAt(date: Date): Promise<bigint> {
   return prisma.$transaction(async tx => {
     const settings = await tx.settings.upsert({
@@ -21,8 +42,6 @@ export async function combinedBalanceAt(date: Date): Promise<bigint> {
     return cashAtStart + electronicAtStart;
   }, { isolationLevel: 'RepeatableRead' });
 }
-
-
 export async function setCombinedBalance(tx: Prisma.TransactionClient, input: {
   targetBalance: bigint;
   expectedBalance?: bigint;
