@@ -33,6 +33,13 @@ async function claimUpdate(updateId:bigint):Promise<'CLAIMED'|'PROCESSED'|'BUSY'
  return disposition;
 }
 function groupAllowed(c:TelegramChat){return allowedTelegramGroup(c.id,c.type,process.env.TELEGRAM_ALLOWED_GROUP_IDS);}
+async function sendLongTelegramMessage(chatId:bigint|number,text:string,replyMarkup?:InlineKeyboard){
+ if(text.length<=3900)return sendTelegramMessage(chatId,text,replyMarkup);
+ const chunks:string[]=[];let rest=text;
+ while(rest.length>3500){let end=rest.lastIndexOf('\n',3500);if(end<1500)end=3500;chunks.push(rest.slice(0,end));rest=rest.slice(end).replace(/^\n+/, '');}
+ chunks.push(rest);for(const chunk of chunks.slice(0,-1))await sendTelegramMessage(chatId,chunk);
+ return sendTelegramMessage(chatId,chunks[chunks.length-1],replyMarkup);
+}
 function groupMenuKeyboard(actor:TelegramActor):InlineKeyboard{
  const rows:Array<Array<{text:string;callback_data?:string;url?:string}>>=[
   [{text:'🕒 Mulai shift',callback_data:'rcms:group:menu:shift_open'}],
@@ -57,7 +64,7 @@ function formatDraft(d:RecapDraft):string{
  const detail=d.entries.map(e=>'• '+e.label+': '+formatTelegramRupiah(parseIndonesianRupiah(e.amount) ?? 0n)+(e.category==='service_volume'?' (volume)':e.category==='service_fee'?' (biaya jasa)':e.category==='sale'?' (penjualan)':e.category==='expense'?' (pengeluaran)':e.category==='cash_balance'?' (legacy kas akhir)':e.category==='electronic_balance'?' (legacy saldo elektronik)':e.category==='total_balance'?' (saldo total)':''));
  return 'Draf rekap'+(d.shiftLabel?' — shift '+d.shiftLabel:'')+':\n'+rows.join('\n')+(detail.length?'\n\nRincian:\n'+detail.join('\n'):'')+'\n\nTidak ada transaksi atau stok RMCS yang diubah.';
 }
-type ShiftOpeningLine={productId:number;name:string;sku:string|null;expectedQty:number;actualQty:number|null};
+type ShiftOpeningLine={productId:number;name:string;provider?:string|null;sku:string|null;expectedQty:number;actualQty:number|null};
 type ShiftOpeningPayload={version:1;stage:'CHECK'|'COUNT'|'REVIEW';shiftStart:string;shiftLabel:string|null;openingBalance:string;openedByIdentityId:string;lines:ShiftOpeningLine[];reviewStatus?:'CLEAR'|'OWNER_REVIEW';startedAt?:string;closedAt?:string;closingReportId?:string};
 const OPENING_TTL=30*60_000;
 function shiftOpeningKeyboard(id:string,stage:ShiftOpeningPayload['stage']):InlineKeyboard{
@@ -69,20 +76,23 @@ function shiftOpeningKeyboard(id:string,stage:ShiftOpeningPayload['stage']):Inli
 function shiftOpeningPayload(value:unknown):ShiftOpeningPayload|null{
  if(!value||typeof value!=='object')return null;const p=value as Partial<ShiftOpeningPayload>;
  if(p.version!==1||!['CHECK','COUNT','REVIEW'].includes(p.stage??'')||!Array.isArray(p.lines)||typeof p.openedByIdentityId!=='string'||!p.openedByIdentityId||typeof p.shiftStart!=='string'||typeof p.openingBalance!=='string')return null;
- if(!p.lines.every(line=>line&&Number.isSafeInteger(line.productId)&&typeof line.name==='string'&&Number.isSafeInteger(line.expectedQty)&&line.expectedQty>=0&&(line.actualQty===null||Number.isSafeInteger(line.actualQty)&&line.actualQty>=0)))return null;
+ if(!p.lines.every(line=>line&&Number.isSafeInteger(line.productId)&&typeof line.name==='string'&&(line.provider===undefined||line.provider===null||typeof line.provider==='string')&&Number.isSafeInteger(line.expectedQty)&&line.expectedQty>=0&&(line.actualQty===null||Number.isSafeInteger(line.actualQty)&&line.actualQty>=0)))return null;
  return p as ShiftOpeningPayload;
 }
 function shiftOpeningSummary(payload:ShiftOpeningPayload){
  const differences=payload.lines.filter(line=>line.actualQty!==null&&line.actualQty!==line.expectedQty);
- return payload.lines.length?payload.lines.map((line,index)=>`${index+1}. ${line.name}${line.sku?' · SKU '+line.sku:''}: RMCS ${line.expectedQty} · fisik ${line.actualQty??line.expectedQty}${line.actualQty!==null&&line.actualQty!==line.expectedQty?' · selisih '+(line.actualQty-line.expectedQty):''}`).join('\n'):'Tidak ada voucher atau barang cepat laku yang terdeteksi untuk dihitung.';
+ return payload.lines.length?payload.lines.map((line,index)=>`${index+1}. ${line.name}${line.provider?' · '+line.provider:''}${line.sku?' · SKU '+line.sku:''}: RMCS ${line.expectedQty} · fisik ${line.actualQty??line.expectedQty}${line.actualQty!==null&&line.actualQty!==line.expectedQty?' · selisih '+(line.actualQty-line.expectedQty):''}`).join('\n'):'Tidak ada voucher atau barang cepat laku yang terdeteksi untuk dihitung.';
 }
 async function sendShiftOpeningDraft(chatId:bigint,row:{id:string;payload:unknown}){
  const payload=shiftOpeningPayload(row.payload);if(!payload)return sendTelegramMessage(chatId,'Hitungan awal shift tidak dapat dibaca. Batalkan lalu mulai /shift kembali.');
  const list=shiftOpeningSummary(payload);
- if(payload.stage==='CHECK')return sendTelegramMessage(chatId,'🕒 CEK STOK AWAL SHIFT\nBandingkan stok fisik dengan angka RMCS berikut. Jika semuanya cocok, cukup tekan satu tombol.\n\n'+list+'\n\nJika ada selisih, tekan “Ada selisih” lalu kirim hanya nama/nomor barang dan jumlah fisiknya. Barang lain dianggap sesuai. Tidak ada stok yang diubah pada tahap ini.',shiftOpeningKeyboard(row.id,payload.stage));
  if(payload.stage==='COUNT')return sendTelegramMessage(chatId,'Kirim hanya barang yang jumlah fisiknya berbeda, satu per baris. Contoh:\n1 16\nAxis 16 pcs\n\nBarang yang tidak disebut dianggap sesuai angka RMCS. Gunakan nama persis dari daftar atau nomor di depannya.');
- const differences=payload.lines.filter(line=>line.actualQty!==null&&line.actualQty!==line.expectedQty);
- return sendTelegramMessage(chatId,'🕒 TINJAU STOK AWAL SHIFT\n'+list+'\n\n'+(differences.length?'Selisih akan dicatat untuk tinjauan Owner. Stok RMCS tidak diubah dan selisih tidak dianggap penjualan.':'Semua jumlah cocok. Stok RMCS tidak diubah.')+'\n\nKonfirmasi untuk memulai shift.',shiftOpeningKeyboard(row.id,payload.stage));
+ const isCheck=payload.stage==='CHECK';
+ const header=isCheck?'🕒 CEK STOK AWAL SHIFT\nBandingkan stok fisik dengan angka RMCS berikut.':'🕒 TINJAU STOK AWAL SHIFT';
+ const footer=isCheck?'Jika ada selisih, tekan “Ada selisih” lalu kirim hanya nama/nomor barang dan jumlah fisiknya. Barang lain dianggap sesuai. Tidak ada stok yang diubah.':'Selisih akan dicatat untuk tinjauan Owner. Stok RMCS tidak diubah dan selisih tidak dianggap penjualan.';
+ const confirmFooter= isCheck?'':(payload.lines.some(line=>line.actualQty!==null&&line.actualQty!==line.expectedQty)?'Konfirmasi untuk memulai shift.':'Semua jumlah cocok. Stok RMCS tidak diubah. Konfirmasi untuk memulai shift.');
+ const full=header+'\n\n'+list+'\n\n'+footer+(confirmFooter?'\n\n'+confirmFooter:'');
+ return sendLongTelegramMessage(chatId,full,shiftOpeningKeyboard(row.id,payload.stage));
 }
 function normalizeOpeningName(value:string){return value.toLocaleLowerCase('id-ID').replace(/[^\p{L}\p{N}]+/gu,' ').trim();}
 function parseOpeningCountLines(text:string,payload:ShiftOpeningPayload){
@@ -102,10 +112,10 @@ function parseOpeningCountLines(text:string,payload:ShiftOpeningPayload){
 async function relevantShiftOpeningProducts(){
  const since=new Date(Date.now()-30*24*60*60_000);
  const movers=await prisma.saleItem.groupBy({by:['productId'],where:{sale:{is:{kind:'SALE',createdAt:{gte:since}}}},_sum:{qty:true},orderBy:{_sum:{qty:'desc'}},take:6});
- const moverIds=movers.map(row=>row.productId);
- const frequentTypes=await Promise.all(['voucher','rokok','minyak'].map(keyword=>prisma.product.findMany({where:{OR:[{category:{name:{contains:keyword,mode:'insensitive'}}},{name:{contains:keyword,mode:'insensitive'}}]},orderBy:[{stock:'desc'},{name:'asc'}],take:2,select:{id:true,name:true,sku:true,stock:true}})));
- const ids=[...new Set([...frequentTypes.flatMap(rows=>rows.map(row=>row.id)),...moverIds])].slice(0,12);
- const products=await prisma.product.findMany({where:{id:{in:ids}},select:{id:true,name:true,sku:true,stock:true}});const byId=new Map(products.map(row=>[row.id,row]));
+ const voucherAndCigarettes=await prisma.product.findMany({where:{OR:[{category:{name:{contains:'voucher',mode:'insensitive'}}},{category:{name:{contains:'rokok',mode:'insensitive'}}},{name:{contains:'voucher',mode:'insensitive'}},{name:{contains:'rokok',mode:'insensitive'}}]},orderBy:[{provider:'asc'},{name:'asc'}],select:{id:true,name:true,provider:true,sku:true,stock:true}});
+ const oilProducts=await prisma.product.findMany({where:{OR:[{category:{name:{contains:'minyak',mode:'insensitive'}}},{name:{contains:'minyak',mode:'insensitive'}}]},orderBy:[{stock:'desc'},{name:'asc'}],take:2,select:{id:true,name:true,provider:true,sku:true,stock:true}});
+ const ids=[...new Set([...voucherAndCigarettes.map(row=>row.id),...oilProducts.map(row=>row.id),...movers.map(row=>row.productId)])];
+ const products=await prisma.product.findMany({where:{id:{in:ids}},select:{id:true,name:true,provider:true,sku:true,stock:true}});const byId=new Map(products.map(row=>[row.id,row]));
  return ids.flatMap(id=>{const row=byId.get(id);return row?[row]:[];});
 }
 async function activeShiftOpening(chatId:bigint,identityId:string){
@@ -123,9 +133,9 @@ async function startShiftOpening(chatId:bigint,actor:TelegramActor,shiftLabel:st
  }
  if(session){if(session.draftId)await prisma.telegramDraft.updateMany({where:{id:session.draftId,status:'PENDING'},data:{status:'EXPIRED'}});await prisma.telegramSession.deleteMany({where:{id:session.id}});}
  const active=await activeShiftOpening(chatId,actor.identityId);
- if(active)return sendTelegramMessage(chatId,'Shift Anda sudah dibuka. Stok awal tersimpan. Gunakan /rekap saat shift selesai.\n\n'+shiftOpeningSummary(active.payload));
+ if(active)return sendLongTelegramMessage(chatId,'Shift Anda sudah dibuka. Stok awal tersimpan. Gunakan /rekap saat shift selesai.\n\n'+shiftOpeningSummary(active.payload));
  const opening=await captureShiftOpeningBalance(),products=await relevantShiftOpeningProducts();
- const payload:ShiftOpeningPayload={version:1,stage:'CHECK',shiftStart:opening.start.toISOString(),shiftLabel,openingBalance:opening.balance.toString(),openedByIdentityId:actor.identityId,lines:products.map(product=>({productId:product.id,name:product.name,sku:product.sku,expectedQty:product.stock,actualQty:null}))};
+ const payload:ShiftOpeningPayload={version:1,stage:'CHECK',shiftStart:opening.start.toISOString(),shiftLabel,openingBalance:opening.balance.toString(),openedByIdentityId:actor.identityId,lines:products.map(product=>({productId:product.id,name:product.name,provider:product.provider,sku:product.sku,expectedQty:product.stock,actualQty:null}))};
  try{
   const row=await prisma.$transaction(async tx=>{
    const draft=await tx.telegramDraft.create({data:{userId:actor.linkedUserId,telegramIdentityId:actor.identityId,chatId,kind:'SHIFT_OPENING',status:'PENDING',expiresAt:new Date(Date.now()+OPENING_TTL),payload:payload as object}});
@@ -179,7 +189,7 @@ async function handleShiftOpeningCallback(c:TelegramCallback,actor:TelegramActor
  });
  if(!result){await answerTelegramCallback(c.id,'Shift sudah diproses.');return true;}
  await answerTelegramCallback(c.id,differences.length?'Shift dibuka; selisih dicatat.':'Shift dibuka.');
- return sendTelegramMessage(chatId,'✅ SHIFT DIMULAI\nStok awal tercatat:\n'+shiftOpeningSummary(next)+(differences.length?'\n\n⚠️ Ada selisih stok. Dicatat untuk tinjauan Owner; tidak dianggap penjualan dan stok RMCS tidak diubah.':'\n\nJumlah cocok. Stok RMCS tidak diubah.')+'\n\nSaat shift selesai, gunakan /rekap.');
+ return sendLongTelegramMessage(chatId,'✅ SHIFT DIMULAI\nStok awal tercatat:\n'+shiftOpeningSummary(next)+(differences.length?'\n\n⚠️ Ada selisih stok. Dicatat untuk tinjauan Owner; tidak dianggap penjualan dan stok RMCS tidak diubah.':'\n\nJumlah cocok. Stok RMCS tidak diubah.')+'\n\nSaat shift selesai, gunakan /rekap.');
 }
 async function captureShiftOpeningBalance(){
  const now=new Date(),cashOpening=await shiftOpening(now),ledgerCash=await cashOnHandAt(cashOpening.start),total=await combinedBalanceAt(now);
@@ -399,7 +409,7 @@ async function handleCommand(m:TelegramMessage,actor:TelegramActor,command:strin
   let message=result&&result.status==='PENDING'?formatDraft(result.payload as unknown as RecapDraft)+'\n\n'+(recapIssues(result.payload as unknown as RecapDraft).join('\n')||'Siap konfirmasi dengan tombol di pesan rekap.'):session?'Sesi rekap ada, tetapi drafnya tidak aktif. Gunakan /rekap.':'Tidak ada draf rekap aktif.';
   if(activeOpening){message='Shift sedang berjalan sejak '+new Date(activeOpening.payload.shiftStart).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})+'.\nSaldo awal (kas + elektronik): '+formatTelegramRupiah(BigInt(activeOpening.payload.openingBalance))+'\n\n'+shiftOpeningSummary(activeOpening.payload);if(session?.state==='REPORTING'&&result?.kind==='SHIFT_RECAP'&&result.status==='PENDING')message+='\n\n'+formatDraft(result.payload as unknown as RecapDraft)+'\n'+(recapIssues(result.payload as unknown as RecapDraft).join('\n')||'Rekap menunggu konfirmasi.');else message+='\n\nGunakan /rekap saat shift selesai.';}
   if(latest)message+='\n\nRekap terakhir dikonfirmasi: '+latest.confirmedAt.toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})+'.';
-  return sendTelegramMessage(chatId,message);
+  return sendLongTelegramMessage(chatId,message);
  }
  if(command==='batal'){
   const session=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId,telegramIdentityId:actor.identityId}}});
