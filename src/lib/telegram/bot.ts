@@ -6,7 +6,7 @@ import { applyExtraction, buildAggregateReport, canFinalizeRecap, emptyRecap, ex
 import { correctTelegramPhotoFromText, handleTelegramPhoto, handleTelegramVisionCallback, sendLatestPhotoReview, visionCallbackFromData } from './photo-flow';
 import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, inventoryCallback, parseInventoryCallback, type InventoryCallbackAction } from './inventory';
 import { prepareInventoryReview, postTelegramInventory, inventoryPreview, TelegramInventoryError } from '@/lib/services/telegram-inventory';
-import { shiftOpening } from '@/lib/automation';
+import { cashOnHandAt, shiftOpening } from '@/lib/automation';
 import { combinedBalanceAt, setCombinedBalance } from '@/lib/services/combined-balance';
 import { identifyTelegramActor, configuredTelegramOwners, type TelegramActor } from './identity';
 import { handleGroupAssistantMessage, handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
@@ -56,6 +56,12 @@ function formatDraft(d:RecapDraft):string{
  const detail=d.entries.map(e=>'• '+e.label+': '+formatTelegramRupiah(parseIndonesianRupiah(e.amount) ?? 0n)+(e.category==='service_volume'?' (volume)':e.category==='service_fee'?' (biaya jasa)':e.category==='sale'?' (penjualan)':e.category==='expense'?' (pengeluaran)':e.category==='cash_balance'?' (legacy kas akhir)':e.category==='electronic_balance'?' (legacy saldo elektronik)':e.category==='total_balance'?' (saldo total)':''));
  return 'Draf rekap'+(d.shiftLabel?' — shift '+d.shiftLabel:'')+':\n'+rows.join('\n')+(detail.length?'\n\nRincian:\n'+detail.join('\n'):'')+'\n\nTidak ada transaksi atau stok RMCS yang diubah.';
 }
+async function combinedShiftOpeningBalance(){
+ const opening=await shiftOpening(new Date());
+ const ledgerCash=await cashOnHandAt(opening.start);
+ const total=await combinedBalanceAt(opening.start);
+ return{start:opening.start,balance:total+opening.openingCash-ledgerCash};
+}
 function keyboard(id:string,revision:number):InlineKeyboard{return{inline_keyboard:[[{text:'Konfirmasi & Simpan',callback_data:'rcms:ok:'+id+':'+revision},{text:'Koreksi Rekap',callback_data:'rcms:edit:'+id+':'+revision}],[{text:'Batal',callback_data:'rcms:cancel:'+id+':'+revision}]]};}
 async function saveInventoryDraft(sessionId:string,draftId:string,revision:number,draft:RecapDraft){
  const result=await prisma.$transaction(async tx=>{
@@ -79,7 +85,7 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
   if(revision===null)return sendTelegramMessage(chatId,'Sesi berubah bersamaan. Jalankan /rekap untuk meninjau versi terbaru.');
   session={...session,revision};draft=prepared.draft;
  }
- const shiftStart=(await shiftOpening(new Date())).start,openingBalance=await combinedBalanceAt(shiftStart);
+ const opening=await combinedShiftOpeningBalance(),openingBalance=opening.balance;
  const totals=recapTotals(draft);
  const hasEndBalance=draft.entries.some(entry=>entry.category==='total_balance')||(draft.entries.some(entry=>entry.category==='cash_balance')&&draft.entries.some(entry=>entry.category==='electronic_balance'));
  const balanceText='\n\nPENCOCOKAN SALDO\nSaldo awal shift (kas + elektronik): '+formatTelegramRupiah(openingBalance)+'\n'+(hasEndBalance?'Saldo akhir menurut rekap: '+formatTelegramRupiah(BigInt(totals.total_balance))+'\nPerubahan bersih: '+formatTelegramRupiah(BigInt(totals.total_balance)-openingBalance):'Saldo akhir belum dicatat di rekap.');
@@ -299,7 +305,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
  if(draft.status!=='PENDING'||draft.expiresAt<=new Date()){await answerTelegramCallback(c.id,'Draf tidak aktif atau kedaluwarsa.');return;}
  const data=draft.payload as unknown as RecapDraft,issues=recapIssues(data);
  if(!canFinalizeRecap(data)){await answerTelegramCallback(c.id,'Belum lengkap. Lanjutkan pesan rekap dahulu.');return;}
- const shiftStart=(await shiftOpening(new Date())).start,openingBalance=await combinedBalanceAt(shiftStart),endingBalance=BigInt(recapTotals(data).total_balance);
+ const opening=await combinedShiftOpeningBalance(),shiftStart=opening.start,openingBalance=opening.balance,endingBalance=BigInt(recapTotals(data).total_balance);
  const payload={...buildAggregateReport(data),balanceReconciliation:{openingBalance:openingBalance.toString(),endingBalance:endingBalance.toString(),netChange:(endingBalance-openingBalance).toString()}};
  let postings:{productId:number;appliedQty:number;lineId:string}[]=[],reportIdResult='';
  try{
