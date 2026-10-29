@@ -245,6 +245,14 @@ async function showBusinessReport(requestedDate: string | null, shift: string | 
     '\n\nLaba hanya dihitung dari transaksi yang menyimpan harga jual dan modal. Angka rekap agregat tidak digabung dengan transaksi Web App agar tidak menghitung ganda.';
 }
 
+function isCombinedBalanceQuestion(text: string) {
+  return /(?:\b(?:berapa|brp)\b.{0,40}\b(?:saldo|kas|cash|uang)\b|\b(?:saldo|cash|kas|uang)\b.{0,40}\b(?:berapa|brp)\b|\b(?:cek|lihat|tampilkan|posisi)\b.{0,20}\bsaldo\b)/i.test(text);
+}
+async function showCombinedBalance() {
+  const settings = await prisma.settings.findUnique({ where: { id: 1 }, select: { balanceInitial: true } });
+  const total = await computeCash() + (settings?.balanceInitial ?? 0n);
+  return 'Saldo total kas + elektronik yang tercatat sekarang: ' + formatIdr(total) + '.';
+}
 async function showProductIntent(chatId: bigint, ownerId: number, intent: OwnerIntent) {
   if (intent.kind === 'low_stock') {
     const catalog = await getCatalog();
@@ -1219,6 +1227,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
   }
   const startedAt = Date.now();
   try {
+    if (isCombinedBalanceQuestion(text)) return sendTelegramMessage(chatId, await showCombinedBalance());
     const { rowId, state } = await getOwnerChatState(chatId, ownerId);
     const claimed = await prisma.telegramDraft.updateMany({ where: { id: rowId, kind: 'OWNER_CONVERSATION', status: 'PENDING', expiresAt: { gt: new Date() } }, data: { status: 'PROCESSING' } });
     if (claimed.count !== 1) return sendTelegramMessage(chatId, 'Saya sedang menyusun pesan sebelumnya. Tunggu sebentar lalu kirim lagi; belum ada perubahan yang diterapkan.');
@@ -1375,4 +1384,5 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
     throw error;
   }
 }
+
 
