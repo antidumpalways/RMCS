@@ -33,7 +33,7 @@ type OwnerProductCreate = { version: 1; kind: 'PRODUCT_CREATE'; ownerId: string;
   locationId: number | null; locationName: string | null; costPrice: string; sellPrice: string; stock: number; minStock: number };
 type OwnerBatchOperation = OwnerOperation | OwnerProductCreate;
 type OwnerBatch = { version: 2; ownerId: string; operations: OwnerBatchOperation[]; labels: string[] };
-type OwnerChatState = { version: 1; ownerId: string; history: OwnerChatMessage[]; actions: OwnerAgentAction[];
+type OwnerChatState = { version: 1; ownerId: string; history: OwnerChatMessage[]; actions: OwnerAgentAction[]; menuFlow?: string | null;
   selected: Array<{ actionIndex: number; query: string; productId: number }>; pendingMatches: Array<{ actionIndex: number; query: string; candidateIds: number[] }>;
   proposalDraftId: string | null; preview: string | null };
 const DRAFT_TTL = 15 * 60_000;
@@ -61,58 +61,62 @@ const OWNER_MENU_PAGES = {
     [{ text: '🕒 Shift & Opname', callback_data: 'rcms:owner:menu:shift' }, { text: '🧠 Aturan Toko', callback_data: 'rcms:owner:menu:memory' }],
     [{ text: '✅ Persetujuan', callback_data: 'rcms:owner:menu:approval' }],
   ] },
-  summary: { title: 'Ringkasan', body: 'Lihat saldo total, omzet, profit, pengeluaran, biaya admin/jasa, inventory, modal, piutang, dan ringkasan shift.' },
-  catalog: { title: 'Produk & Stok', body: 'Kelola katalog, stok, harga, lokasi, kategori/subkategori, serta audit katalog.' },
-  sales: { title: 'Transaksi & Piutang', body: 'Buat/koreksi/retur penjualan serta catat, bayar, atau hapus bon.' },
-  finance: { title: 'Keuangan & Saldo', body: 'Perbarui saldo gabungan kas + elektronik, catat pengeluaran dan biaya admin/jasa, serta lihat laporan.' },
-  shift: { title: 'Shift & Stock Opname', body: 'Tinjau/tutup shift; catat, tinjau, terapkan, atau hapus hasil stock opname.' },
+  summary: { title: 'Ringkasan', body: 'Lihat saldo, laporan/profit, nilai stok, piutang, dan stok menipis.' },
+  catalog: { title: 'Produk & Stok', body: 'Cek dan kelola produk, harga, stok, lokasi, kategori, serta audit katalog.' },
+  sales: { title: 'Transaksi & Piutang', body: 'Buat/koreksi/retur penjualan dan kelola bon.' },
+  finance: { title: 'Keuangan & Saldo', body: 'Perbarui saldo gabungan kas + elektronik, catat pengeluaran dan biaya jasa, atau lihat laporan periode tertentu.' },
+  shift: { title: 'Shift & Stock Opname', body: 'Tutup shift dan kelola hasil stock opname.' },
   memory: { title: 'Aturan Toko', body: 'Ajari asisten istilah/aturan toko atau minta ia melupakan aturan yang tersimpan.' },
-  approval: { title: 'Persetujuan Owner', body: 'Setiap perubahan usaha menampilkan pratinjau terlebih dahulu. Tinjau nama barang, jumlah, nominal, dan dampaknya, lalu tekan tombol konfirmasi. Jika data ambigu, asisten akan bertanya sebelum membuat usulan.' },
+  approval: { title: 'Persetujuan Owner', body: 'Berikut draf perubahan yang menunggu keputusan Owner.' },
 };
 type OwnerMenuPage = keyof typeof OWNER_MENU_PAGES;
 const OWNER_MENU_ACTIONS: Partial<Record<OwnerMenuPage, Array<{ id: string; label: string; prompt: string }>>> = {
   summary: [
     { id: 'balance_read', label: 'Lihat saldo total', prompt: '' },
     { id: 'report_today', label: 'Laporan hari ini', prompt: '' },
-    { id: 'inventory_value', label: 'Nilai inventory & modal', prompt: 'Minta owner kirim pertanyaan nilai inventory/modal.' },
-    { id: 'debt_report', label: 'Piutang/bon', prompt: 'Sebutkan “tampilkan piutang yang belum lunas”.' },
+    { id: 'inventory_value', label: 'Nilai inventory & modal', prompt: '' },
+    { id: 'debt_report', label: 'Daftar piutang/bon', prompt: '' },
+    { id: 'low_stock', label: 'Stok menipis', prompt: '' },
   ],
   catalog: [
-    { id: 'product_info', label: 'Cek harga/stok', prompt: 'Kirim nama barang, misalnya “cek harga Axis 13GB 7 hari”.' },
-    { id: 'product_create', label: 'Tambah barang baru', prompt: 'Kirim nama, kategori, harga modal, harga jual, stok awal, dan lokasi jika ada.' },
-    { id: 'stock_in', label: 'Tambah stok barang', prompt: 'Kirim nama barang, jumlah masuk, dan harga modal jika diketahui.' },
-    { id: 'stock_adjust', label: 'Koreksi stok', prompt: 'Kirim nama barang, jumlah stok seharusnya, dan alasan koreksi.' },
-    { id: 'price_update', label: 'Ubah harga produk', prompt: 'Kirim nama barang dan harga jual/modal baru.' },
-    { id: 'price_bulk', label: 'Ubah harga massal', prompt: 'Kirim kategori/cakupan dan aturan margin atau harga baru.' },
-    { id: 'category_manage', label: 'Kategori & subkategori', prompt: 'Sebutkan kategori/subkategori yang ingin dibuat, diubah, atau dihapus.' },
-    { id: 'catalog_audit', label: 'Audit katalog', prompt: 'Sebutkan bagian katalog yang ingin diaudit atau dirapikan.' },
+    { id: 'product_info', label: 'Cek harga/stok barang', prompt: 'Barang mana yang ingin dicek? Sebut nama atau SKU-nya.' },
+    { id: 'product_create', label: 'Tambah barang baru', prompt: 'Sebut nama dan kategori barang. Saya akan tanyakan harga, stok, dan informasi yang belum ada.' },
+    { id: 'stock_in', label: 'Tambah stok', prompt: 'Sebut barang dan jumlah yang masuk. Tambahkan harga modal jika ada.' },
+    { id: 'stock_adjust', label: 'Koreksi stok', prompt: 'Sebut barang, jumlah stok fisik yang benar, dan alasan koreksi.' },
+    { id: 'price_update', label: 'Ubah harga satu barang', prompt: 'Sebut nama barang, harga jual atau modal yang diubah, dan harga barunya.' },
+    { id: 'price_bulk', label: 'Ubah harga massal', prompt: 'Sebut cakupan (semua barang/kategori/subkategori) dan persentase margin yang diinginkan.' },
+    { id: 'location_move', label: 'Pindah lokasi barang', prompt: 'Sebut nama barang dan lokasi tujuan.' },
+    { id: 'category_manage', label: 'Kategori & subkategori', prompt: 'Sebut tindakan (buat/ubah/hapus), nama kategori, dan nama baru jika mengubah.' },
+    { id: 'catalog_update', label: 'Ubah informasi katalog', prompt: 'Sebut nama barang dan informasi yang ingin diubah, misalnya nama, SKU, provider, kategori, atau stok minimum.' },
+    { id: 'catalog_delete', label: 'Hapus barang dari katalog', prompt: 'Sebut nama barang yang ingin dihapus. Saya akan memeriksa riwayatnya sebelum menyiapkan draf.' },
+    { id: 'catalog_audit', label: 'Audit & rapikan katalog', prompt: 'Sebut kategori atau masalah katalog yang ingin diperiksa; jika tidak disebut, seluruh katalog akan ditinjau.' },
   ],
   sales: [
-    { id: 'sale_create', label: 'Catat penjualan', prompt: 'Kirim barang dan jumlah yang terjual.' },
-    { id: 'sale_edit', label: 'Koreksi penjualan', prompt: 'Kirim ID transaksi dan rincian koreksi.' },
-    { id: 'sale_return', label: 'Retur penjualan', prompt: 'Kirim ID transaksi dan barang/jumlah yang diretur.' },
-    { id: 'debt_create', label: 'Catat bon/piutang', prompt: 'Kirim nama pelanggan, nominal, dan keterangan bon.' },
-    { id: 'debt_pay', label: 'Terima pembayaran bon', prompt: 'Kirim nama pelanggan atau ID bon dan nominal pembayaran.' },
-    { id: 'debt_delete', label: 'Hapus bon', prompt: 'Kirim ID bon dan alasan penghapusan.' },
+    { id: 'sale_create', label: 'Catat penjualan', prompt: 'Sebut barang dan jumlah yang terjual; jika ada beberapa, kirim semua rinciannya.' },
+    { id: 'sale_edit', label: 'Koreksi penjualan', prompt: 'Sebut ID penjualan, barang, dan jumlah yang benar.' },
+    { id: 'sale_return', label: 'Retur penjualan', prompt: 'Sebut ID penjualan, barang yang diretur, jumlah, dan alasan jika ada.' },
+    { id: 'debt_create', label: 'Catat bon', prompt: 'Sebut nama pelanggan, nominal bon, dan keterangan barang jika ada.' },
+    { id: 'debt_pay', label: 'Terima pembayaran bon', prompt: 'Sebut nama pelanggan dan jumlah pembayaran.' },
+    { id: 'debt_delete', label: 'Hapus bon', prompt: 'Sebut nama pelanggan dan bon yang ingin dihapus.' },
   ],
   finance: [
-    { id: 'balance_update', label: 'Perbarui saldo total', prompt: 'Kirim saldo aktual gabungan kas + elektronik, misalnya “saldo total sekarang 25 juta 168 ribu”.' },
-    { id: 'expense_create', label: 'Catat pengeluaran', prompt: 'Kirim nama pengeluaran dan nominal.' },
-    { id: 'service_create', label: 'Catat biaya admin/jasa', prompt: 'Kirim jumlah layanan dan total biaya admin/jasa yang diterima.' },
-    { id: 'report_today', label: 'Laporan keuangan', prompt: 'Sebutkan tanggal/periode laporan yang ingin dilihat.' },
+    { id: 'balance_update', label: 'Perbarui saldo total', prompt: 'Berapa saldo aktual gabungan kas + elektronik sekarang? Contoh: 25 juta 168 ribu.' },
+    { id: 'expense_create', label: 'Catat pengeluaran', prompt: 'Sebut nama pengeluaran dan nominalnya.' },
+    { id: 'service_create', label: 'Catat biaya admin/jasa', prompt: 'Sebut jumlah layanan dan total biaya admin/jasa yang diterima.' },
+    { id: 'report_period', label: 'Laporan periode tertentu', prompt: 'Sebut tanggal laporan, misalnya “laporan tanggal 28 Oktober 2026”.' },
   ],
   shift: [
-    { id: 'shift_close', label: 'Tutup shift', prompt: 'Sebutkan shift yang ingin ditutup dan saldo aktual yang perlu dicocokkan.' },
-    { id: 'opname_record', label: 'Catat stock opname', prompt: 'Kirim nama barang dan jumlah fisik hasil hitung.' },
-    { id: 'opname_review', label: 'Tinjau hasil opname', prompt: 'Sebutkan nama barang yang hasil opname-nya ingin ditinjau.' },
-    { id: 'opname_apply', label: 'Terapkan hasil opname', prompt: 'Sebutkan hasil opname yang ingin diterapkan.' },
-    { id: 'opname_delete', label: 'Hapus hasil opname', prompt: 'Sebutkan hasil opname yang ingin dihapus.' },
+    { id: 'shift_close', label: 'Tutup shift', prompt: 'Sebut shift yang ditutup dan saldo aktual untuk dicocokkan.' },
+    { id: 'opname_record', label: 'Catat hasil opname', prompt: 'Sebut nama barang dan jumlah fisik hasil hitung.' },
+    { id: 'opname_review', label: 'Tinjau hasil opname', prompt: 'Sebut barang yang hasil opname-nya ingin ditinjau.' },
+    { id: 'opname_apply', label: 'Terapkan hasil opname', prompt: 'Sebut barang yang hasil opname-nya ingin diterapkan.' },
+    { id: 'opname_delete', label: 'Hapus hasil opname', prompt: 'Sebut barang yang hasil opname-nya ingin dihapus.' },
   ],
   memory: [
-    { id: 'memory_save', label: 'Ingat aturan toko', prompt: 'Kirim istilah atau aturan toko yang harus diingat.' },
-    { id: 'memory_forget', label: 'Lupakan aturan', prompt: 'Sebutkan istilah atau aturan yang ingin dilupakan.' },
+    { id: 'memory_save', label: 'Ingat istilah/aturan', prompt: 'Kirim istilah atau aturan toko yang perlu saya ingat.' },
+    { id: 'memory_forget', label: 'Lupakan istilah/aturan', prompt: 'Sebut istilah atau aturan yang ingin dilupakan.' },
   ],
-  approval: [{ id: 'approval_help', label: 'Cara menyetujui', prompt: 'Periksa pratinjau perubahan yang menunggu; tekan “Ya, terapkan perubahan” pada pesan pratinjau untuk menyetujui atau “Batal” untuk menolak.' }],
+  approval: [{ id: 'approval_help', label: 'Perbarui daftar persetujuan', prompt: '' }],
 };
 function ownerMenuKeyboard(page: OwnerMenuPage = 'home'): InlineKeyboard {
   if (page === 'home') return keyboard(OWNER_MENU_PAGES.home.rows);
@@ -125,10 +129,21 @@ function ownerMenuKeyboard(page: OwnerMenuPage = 'home'): InlineKeyboard {
   rows.push([{ text: '⬅️ Menu Owner', callback_data: 'rcms:owner:menu:home' }]);
   return keyboard(rows);
 }
+function ownerFlowKeyboard(): InlineKeyboard {
+  return keyboard([[{ text: '✖️ Batal', callback_data: 'rcms:owner:menu:flow_cancel' }, { text: '⬅️ Menu Owner', callback_data: 'rcms:owner:menu:home' }]]);
+}
+async function showOwnerHome(chatId: bigint, ownerId: number) {
+  const { rowId, state } = await getOwnerChatState(chatId, ownerId);
+  if (state.menuFlow) {
+    state.menuFlow = null; state.history = []; state.actions = []; state.selected = []; state.pendingMatches = [];
+    await saveOwnerChatState(rowId, chatId, state);
+  }
+  return showOwnerMenu(chatId);
+}
 async function showOwnerMenu(chatId: bigint, page: OwnerMenuPage = 'home') {
   if (page === 'home') return sendTelegramMessage(chatId, OWNER_MENU_PAGES.home.title + '\nPilih kelompok fitur:', ownerMenuKeyboard(page));
   const content = OWNER_MENU_PAGES[page];
-  return sendTelegramMessage(chatId, '【' + content.title + '】\n\n' + content.body + '\n\nPilih fitur, lalu kirim rincian yang diminta.', ownerMenuKeyboard(page));
+  return sendTelegramMessage(chatId, '【' + content.title + '】\n\n' + content.body + '\n\nPilih fitur:', ownerMenuKeyboard(page));
 }
 function ownerActionKeyboard(draftId: string): InlineKeyboard {
   return keyboard([[{ text: 'Ya, terapkan perubahan', callback_data: 'rcms:owner:confirm:' + draftId }],
@@ -321,6 +336,31 @@ async function showBusinessReport(requestedDate: string | null, shift: string | 
     '\n\nLaba hanya dihitung dari transaksi yang menyimpan harga jual dan modal. Angka rekap agregat tidak digabung dengan transaksi Web App agar tidak menghitung ganda.';
 }
 
+async function showInventoryValue(chatId: bigint) {
+  const catalog = await getCatalog();
+  if (catalog.length > 3000) return sendTelegramMessage(chatId, 'Katalog terlalu besar untuk menghitung nilai inventory dengan aman.');
+  const modal = catalog.reduce((sum, product) => sum + product.costPrice * BigInt(product.stock), 0n);
+  const retail = catalog.reduce((sum, product) => sum + product.sellPrice * BigInt(product.stock), 0n);
+  return sendTelegramMessage(chatId, `Nilai inventory saat ini (${catalog.length} produk):\nTotal modal: ${formatIdr(modal)}\nNilai pada harga jual: ${formatIdr(retail)}\nSelisih: ${formatIdr(retail - modal)}`);
+}
+async function showLowStock(chatId: bigint) {
+  const catalog = await getCatalog();
+  if (catalog.length > 3000) return sendTelegramMessage(chatId, 'Katalog terlalu besar untuk memeriksa stok menipis dengan aman.');
+  const items = catalog.filter(product => product.stock <= product.minStock).sort((a, b) => a.stock - b.stock);
+  return sendTelegramMessage(chatId, items.length
+    ? `Barang menipis/habis (${items.length}):\n${items.slice(0, 25).map(product => `• ${product.name}: ${product.stock} (minimum ${product.minStock})${product.location?.name ? ` · ${product.location.name}` : ''}`).join('\n')}${items.length > 25 ? `\n…dan ${items.length - 25} barang lainnya.` : ''}`
+    : 'Tidak ada barang yang mencapai batas stok minimum saat ini.');
+}
+async function showDebtReport(chatId: bigint) {
+  const debts = await prisma.debt.findMany({ where: { status: 'BELUM' }, orderBy: { createdAt: 'desc' }, take: 100,
+    select: { id: true, customer: true, amount: true, paid: true, description: true, createdAt: true } });
+  const open = debts.filter(debt => debt.amount > debt.paid);
+  const total = open.reduce((sum, debt) => sum + debt.amount - debt.paid, 0n);
+  return sendTelegramMessage(chatId, open.length
+    ? `Piutang belum lunas (${open.length}${debts.length === 100 ? '+' : ''}) · total ${formatIdr(total)}:\n${open.slice(0, 25).map(debt => `• ${debt.customer}: ${formatIdr(debt.amount - debt.paid)}${debt.description ? ` · ${debt.description}` : ''}`).join('\n')}${open.length > 25 ? `\n…dan ${open.length - 25} bon lainnya.` : ''}`
+    : 'Tidak ada piutang yang belum lunas.');
+}
+
 function isCombinedBalanceQuestion(text: string) {
   return /(?:\b(?:berapa|brp)\b.{0,40}\b(?:saldo|kas|cash|uang)\b|\b(?:saldo|cash|kas|uang)\b.{0,40}\b(?:berapa|brp)\b|\b(?:cek|lihat|tampilkan|posisi)\b.{0,20}\bsaldo\b)/i.test(text);
 }
@@ -381,7 +421,8 @@ function parseOwnerChatState(value: unknown, ownerId: number): OwnerChatState | 
   return { version: 1, ownerId: String(ownerId), history: state.history.slice(-12), actions: state.actions,
     selected: state.selected, pendingMatches: Array.isArray(state.pendingMatches) ? state.pendingMatches : [],
     proposalDraftId: typeof state.proposalDraftId === 'string' ? state.proposalDraftId : null,
-    preview: typeof state.preview === 'string' ? state.preview : null } as OwnerChatState;
+    preview: typeof state.preview === 'string' ? state.preview : null,
+    menuFlow: typeof state.menuFlow === 'string' ? state.menuFlow : null } as OwnerChatState;
 }
 
 async function getOwnerChatState(chatId: bigint, ownerId: number): Promise<{ rowId: string; state: OwnerChatState }> {
@@ -393,7 +434,7 @@ async function getOwnerChatState(chatId: bigint, ownerId: number): Promise<{ row
       ['PENDING', 'PROCESSING'].includes(existing.status) && existing.expiresAt > now ? parseOwnerChatState(existing.payload, ownerId) : null;
     if (saved) return { rowId, state: saved };
     const initial: OwnerChatState = { version: 1, ownerId: String(ownerId), history: [], actions: [], selected: [],
-      pendingMatches: [], proposalDraftId: null, preview: null };
+      pendingMatches: [], proposalDraftId: null, preview: null, menuFlow: null };
     await prisma.telegramDraft.upsert({ where: { id: rowId },
       create: { id: rowId, chatId, kind: 'OWNER_CONVERSATION', payload: initial as object, status: 'PENDING', expiresAt: new Date(Date.now() + CHAT_TTL) },
       update: { chatId, kind: 'OWNER_CONVERSATION', payload: initial as object, status: 'PENDING', expiresAt: new Date(Date.now() + CHAT_TTL), confirmedAt: null },
@@ -402,6 +443,30 @@ async function getOwnerChatState(chatId: bigint, ownerId: number): Promise<{ row
   } catch {
     logOwnerDiagnostic('conversation_state_read', 'database_error', startedAt);
     throw new OwnerAssistantDatabaseError('conversation_state_read');
+  }
+}
+
+async function beginOwnerMenuFlow(chatId: bigint, ownerId: number, action: { id: string; label: string; prompt: string }) {
+  const { rowId, state } = await getOwnerChatState(chatId, ownerId);
+  const claimed = await prisma.telegramDraft.updateMany({ where: { id: rowId, kind: 'OWNER_CONVERSATION', status: 'PENDING', expiresAt: { gt: new Date() } }, data: { status: 'PROCESSING' } });
+  if (claimed.count !== 1) return sendTelegramMessage(chatId, 'Saya sedang memproses pesan sebelumnya. Tunggu sebentar lalu pilih lagi.');
+  try {
+    const pending = state.proposalDraftId ? await prisma.telegramDraft.findUnique({ where: { id: state.proposalDraftId } }) : null;
+    if (pending && ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'].includes(pending.kind) && pending.status === 'PENDING' && pending.expiresAt > new Date()) {
+      await saveOwnerChatState(rowId, chatId, state);
+      return sendTelegramMessage(chatId, 'Masih ada draf yang menunggu keputusan. Konfirmasikan/batalkan draf itu dulu, atau buka menu Persetujuan.');
+    }
+    state.history = [
+      { role: 'user', content: `Saya memilih fitur Owner: ${action.label}.` },
+      { role: 'assistant', content: action.prompt },
+    ];
+    state.actions = []; state.selected = []; state.pendingMatches = [];
+    state.proposalDraftId = null; state.preview = null; state.menuFlow = action.id;
+    await saveOwnerChatState(rowId, chatId, state);
+    return sendTelegramMessage(chatId, action.prompt, ownerFlowKeyboard());
+  } catch (error) {
+    await prisma.telegramDraft.updateMany({ where: { id: rowId, kind: 'OWNER_CONVERSATION', status: 'PROCESSING' }, data: { status: 'PENDING' } });
+    throw error;
   }
 }
 
@@ -907,7 +972,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
   }
   if (businessDraft) {
     const saved = await createAssistantActionDraft(chatId, ownerId, businessDraft);
-    state.proposalDraftId = saved.draftId; state.preview = saved.preview;
+    state.proposalDraftId = saved.draftId; state.preview = saved.preview; state.menuFlow = null;
     rememberOwnerReply(state, [content, saved.preview].filter(Boolean).join('\n\n'));
     await saveOwnerChatState(rowId, chatId, state);
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
@@ -915,7 +980,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
   }
   if (operations.length) {
     const batch = await createBatchDraft(chatId, ownerId, operations, labels);
-    state.proposalDraftId = batch.draftId; state.preview = batch.preview;
+    state.proposalDraftId = batch.draftId; state.preview = batch.preview; state.menuFlow = null;
     rememberOwnerReply(state, [content, batch.preview].filter(Boolean).join('\n\n'));
     try { await saveOwnerChatState(rowId, chatId, state); }
     catch (error) {
@@ -927,7 +992,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
   }
   // A completed read-only request should not be replayed as the next turn's proposal.
   rememberOwnerReply(state, content || 'Saya belum menangkap maksudnya. Coba ceritakan dengan kata-kata sendiri; kalau ada angka yang belum jelas, saya akan tanyakan.');
-  state.actions = []; state.selected = []; state.pendingMatches = [];
+  state.actions = []; state.selected = []; state.pendingMatches = []; state.menuFlow = null;
   await saveOwnerChatState(rowId, chatId, state);
   if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
   return sendTelegramMessage(chatId, content || 'Saya belum menangkap maksudnya. Coba ceritakan dengan kata-kata sendiri; kalau ada angka yang belum jelas, saya akan tanyakan.');
@@ -1257,24 +1322,88 @@ async function selectAgentCandidate(callback: OwnerCallback, ownerId: number, ac
   return renderOwnerActions(chatId, ownerId, rowId, state, 'Saya sudah memilih barang yang Anda maksud.', state.actions);
 }
 
+function ownerDraftOwnerId(row: { kind: string; payload: unknown }): string | null {
+  if (!row.payload || typeof row.payload !== 'object') return null;
+  const payload = row.payload as Record<string, unknown>;
+  return typeof payload.ownerId === 'string' ? payload.ownerId : null;
+}
+function ownerDraftDescription(row: { kind: string; payload: unknown }): string | null {
+  if (!row.payload || typeof row.payload !== 'object') return null;
+  const payload = row.payload as Record<string, unknown>;
+  if (row.kind === 'OWNER_ASSISTANT_ACTION' && typeof payload.preview === 'string') return payload.preview;
+  const batch = row.kind === 'OWNER_OPERATION' ? validateBatch(payload) : null;
+  if (batch) return `Rencana perubahan (${batch.operations.length} langkah):\n${batch.operations.map((operation, index) => `${index + 1}. ${isProductCreate(operation) ? operation.name : operation.productName} — ${batch.labels[index]}`).join('\n')}`;
+  const operation = row.kind === 'OWNER_OPERATION' ? parseOperation(payload) : null;
+  if (operation) {
+    const proposed = operation.proposed;
+    const money = (value: unknown) => typeof value === 'string' && /^\d{1,20}$/.test(value) ? formatIdr(BigInt(value)) : '—';
+    const details = operation.kind === 'STOCK_IN' ? `Stok: ${operation.expected.stock} → ${operation.expected.stock + (proposed.quantity ?? 0)}; modal/unit: ${money(proposed.unitCost)}`
+      : operation.kind === 'STOCK_ADJUST' ? `Stok: ${operation.expected.stock} → ${proposed.newStock ?? operation.expected.stock}; alasan: ${proposed.reason ?? '—'}`
+        : operation.kind === 'PRICE_UPDATE' ? `Harga: ${money(proposed.field === 'sellPrice' ? operation.expected.sellPrice : operation.expected.costPrice)} → ${money(proposed.amount)}`
+          : `Lokasi: ${operation.expected.locationName ?? '—'} → ${proposed.targetLocationName ?? '—'}`;
+    return `Draf perubahan — ${operation.productName}\n${details}`;
+  }
+  const product = row.kind === 'OWNER_OPERATION' ? parseOwnerProductCreate(payload) : null;
+  if (product) return `Draf barang baru — ${product.name}\nKategori: ${product.categoryName}${product.subcategoryName ? ' / ' + product.subcategoryName : ''}\nStok awal: ${product.stock}\nModal/unit: ${formatIdr(BigInt(product.costPrice))}\nHarga jual: ${formatIdr(BigInt(product.sellPrice))}`;
+  return null;
+}
+async function showPendingOwnerApprovals(chatId: bigint, ownerId: number) {
+  const rows = await prisma.telegramDraft.findMany({ where: { chatId, kind: { in: ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'] }, status: 'PENDING', expiresAt: { gt: new Date() } }, orderBy: { createdAt: 'desc' }, take: 50 });
+  const { state } = await getOwnerChatState(chatId, ownerId);
+  const pending = rows.filter(row => ownerDraftOwnerId(row) === String(ownerId) && ownerDraftDescription(row) &&
+    (!validateBatch(row.payload) || state.proposalDraftId === row.id));
+  if (!pending.length) return sendTelegramMessage(chatId, 'Tidak ada draf Owner yang menunggu persetujuan.', ownerMenuKeyboard('home'));
+  const visible = pending.slice(0, 20);
+  const rowsKeyboard = visible.map(row => [{ text: `Tinjau draf ${row.id.slice(-6)}`, callback_data: 'rcms:owner:review:' + row.id }]);
+  rowsKeyboard.push([{ text: '⬅️ Menu Owner', callback_data: 'rcms:owner:menu:home' }]);
+  return sendTelegramMessage(chatId, `Draf menunggu persetujuan (${pending.length}):\n${visible.map(row => `• ${row.id.slice(-6)} · ${row.createdAt.toLocaleString('id-ID')}`).join('\n')}${pending.length > 20 ? '\nDaftar dibatasi ke 20 draf terbaru.' : ''}`, keyboard(rowsKeyboard));
+}
+async function reviewOwnerDraft(callback: OwnerCallback, ownerId: number, draftId: string) {
+  const chatId = BigInt(ownerId);
+  const row = await prisma.telegramDraft.findUnique({ where: { id: draftId } });
+  if (!row || row.chatId !== chatId || !['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'].includes(row.kind) || row.status !== 'PENDING' || row.expiresAt <= new Date() || ownerDraftOwnerId(row) !== String(ownerId)) {
+    return answerTelegramCallback(callback.id, 'Draf tidak ditemukan, kedaluwarsa, atau bukan milik Owner ini.');
+  }
+  const description = ownerDraftDescription(row);
+  if (!description) return answerTelegramCallback(callback.id, 'Pratinjau draf tidak dapat dibaca.');
+  await answerTelegramCallback(callback.id, 'Draf siap ditinjau.');
+  return sendTelegramMessage(chatId, description + '\n\nBelum ada perubahan. Konfirmasi hanya jika rinciannya benar.', ownerActionKeyboard(row.id));
+}
+
 export async function handleOwnerCallback(callback: OwnerCallback, ownerId: number) {
   const chat = callback.message?.chat;
   if (!telegramOwnerAuthorized(callback.from.id) || callback.from.id !== ownerId || !chat || chat.type !== 'private' || chat.id !== ownerId) {
     return answerTelegramCallback(callback.id, 'Akses ditolak.');
   }
   const data = callback.data ?? '';
+  if (data === 'rcms:owner:menu:flow_cancel') {
+    const { rowId, state } = await getOwnerChatState(BigInt(chat.id), ownerId);
+    state.menuFlow = null; state.actions = []; state.selected = []; state.pendingMatches = [];
+    state.history = [{ role: 'user', content: 'Owner membatalkan alur menu.' }, { role: 'assistant', content: 'Alur dibatalkan; data RMCS tidak berubah.' }];
+    await saveOwnerChatState(rowId, BigInt(chat.id), state);
+    await answerTelegramCallback(callback.id, 'Alur dibatalkan.');
+    return showOwnerMenu(BigInt(chat.id));
+  }
+  const review = /^rcms:owner:review:([A-Za-z0-9_-]{10,40})$/.exec(data);
+  if (review) return reviewOwnerDraft(callback, ownerId, review[1]);
   const menuAction = /^rcms:owner:menu:do:([a-z_]+)$/.exec(data);
   if (menuAction) {
     const item = Object.values(OWNER_MENU_ACTIONS).flatMap(actions => actions ?? []).find(action => action.id === menuAction[1]);
-    await answerTelegramCallback(callback.id, item ? 'Siap, lanjutkan lewat pesan.' : 'Tombol tidak dikenal.');
+    if (!item) return answerTelegramCallback(callback.id, 'Tombol tidak dikenal.');
+    await answerTelegramCallback(callback.id, 'Siap.');
     if (menuAction[1] === 'balance_read') return sendTelegramMessage(BigInt(chat.id), await showCombinedBalance());
     if (menuAction[1] === 'report_today') return sendTelegramMessage(BigInt(chat.id), await showBusinessReport(null, null));
-    return sendTelegramMessage(BigInt(chat.id), item?.prompt ?? 'Fitur ini belum tersedia melalui menu. Jelaskan kebutuhan Anda dengan kata-kata sendiri.');
+    if (menuAction[1] === 'inventory_value') return showInventoryValue(BigInt(chat.id));
+    if (menuAction[1] === 'debt_report') return showDebtReport(BigInt(chat.id));
+    if (menuAction[1] === 'low_stock') return showLowStock(BigInt(chat.id));
+    return beginOwnerMenuFlow(BigInt(chat.id), ownerId, item);
   }
   const menu = /^rcms:owner:menu:(home|summary|catalog|sales|finance|shift|memory|approval)$/.exec(data);
   if (menu) {
     const page = menu[1] as OwnerMenuPage;
     await answerTelegramCallback(callback.id, page === 'home' ? 'Menu Owner' : 'Membuka ' + OWNER_MENU_PAGES[page].title);
+    if (page === 'home') return showOwnerHome(BigInt(chat.id), ownerId);
+    if (page === 'approval') return showPendingOwnerApprovals(BigInt(chat.id), ownerId);
     return showOwnerMenu(BigInt(chat.id), page);
   }
   const pick = /^rcms:owner:pick:(\d{1,20}):(\d{1,2}):(\d{1,10})$/.exec(data);
@@ -1293,7 +1422,7 @@ export async function handleOwnerCallback(callback: OwnerCallback, ownerId: numb
       const stateId = ownerConversationId(ownerId), stateRow = await prisma.telegramDraft.findUnique({ where: { id: stateId } });
       const state = stateRow?.kind === 'OWNER_CONVERSATION' && stateRow.chatId === chatId ? parseOwnerChatState(stateRow.payload, ownerId) : null;
       if (state?.proposalDraftId === draftId) {
-        state.actions = []; state.selected = []; state.pendingMatches = []; state.proposalDraftId = null; state.preview = null;
+        state.actions = []; state.selected = []; state.pendingMatches = []; state.proposalDraftId = null; state.preview = null; state.menuFlow = null;
         state.history = [...state.history, { role: 'assistant' as const, content: 'Rencana dibatalkan; jangan jalankan ulang tanpa permintaan baru.' }].slice(-12);
         await saveOwnerChatState(stateId, chatId, state);
       }
@@ -1312,7 +1441,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
   const text = message.text?.trim() ?? '';
   if (!text) return sendTelegramMessage(chatId, 'Kirim pertanyaan atau perintah dalam bentuk teks.');
   const command = /^\/([a-z]+)(?:@\w+)?(?:\s+([\s\S]*))?$/i.exec(text);
-  if (command?.[1].toLowerCase() === 'menu' || command?.[1].toLowerCase() === 'fitur') return showOwnerMenu(chatId);
+  if (command?.[1].toLowerCase() === 'menu' || command?.[1].toLowerCase() === 'fitur') return showOwnerHome(chatId, ownerId);
   if (command?.[1].toLowerCase() === 'start' || command?.[1].toLowerCase() === 'help') {
     return sendTelegramMessage(chatId, 'Hai, saya asisten owner R-CELL. Buka /menu untuk memilih fitur. Anda juga bisa bertanya dengan kata-kata sendiri. Setiap perubahan menunggu konfirmasi sebelum diterapkan. /whoami menampilkan ID Telegram Anda.', ownerMenuKeyboard());
   }
@@ -1325,7 +1454,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
     try {
       if (command?.[1].toLowerCase() === 'batal') {
         if (state.proposalDraftId) await prisma.telegramDraft.updateMany({ where: { id: state.proposalDraftId, chatId, kind: { in: ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'] }, status: 'PENDING' }, data: { status: 'CANCELLED' } });
-        state.actions = []; state.selected = []; state.pendingMatches = []; state.proposalDraftId = null; state.preview = null;
+        state.actions = []; state.selected = []; state.pendingMatches = []; state.proposalDraftId = null; state.preview = null; state.menuFlow = null;
         state.history = [...state.history, { role: 'user' as const, content: text }, { role: 'assistant' as const, content: 'Rencana dibatalkan.' }].slice(-12);
         await saveOwnerChatState(rowId, chatId, state);
         return sendTelegramMessage(chatId, 'Rencana dibatalkan. Data RMCS tidak berubah.');
