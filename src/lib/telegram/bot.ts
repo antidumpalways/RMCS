@@ -113,10 +113,16 @@ async function relevantShiftOpeningProducts(){
  const since=new Date(Date.now()-30*24*60*60_000);
  const movers=await prisma.saleItem.groupBy({by:['productId'],where:{sale:{is:{kind:'SALE',createdAt:{gte:since}}}},_sum:{qty:true},orderBy:{_sum:{qty:'desc'}},take:6});
  const voucherAndCigarettes=await prisma.product.findMany({where:{OR:[{category:{name:{contains:'voucher',mode:'insensitive'}}},{category:{name:{contains:'rokok',mode:'insensitive'}}},{name:{contains:'voucher',mode:'insensitive'}},{name:{contains:'rokok',mode:'insensitive'}}]},orderBy:[{provider:'asc'},{name:'asc'}],select:{id:true,name:true,provider:true,sku:true,stock:true}});
- const oilProducts=await prisma.product.findMany({where:{OR:[{category:{name:{contains:'minyak',mode:'insensitive'}}},{name:{contains:'minyak',mode:'insensitive'}}]},orderBy:[{stock:'desc'},{name:'asc'}],take:2,select:{id:true,name:true,provider:true,sku:true,stock:true}});
+ const oilProducts=await prisma.product.findMany({where:{OR:[{category:{name:{contains:'minyak',mode:'insensitive'}}},{name:{contains:'minyak',mode:'insensitive'}}]},orderBy:[{stock:'desc'},{name:'asc'}],select:{id:true,name:true,provider:true,sku:true,stock:true}});
  const ids=[...new Set([...voucherAndCigarettes.map(row=>row.id),...oilProducts.map(row=>row.id),...movers.map(row=>row.productId)])];
  const products=await prisma.product.findMany({where:{id:{in:ids}},select:{id:true,name:true,provider:true,sku:true,stock:true}});const byId=new Map(products.map(row=>[row.id,row]));
  return ids.flatMap(id=>{const row=byId.get(id);return row?[row]:[];});
+}
+async function closingTrackedStock(){
+ return prisma.product.findMany({where:{OR:[
+  {category:{name:{contains:'voucher',mode:'insensitive'}}},{category:{name:{contains:'rokok',mode:'insensitive'}}},{category:{name:{contains:'minyak',mode:'insensitive'}}},
+  {name:{contains:'voucher',mode:'insensitive'}},{name:{contains:'rokok',mode:'insensitive'}},{name:{contains:'minyak',mode:'insensitive'}}
+ ]},orderBy:[{provider:'asc'},{name:'asc'}],select:{id:true,name:true,provider:true,stock:true}});
 }
 async function activeShiftOpening(chatId:bigint,identityId:string){
  const rows=await prisma.telegramDraft.findMany({where:{chatId,telegramIdentityId:identityId,kind:'SHIFT_OPENING',status:'CONFIRMED'},orderBy:{createdAt:'desc'},take:12});
@@ -271,7 +277,15 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
  const grouped=new Map<number,typeof draft.inventoryLines>();for(const line of draft.inventoryLines??[])if(line.productId)grouped.set(line.productId,[...(grouped.get(line.productId)??[]),line]);
  let stockInsufficient=false;
  for(const [productId,lines] of grouped){const product=byId.get(productId);if(!product||!lines)continue;const quantity=lines.reduce((sum,line)=>sum+line.quantity,0),recorded=Math.max(...lines.map(line=>line.recordedWebQty??0)),coverage=lines[0].coverage;const applied=calculateUnrecordedQuantity(quantity,recorded,coverage==='INCLUDES_APP_SALES'?'INCLUDES_APP_SALES':'UNRECORDED_ONLY')??quantity;stockRows.push('• '+lines.map(line=>line.label).join(' / ')+': terjual '+quantity+' pcs; stok saat ini '+product.stock+(product.location?.name?' ('+product.location.name+')':'')+'; '+appSalesLabel+' '+recorded+'; dikurangi '+applied+'; sisa '+(product.stock-applied));if(applied>product.stock)stockInsufficient=true;}
- const stockText=stockRows.length?'\n\nPERUBAHAN STOK (pratinjau):\n'+stockRows.join('\n')+'\n\nJumlah Web App hanya dikurangkan jika Anda menyatakan jumlah itu sudah termasuk dalam rekap.':'\n\nTidak ada jumlah unit eksplisit; stok tidak diubah.';
+ const trackedProducts=await closingTrackedStock();
+ const trackedLines=trackedProducts.map(product=>{
+  const lines=grouped.get(product.id);
+  if(!lines)return '• '+product.name+(product.provider?' · '+product.provider:'')+': stok RMCS '+product.stock+' unit (tidak ada jumlah jual di rekap)';
+  const quantity=lines.reduce((sum,line)=>sum+line.quantity,0),recorded=Math.max(...lines.map(line=>line.recordedWebQty??0)),coverage=lines[0].coverage;
+  const deduct=coverage==='INCLUDES_APP_SALES'||coverage==='UNRECORDED_ONLY'?calculateUnrecordedQuantity(quantity,recorded,coverage):null;
+  return '• '+product.name+(product.provider?' · '+product.provider:'')+': '+(deduct===null?'stok RMCS saat ini '+product.stock+' unit · cakupan penjualan perlu diperjelas':'stok RMCS saat ini '+product.stock+'; terjual menurut rekap '+quantity+'; pengurangan tambahan '+deduct+'; sisa perkiraan '+(product.stock-deduct)+' unit');
+ });
+ const stockText=(stockRows.length?'\n\nPERUBAHAN STOK (pratinjau):\n'+stockRows.join('\n')+'\n\nJumlah Web App hanya dikurangkan jika Anda menyatakan jumlah itu sudah termasuk dalam rekap.':'\n\nTidak ada jumlah unit eksplisit; stok tidak diubah.')+'\n\nPERKIRAAN STOK TERSISA · VOUCHER, MINYAK & ROKOK\n'+(trackedLines.length?trackedLines.join('\n'):'Tidak ada produk kategori voucher, minyak, atau rokok di katalog.')+'\n\nAngka mengikuti stok RMCS dan pengurangan yang diajukan; belum merupakan hitung fisik.';
  const allIssues=[...issues,...(stockInsufficient?['Stok saat ini tidak cukup untuk seluruh jumlah yang diajukan. Minta owner meninjau; laporan tidak akan diposting sebagian.']:[])]; await sendTelegramMessage(chatId,formatDraft(draft)+balanceText+stockOpeningText+stockText+(allIssues.length?'\n\nPerlu dilengkapi:\n• '+allIssues.join('\n• '):'\n\nPeriksa rekap dan perubahan stok sebelum konfirmasi.'),allIssues.length?undefined:keyboard(draftId,session.revision));
  const coveragePrompted=new Set<number>();for(const line of draft.inventoryLines??[]){
   if(line.mappingStatus==='AMBIGUOUS'){
@@ -531,7 +545,9 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
  const summary=postings.map(posting=>{const ids=posting.lineId.split(',');const label=ids.map(id=>(data.inventoryLines??[]).find(line=>line.id===id)?.label).filter(Boolean).join(' / ');return '• '+label+': '+posting.appliedQty+' unit dikurangi';}).join('\n');
  const correctionHelp=postings.map(posting=>' /koreksi '+reportIdResult+' '+posting.lineId+' <jumlah-baru> <alasan>').join('\n');
  const reconciliationText=finalBalanceCheck?formatBalanceCheck(finalBalanceCheck):'Saldo belum berhasil direkonsiliasi.';
- await sendLongTelegramMessage(chatId,'✅ REKAP BERHASIL DISIMPAN'+(data.shiftLabel?'\nShift '+data.shiftLabel:'')+(summary?'\n\n'+summary:'\n\nTidak ada perubahan stok.')+'\n\nAdmin TF + TD: '+formatTelegramRupiah(BigInt(recapTotals(data).service_fee))+'\nPengeluaran: '+formatTelegramRupiah(BigInt(recapTotals(data).expense))+'\n'+reconciliationText+(finalBalanceCheck?.status==='MATCH'?'\nSaldo RMCS diperbarui ke nilai yang cocok.':'\nSaldo RMCS tidak diubah otomatis; Owner diminta meninjau.')+(postings.length?'\n\nID laporan: '+reportIdResult+'\nKoreksi stok setelah disimpan:'+correctionHelp:''));
+ const finalTrackedStock=await closingTrackedStock();
+ const finalStockText=finalTrackedStock.length?'\n\nSTOK TERSISA DI RMCS · VOUCHER, MINYAK & ROKOK\n'+finalTrackedStock.map(product=>'• '+product.name+(product.provider?' · '+product.provider:'')+': '+product.stock+' unit').join('\n'):'\n\nTidak ada produk voucher, minyak, atau rokok di katalog.';
+ await sendLongTelegramMessage(chatId,'✅ REKAP BERHASIL DISIMPAN'+(data.shiftLabel?'\nShift '+data.shiftLabel:'')+(summary?'\n\n'+summary:'\n\nTidak ada perubahan stok.')+'\n\nAdmin TF + TD: '+formatTelegramRupiah(BigInt(recapTotals(data).service_fee))+'\nPengeluaran: '+formatTelegramRupiah(BigInt(recapTotals(data).expense))+'\n'+reconciliationText+(finalBalanceCheck?.status==='MATCH'?'\nSaldo RMCS diperbarui ke nilai yang cocok.':'\nSaldo RMCS tidak diubah otomatis; Owner diminta meninjau.')+finalStockText+(postings.length?'\n\nID laporan: '+reportIdResult+'\nKoreksi stok setelah disimpan:'+correctionHelp:''));
  if(finalBalanceCheck&&finalBalanceCheck.status!=='MATCH')await notifyBalanceOwner(chatId,actor.identityId,finalBalanceCheck);
 }
 async function processUpdate(u:TelegramUpdate){
@@ -613,6 +629,7 @@ export async function handleTelegramWebhook(request:Request){
  let update:TelegramUpdate;try{const body=await request.text();if(body.length>64000)return{status:413,body:{error:'Update too large.'}};update=JSON.parse(body) as TelegramUpdate;}catch{return{status:400,body:{error:'Invalid JSON update.'}};}
  try{await processUpdate(update);return{status:200,body:{ok:true}};}catch(e){if(e instanceof TelegramUpdateBusy)return{status:503,body:{error:'Update is already processing; retry shortly.'}};console.error('Telegram update processing failed:',e instanceof Error?e.message:'unknown');return{status:500,body:{error:'Update processing failed; Telegram may retry.'}};}
 }
+
 
 
 
