@@ -54,6 +54,81 @@ function expectedProduct(product: CatalogProduct): ExpectedProduct {
     locationId: product.locationId, locationName: product.location?.name ?? null, updatedAt: product.updatedAt.toISOString() };
 }
 function keyboard(rows: InlineKeyboard['inline_keyboard']): InlineKeyboard { return { inline_keyboard: rows }; }
+const OWNER_MENU_PAGES = {
+  home: { title: 'Menu Owner R-CELL', rows: [
+    [{ text: '📊 Ringkasan', callback_data: 'rcms:owner:menu:summary' }, { text: '📦 Produk & Stok', callback_data: 'rcms:owner:menu:catalog' }],
+    [{ text: '💰 Transaksi', callback_data: 'rcms:owner:menu:sales' }, { text: '🧾 Keuangan & Saldo', callback_data: 'rcms:owner:menu:finance' }],
+    [{ text: '🕒 Shift & Opname', callback_data: 'rcms:owner:menu:shift' }, { text: '🧠 Aturan Toko', callback_data: 'rcms:owner:menu:memory' }],
+    [{ text: '✅ Persetujuan', callback_data: 'rcms:owner:menu:approval' }],
+  ] },
+  summary: { title: 'Ringkasan', body: 'Lihat saldo total, omzet, profit, pengeluaran, biaya admin/jasa, inventory, modal, piutang, dan ringkasan shift.' },
+  catalog: { title: 'Produk & Stok', body: 'Kelola katalog, stok, harga, lokasi, kategori/subkategori, serta audit katalog.' },
+  sales: { title: 'Transaksi & Piutang', body: 'Buat/koreksi/retur penjualan serta catat, bayar, atau hapus bon.' },
+  finance: { title: 'Keuangan & Saldo', body: 'Perbarui saldo gabungan kas + elektronik, catat pengeluaran dan biaya admin/jasa, serta lihat laporan.' },
+  shift: { title: 'Shift & Stock Opname', body: 'Tinjau/tutup shift; catat, tinjau, terapkan, atau hapus hasil stock opname.' },
+  memory: { title: 'Aturan Toko', body: 'Ajari asisten istilah/aturan toko atau minta ia melupakan aturan yang tersimpan.' },
+  approval: { title: 'Persetujuan Owner', body: 'Setiap perubahan usaha menampilkan pratinjau terlebih dahulu. Tinjau nama barang, jumlah, nominal, dan dampaknya, lalu tekan tombol konfirmasi. Jika data ambigu, asisten akan bertanya sebelum membuat usulan.' },
+};
+type OwnerMenuPage = keyof typeof OWNER_MENU_PAGES;
+const OWNER_MENU_ACTIONS: Partial<Record<OwnerMenuPage, Array<{ id: string; label: string; prompt: string }>>> = {
+  summary: [
+    { id: 'balance_read', label: 'Lihat saldo total', prompt: '' },
+    { id: 'report_today', label: 'Laporan hari ini', prompt: '' },
+    { id: 'inventory_value', label: 'Nilai inventory & modal', prompt: 'Minta owner kirim pertanyaan nilai inventory/modal.' },
+    { id: 'debt_report', label: 'Piutang/bon', prompt: 'Sebutkan “tampilkan piutang yang belum lunas”.' },
+  ],
+  catalog: [
+    { id: 'product_info', label: 'Cek harga/stok', prompt: 'Kirim nama barang, misalnya “cek harga Axis 13GB 7 hari”.' },
+    { id: 'product_create', label: 'Tambah barang baru', prompt: 'Kirim nama, kategori, harga modal, harga jual, stok awal, dan lokasi jika ada.' },
+    { id: 'stock_in', label: 'Tambah stok barang', prompt: 'Kirim nama barang, jumlah masuk, dan harga modal jika diketahui.' },
+    { id: 'stock_adjust', label: 'Koreksi stok', prompt: 'Kirim nama barang, jumlah stok seharusnya, dan alasan koreksi.' },
+    { id: 'price_update', label: 'Ubah harga produk', prompt: 'Kirim nama barang dan harga jual/modal baru.' },
+    { id: 'price_bulk', label: 'Ubah harga massal', prompt: 'Kirim kategori/cakupan dan aturan margin atau harga baru.' },
+    { id: 'category_manage', label: 'Kategori & subkategori', prompt: 'Sebutkan kategori/subkategori yang ingin dibuat, diubah, atau dihapus.' },
+    { id: 'catalog_audit', label: 'Audit katalog', prompt: 'Sebutkan bagian katalog yang ingin diaudit atau dirapikan.' },
+  ],
+  sales: [
+    { id: 'sale_create', label: 'Catat penjualan', prompt: 'Kirim barang dan jumlah yang terjual.' },
+    { id: 'sale_edit', label: 'Koreksi penjualan', prompt: 'Kirim ID transaksi dan rincian koreksi.' },
+    { id: 'sale_return', label: 'Retur penjualan', prompt: 'Kirim ID transaksi dan barang/jumlah yang diretur.' },
+    { id: 'debt_create', label: 'Catat bon/piutang', prompt: 'Kirim nama pelanggan, nominal, dan keterangan bon.' },
+    { id: 'debt_pay', label: 'Terima pembayaran bon', prompt: 'Kirim nama pelanggan atau ID bon dan nominal pembayaran.' },
+    { id: 'debt_delete', label: 'Hapus bon', prompt: 'Kirim ID bon dan alasan penghapusan.' },
+  ],
+  finance: [
+    { id: 'balance_update', label: 'Perbarui saldo total', prompt: 'Kirim saldo aktual gabungan kas + elektronik, misalnya “saldo total sekarang 25 juta 168 ribu”.' },
+    { id: 'expense_create', label: 'Catat pengeluaran', prompt: 'Kirim nama pengeluaran dan nominal.' },
+    { id: 'service_create', label: 'Catat biaya admin/jasa', prompt: 'Kirim jumlah layanan dan total biaya admin/jasa yang diterima.' },
+    { id: 'report_today', label: 'Laporan keuangan', prompt: 'Sebutkan tanggal/periode laporan yang ingin dilihat.' },
+  ],
+  shift: [
+    { id: 'shift_close', label: 'Tutup shift', prompt: 'Sebutkan shift yang ingin ditutup dan saldo aktual yang perlu dicocokkan.' },
+    { id: 'opname_record', label: 'Catat stock opname', prompt: 'Kirim nama barang dan jumlah fisik hasil hitung.' },
+    { id: 'opname_review', label: 'Tinjau hasil opname', prompt: 'Sebutkan nama barang yang hasil opname-nya ingin ditinjau.' },
+    { id: 'opname_apply', label: 'Terapkan hasil opname', prompt: 'Sebutkan hasil opname yang ingin diterapkan.' },
+    { id: 'opname_delete', label: 'Hapus hasil opname', prompt: 'Sebutkan hasil opname yang ingin dihapus.' },
+  ],
+  memory: [
+    { id: 'memory_save', label: 'Ingat aturan toko', prompt: 'Kirim istilah atau aturan toko yang harus diingat.' },
+    { id: 'memory_forget', label: 'Lupakan aturan', prompt: 'Sebutkan istilah atau aturan yang ingin dilupakan.' },
+  ],
+  approval: [{ id: 'approval_help', label: 'Cara menyetujui', prompt: 'Periksa pratinjau perubahan yang menunggu; tekan “Ya, terapkan perubahan” pada pesan pratinjau untuk menyetujui atau “Batal” untuk menolak.' }],
+};
+function ownerMenuKeyboard(page: OwnerMenuPage = 'home'): InlineKeyboard {
+  if (page === 'home') return keyboard(OWNER_MENU_PAGES.home.rows);
+  const actions = OWNER_MENU_ACTIONS[page] ?? [];
+  const rows = actions.reduce<Array<Array<{ text: string; callback_data: string }>>>((result, action, index) => {
+    if (index % 2 === 0) result.push([]);
+    result[result.length - 1].push({ text: action.label, callback_data: 'rcms:owner:menu:do:' + action.id });
+    return result;
+  }, []);
+  rows.push([{ text: '⬅️ Menu Owner', callback_data: 'rcms:owner:menu:home' }]);
+  return keyboard(rows);
+}
+async function showOwnerMenu(chatId: bigint, page: OwnerMenuPage = 'home') {
+  const content = OWNER_MENU_PAGES[page];
+  return sendTelegramMessage(chatId, page === 'home' ? content.title + '\nPilih kelompok fitur:' : '【' + content.title + '】\n\n' + content.body + '\n\nPilih fitur, lalu kirim rincian yang diminta.', ownerMenuKeyboard(page));
+}
 function ownerActionKeyboard(draftId: string): InlineKeyboard {
   return keyboard([[{ text: 'Ya, terapkan perubahan', callback_data: 'rcms:owner:confirm:' + draftId }],
     [{ text: 'Batal', callback_data: 'rcms:owner:cancel:' + draftId }]]);
@@ -1187,6 +1262,20 @@ export async function handleOwnerCallback(callback: OwnerCallback, ownerId: numb
     return answerTelegramCallback(callback.id, 'Akses ditolak.');
   }
   const data = callback.data ?? '';
+  const menuAction = /^rcms:owner:menu:do:([a-z_]+)$/.exec(data);
+  if (menuAction) {
+    const item = Object.values(OWNER_MENU_ACTIONS).flatMap(actions => actions ?? []).find(action => action.id === menuAction[1]);
+    await answerTelegramCallback(callback.id, item ? 'Siap, lanjutkan lewat pesan.' : 'Tombol tidak dikenal.');
+    if (menuAction[1] === 'balance_read') return sendTelegramMessage(BigInt(chat.id), await showCombinedBalance());
+    if (menuAction[1] === 'report_today') return sendTelegramMessage(BigInt(chat.id), await showBusinessReport(null, null));
+    return sendTelegramMessage(BigInt(chat.id), item?.prompt ?? 'Fitur ini belum tersedia melalui menu. Jelaskan kebutuhan Anda dengan kata-kata sendiri.');
+  }
+  const menu = /^rcms:owner:menu:(home|summary|catalog|sales|finance|shift|memory|approval)$/.exec(data);
+  if (menu) {
+    const page = menu[1] as OwnerMenuPage;
+    await answerTelegramCallback(callback.id, page === 'home' ? 'Menu Owner' : 'Membuka ' + OWNER_MENU_PAGES[page].title);
+    return showOwnerMenu(BigInt(chat.id), page);
+  }
   const pick = /^rcms:owner:pick:(\d{1,20}):(\d{1,2}):(\d{1,10})$/.exec(data);
   if (pick) {
     if (pick[1] !== String(ownerId) || Number(pick[1]) !== callback.from.id) return answerTelegramCallback(callback.id, 'Akses ditolak.');
@@ -1222,8 +1311,9 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
   const text = message.text?.trim() ?? '';
   if (!text) return sendTelegramMessage(chatId, 'Kirim pertanyaan atau perintah dalam bentuk teks.');
   const command = /^\/([a-z]+)(?:@\w+)?(?:\s+([\s\S]*))?$/i.exec(text);
+  if (command?.[1].toLowerCase() === 'menu' || command?.[1].toLowerCase() === 'fitur') return showOwnerMenu(chatId);
   if (command?.[1].toLowerCase() === 'start' || command?.[1].toLowerCase() === 'help') {
-    return sendTelegramMessage(chatId, 'Hai, saya asisten owner R-CELL. Tanyakan dengan kata-kata sendiri—saya bisa membantu transaksi, saldo, bon, pengeluaran, stok opname, kategori, harga, katalog, laporan, dan memori toko.\n\nSetiap perubahan tetap menunggu tombol konfirmasi sebelum diterapkan. /whoami menampilkan ID Telegram Anda.');
+    return sendTelegramMessage(chatId, 'Hai, saya asisten owner R-CELL. Buka /menu untuk memilih fitur. Anda juga bisa bertanya dengan kata-kata sendiri. Setiap perubahan menunggu konfirmasi sebelum diterapkan. /whoami menampilkan ID Telegram Anda.', ownerMenuKeyboard());
   }
   const startedAt = Date.now();
   try {
