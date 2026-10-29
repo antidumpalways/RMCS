@@ -1,4 +1,4 @@
-export type InlineKeyboard = { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> };
+export type InlineKeyboard = { inline_keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>> };
 export type TelegramReplyMarkup = InlineKeyboard | { force_reply: true; selective?: boolean; input_field_placeholder?: string };
 
 async function callTelegram<T>(method: string, payload: Record<string, unknown>): Promise<T> {

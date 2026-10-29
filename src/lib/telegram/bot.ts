@@ -33,6 +33,17 @@ async function claimUpdate(updateId:bigint):Promise<'CLAIMED'|'PROCESSED'|'BUSY'
  return disposition;
 }
 function groupAllowed(c:TelegramChat){return allowedTelegramGroup(c.id,c.type,process.env.TELEGRAM_ALLOWED_GROUP_IDS);}
+function groupMenuKeyboard(actor:TelegramActor):InlineKeyboard{
+ const rows:Array<Array<{text:string;callback_data?:string;url?:string}>>=[
+  [{text:'🧾 Rekap shift',callback_data:'rcms:group:menu:rekap'}],
+  [{text:'📄 Status rekap',callback_data:'rcms:group:menu:status'},{text:'🔎 Cek harga/stok',callback_data:'rcms:group:menu:check'}],
+  [{text:'❌ Batal rekap',callback_data:'rcms:group:menu:cancel'}],
+ ];
+ const username=configuredBotUsername();
+ if(actor.isOwner&&username)rows.push([{text:'🔐 Panel Owner (pribadi)',url:'https://t.me/'+username+'?start=ownerpanel'}]);
+ return{inline_keyboard:rows};
+}
+function groupMenuText(actor:TelegramActor){return 'Menu R-CELL\nPilih tombol untuk rekap shift atau status. Untuk cek barang, tekan tombol lalu sebut nama produk. '+(actor.isOwner?'Panel Owner membuka chat pribadi agar saldo, laporan, dan perubahan usaha tidak tampil di grup.':'');}
 function configuredBotUsername(){return (process.env.TELEGRAM_BOT_USERNAME??'').trim().replace(/^@/,'').toLocaleLowerCase('id-ID');}
 function escapeRegex(value:string){return value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
 function stripBotMention(text:string){const username=configuredBotUsername();return username?text.replace(new RegExp('@'+escapeRegex(username),'ig'),' ').replace(/\s+/g,' ').trim():text.trim();}
@@ -232,7 +243,8 @@ async function handleCorrectionCallback(c:TelegramCallback,actor:TelegramActor,c
 }
 async function handleCommand(m:TelegramMessage,actor:TelegramActor,command:string,args:string){
  const chatId=telegramId(m.chat.id);if(chatId===null)return;
- if(command==='start')return sendTelegramMessage(chatId,'Mulai rekap dengan /rekap atau tulis “aku mau rekap shift pagi”. Saat sesi aktif, kirim catatan dan koreksi dengan bahasa biasa. /status melihat draf, /koreksi meminta koreksi stok, dan /batal membatalkan. Untuk cek harga atau stok barang di luar sesi, sebut @'+(process.env.TELEGRAM_BOT_USERNAME??'bot').replace(/^@/,'')+' atau balas pesan bot.');
+ if(command==='menu')return sendTelegramMessage(chatId,groupMenuText(actor),groupMenuKeyboard(actor));
+ if(command==='start')return sendTelegramMessage(chatId,'Pilih menu bot untuk mulai rekap, melihat status, atau cek barang. /menu menampilkan tombol fitur.',groupMenuKeyboard(actor));
  if(command==='rekap')return openReport(chatId,actor);
  if(command==='koreksi')return requestReportCorrection(chatId,actor,args);
  if(command==='status'){
@@ -251,6 +263,18 @@ async function handleCommand(m:TelegramMessage,actor:TelegramActor,command:strin
  return sendTelegramMessage(chatId,'Perintah tidak dikenal. Gunakan /rekap, /status, atau /batal.');
 }
 async function handleCallback(c:TelegramCallback,actor:TelegramActor){
+ const menu=/^rcms:group:menu:(rekap|status|cancel|check)$/.exec(c.data??'');
+ if(menu){
+  const m=c.message;
+  if(!m||!groupAllowed(m.chat)){await answerTelegramCallback(c.id,'Grup tidak diizinkan.');return;}
+  if(menu[1]==='check'){
+   await answerTelegramCallback(c.id,'Kirim nama barang.');
+   const username=(process.env.TELEGRAM_BOT_USERNAME??'bot').replace(/^@/,'');
+   return sendTelegramMessage(m.chat.id,'Untuk cek harga/stok, tag @'+username+' dan sebut nama barang. Contoh: @'+username+' harga Axis 13 GB.');
+  }
+  await answerTelegramCallback(c.id,menu[1]==='rekap'?'Membuka rekap':menu[1]==='status'?'Memeriksa status':'Membatalkan sesi');
+  return handleCommand(m,actor,menu[1],'');
+ }
  const m=c.message,chatId=m&&telegramId(m.chat.id);
  if(!m||chatId===null||chatId===undefined||!groupAllowed(m.chat)){await answerTelegramCallback(c.id,'Grup tidak diizinkan.');return;}
  if(visionCallbackFromData(c.data)){await handleTelegramVisionCallback(c,actor.identityId);return;}
