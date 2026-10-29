@@ -7,7 +7,7 @@ import { correctTelegramPhotoFromText, handleTelegramPhoto, handleTelegramVision
 import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, inventoryCallback, parseInventoryCallback, type InventoryCallbackAction } from './inventory';
 import { prepareInventoryReview, postTelegramInventory, inventoryPreview, TelegramInventoryError } from '@/lib/services/telegram-inventory';
 import { cashOnHandAt, shiftOpening } from '@/lib/automation';
-import { combinedBalanceAt, setCombinedBalance } from '@/lib/services/combined-balance';
+import { combinedBalanceAt, recordedCombinedMovementsBetween, setCombinedBalance } from '@/lib/services/combined-balance';
 import { identifyTelegramActor, configuredTelegramOwners, type TelegramActor } from './identity';
 import { handleGroupAssistantMessage, handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
 import { authorizedOwnerPrivateChat } from './owner-intent';
@@ -195,6 +195,38 @@ async function captureShiftOpeningBalance(){
  const now=new Date(),cashOpening=await shiftOpening(now),ledgerCash=await cashOnHandAt(cashOpening.start),total=await combinedBalanceAt(now);
  return{start:now,balance:total+cashOpening.openingCash-ledgerCash};
 }
+type BalanceReader=Parameters<typeof recordedCombinedMovementsBetween>[0];
+async function calculateBalanceCheck(db:BalanceReader,shiftStart:Date,openingBalance:bigint,actualBalance:bigint,now:Date,draft:RecapDraft){
+ const recorded=await recordedCombinedMovementsBetween(db,shiftStart,now),totals=recapTotals(draft),conflicts:string[]=[];
+ const reportedTotal=(category:'sale'|'service_fee'|'expense',recordedAmount:bigint,label:string)=>{
+  const hasReported=draft.entries.some(entry=>entry.category===category),reported=BigInt(totals[category]);
+  if(!hasReported)return recordedAmount;
+  if(reported<recordedAmount)conflicts.push(label+' pada rekap ('+formatTelegramRupiah(reported)+') lebih kecil dari catatan RMCS ('+formatTelegramRupiah(recordedAmount)+').');
+  return reported>recordedAmount?reported:recordedAmount;
+ };
+ const sales=reportedTotal('sale',recorded.sales,'Penjualan'),fees=reportedTotal('service_fee',recorded.serviceFees,'Biaya admin/jasa'),expenses=reportedTotal('expense',recorded.expenses,'Pengeluaran');
+ // Report totals are treated as whole-shift totals. A total that includes Web App records replaces that category's ledger total; max() prevents duplicate addition.
+ const movementDelta=sales+fees+recorded.debtPayments-expenses+recorded.adjustments,expectedBalance=openingBalance+movementDelta,difference=actualBalance-expectedBalance;
+ const status=difference===0n?'MATCH' as const:difference<0n?'SHORT' as const:'EXCESS' as const;
+ return{openingBalance:openingBalance.toString(),expectedBalance:expectedBalance.toString(),actualBalance:actualBalance.toString(),movementDelta:movementDelta.toString(),difference:difference.toString(),status,sourceConflicts:conflicts};
+}
+function formatBalanceCheck(check:NonNullable<RecapDraft['balanceCheck']>){
+ const expected=BigInt(check.expectedBalance),actual=BigInt(check.actualBalance),difference=BigInt(check.difference);
+ const lines=['Saldo seharusnya menurut RMCS + rekap: '+formatTelegramRupiah(expected),'Saldo akhir yang dihitung karyawan: '+formatTelegramRupiah(actual)];
+ if(check.status==='MATCH')lines.push('✅ Saldo cocok.');
+ else lines.push('⚠️ '+(check.status==='SHORT'?'Kekurangan ':'Kelebihan ')+formatTelegramRupiah(difference<0n?-difference:difference)+'. Perlu tinjauan Owner.');
+ if(check.status!=='MATCH'&&check.sourceConflicts.length)lines.push(...check.sourceConflicts);
+ lines.push('Nilai penjualan, admin, dan pengeluaran pada rekap dianggap total shift; transaksi RMCS yang tercakup tidak ditambahkan dua kali.');
+ if(check.status!=='MATCH')lines.push('Saldo RMCS tidak disesuaikan otomatis.');
+ return lines.join('\n');
+}
+async function notifyBalanceOwner(chatId:bigint,identityId:string,check:NonNullable<RecapDraft['balanceCheck']>){
+ const owners=await prisma.user.findMany({where:{role:'owner',active:true,telegramUserId:{not:null}},select:{telegramUserId:true}});
+ const ownerIds=new Set([...configuredTelegramOwners(),...owners.flatMap(owner=>owner.telegramUserId===null?[]:[owner.telegramUserId.toString()])]);
+ const identity=await prisma.telegramIdentity.findUnique({where:{id:identityId},select:{displayName:true}});
+ const message='⚠️ SELISIH SALDO REKAP SHIFT\nKaryawan: '+(identity?.displayName??'Telegram')+'\nGrup: '+chatId+'\n'+formatBalanceCheck(check)+'\n\nLaporan tersimpan untuk tinjauan. Saldo RMCS tidak diubah otomatis.';
+ for(const ownerId of ownerIds){try{await sendTelegramMessage(BigInt(ownerId),message);}catch{/* A notification failure must not roll back a committed shift report. */}}
+}
 function keyboard(id:string,revision:number):InlineKeyboard{return{inline_keyboard:[[{text:'Konfirmasi & Simpan',callback_data:'rcms:ok:'+id+':'+revision},{text:'Koreksi Rekap',callback_data:'rcms:edit:'+id+':'+revision}],[{text:'Batal',callback_data:'rcms:cancel:'+id+':'+revision}]]};}
 async function saveInventoryDraft(sessionId:string,draftId:string,revision:number,draft:RecapDraft){
  const result=await prisma.$transaction(async tx=>{
@@ -216,16 +248,19 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
  if(!opening)return sendTelegramMessage(chatId,'Shift belum dibuka atau sudah ditutup. Gunakan /shift untuk mulai mencatat stok awal.');
  const openingStart=new Date(opening.payload.shiftStart);
  const prepared=await prepareInventoryReview(actor.linkedUserId,draft,new Date(),openingStart);
- if(JSON.stringify(prepared.draft)!==JSON.stringify(draft)){
-  const revision=await saveInventoryDraft(sessionId,draftId,session.revision,prepared.draft);
-  if(revision===null)return sendTelegramMessage(chatId,'Sesi berubah bersamaan. Jalankan /rekap untuk meninjau versi terbaru.');
-  session={...session,revision};draft=prepared.draft;
- }
+ draft=prepared.draft;
  const openingBalance=BigInt(opening.payload.openingBalance);
  const totals=recapTotals(draft);
  const hasEndBalance=draft.entries.some(entry=>entry.category==='total_balance')||(draft.entries.some(entry=>entry.category==='cash_balance')&&draft.entries.some(entry=>entry.category==='electronic_balance'));
+ const balanceCheck=hasEndBalance?await calculateBalanceCheck(prisma,openingStart,openingBalance,BigInt(totals.total_balance),new Date(),draft):undefined;
+ const nextDraft:RecapDraft={...draft,balanceCheck};
+ if(JSON.stringify(nextDraft)!==JSON.stringify(row.payload)){
+  const revision=await saveInventoryDraft(sessionId,draftId,session.revision,nextDraft);
+  if(revision===null)return sendTelegramMessage(chatId,'Sesi berubah bersamaan. Jalankan /rekap untuk meninjau versi terbaru.');
+  session={...session,revision};draft=nextDraft;
+ }
  const stockOpeningText='\n\nCEK STOK AWAL SHIFT\n'+shiftOpeningSummary(opening.payload)+(opening.payload.reviewStatus==='OWNER_REVIEW'?'\nSelisih tercatat untuk tinjauan Owner.':'');
- const balanceText='\n\nPENCOCOKAN SALDO\nSaldo awal shift (kas + elektronik): '+formatTelegramRupiah(openingBalance)+'\n'+(hasEndBalance?'Saldo akhir menurut rekap: '+formatTelegramRupiah(BigInt(totals.total_balance))+'\nPerubahan bersih: '+formatTelegramRupiah(BigInt(totals.total_balance)-openingBalance):'Saldo akhir belum dicatat di rekap.');
+ const balanceText='\n\nPENCOCOKAN SALDO\nSaldo awal shift (kas + elektronik): '+formatTelegramRupiah(openingBalance)+'\n'+(balanceCheck?formatBalanceCheck(balanceCheck):'Saldo akhir belum dicatat di rekap.');
  const issues=recapIssues(draft),stockRows:string[]=[];
  const productIds=[...new Set((draft.inventoryLines??[]).flatMap(line=>line.productId?[line.productId]:[]))];
  const products=await prisma.product.findMany({where:{id:{in:productIds}},select:{id:true,name:true,stock:true,location:true}});
@@ -406,7 +441,7 @@ async function handleCommand(m:TelegramMessage,actor:TelegramActor,command:strin
   if(session?.state==='OPENING'&&session.draftId){const openingDraft=await prisma.telegramDraft.findUnique({where:{id:session.draftId}});if(openingDraft?.kind==='SHIFT_OPENING'&&openingDraft.status==='PENDING')return sendShiftOpeningDraft(chatId,openingDraft);}
   const activeOpening=await activeShiftOpening(chatId,actor.identityId);
   let result=session?.draftId?await prisma.telegramDraft.findUnique({where:{id:session.draftId}}):null;
-  let message=result&&result.status==='PENDING'?formatDraft(result.payload as unknown as RecapDraft)+'\n\n'+(recapIssues(result.payload as unknown as RecapDraft).join('\n')||'Siap konfirmasi dengan tombol di pesan rekap.'):session?'Sesi rekap ada, tetapi drafnya tidak aktif. Gunakan /rekap.':'Tidak ada draf rekap aktif.';
+  let message=result&&result.status==='PENDING'?formatDraft(result.payload as unknown as RecapDraft)+'\n\n'+((result.payload as unknown as RecapDraft).balanceCheck?formatBalanceCheck((result.payload as unknown as RecapDraft).balanceCheck!)+'\n\n':'')+(recapIssues(result.payload as unknown as RecapDraft).join('\n')||'Siap konfirmasi dengan tombol di pesan rekap.'):session?'Sesi rekap ada, tetapi drafnya tidak aktif. Gunakan /rekap.':'Tidak ada draf rekap aktif.';
   if(activeOpening){message='Shift sedang berjalan sejak '+new Date(activeOpening.payload.shiftStart).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})+'.\nSaldo awal (kas + elektronik): '+formatTelegramRupiah(BigInt(activeOpening.payload.openingBalance))+'\n\n'+shiftOpeningSummary(activeOpening.payload);if(session?.state==='REPORTING'&&result?.kind==='SHIFT_RECAP'&&result.status==='PENDING')message+='\n\n'+formatDraft(result.payload as unknown as RecapDraft)+'\n'+(recapIssues(result.payload as unknown as RecapDraft).join('\n')||'Rekap menunggu konfirmasi.');else message+='\n\nGunakan /rekap saat shift selesai.';}
   if(latest)message+='\n\nRekap terakhir dikonfirmasi: '+latest.confirmedAt.toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})+'.';
   return sendLongTelegramMessage(chatId,message);
@@ -458,34 +493,46 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
  if(!shiftOpening){await answerTelegramCallback(c.id,'Shift sudah ditutup atau perlu dibuka ulang.');return;}
  const shiftStart=new Date(shiftOpening.payload.shiftStart),openingBalance=BigInt(shiftOpening.payload.openingBalance),endingBalance=BigInt(recapTotals(data).total_balance);
  const openingStockSnapshot={draftId:shiftOpening.row.id,startedAt:shiftOpening.payload.startedAt??shiftOpening.payload.shiftStart,reviewStatus:shiftOpening.payload.reviewStatus??'CLEAR',lines:shiftOpening.payload.lines};
- const payload={...buildAggregateReport(data),openingStockSnapshot,balanceReconciliation:{openingBalance:openingBalance.toString(),endingBalance:endingBalance.toString(),netChange:(endingBalance-openingBalance).toString()}};
- let postings:{productId:number;appliedQty:number;lineId:string}[]=[],reportIdResult='';
+ let postings:{productId:number;appliedQty:number;lineId:string}[]=[],reportIdResult='',finalBalanceCheck=data.balanceCheck;
  try{
   await prisma.$transaction(async tx=>{
    const sessionClaim=await tx.telegramSession.updateMany({where:{id:active!.id,draftId:draft.id,state:'REPORTING',revision:parsed.revision},data:{revision:{increment:1}}});
    if(sessionClaim.count!==1)throw new Error('STALE_REPORT_REVISION');
    const claimed=await tx.telegramDraft.updateMany({where:{id:draft.id,status:'PENDING'},data:{status:'PROCESSING'}});
    if(claimed.count!==1)throw new Error('DRAFT_ALREADY_PROCESSED');
+   const checkedAt=new Date(),freshBalanceCheck=await calculateBalanceCheck(tx,shiftStart,openingBalance,endingBalance,checkedAt,data);
+   if(!data.balanceCheck||freshBalanceCheck.expectedBalance!==data.balanceCheck.expectedBalance||freshBalanceCheck.difference!==data.balanceCheck.difference||freshBalanceCheck.status!==data.balanceCheck.status||JSON.stringify(freshBalanceCheck.sourceConflicts)!==JSON.stringify(data.balanceCheck.sourceConflicts))throw new Error('BALANCE_CHECK_STALE');
+   finalBalanceCheck=freshBalanceCheck;
+   const payload={...buildAggregateReport(data),openingStockSnapshot,balanceReconciliation:{...freshBalanceCheck,reviewStatus:freshBalanceCheck.status==='MATCH'?'CLEAR':'OWNER_REVIEW',checkedAt:checkedAt.toISOString()}};
    const report=await tx.telegramShiftReport.create({data:{draftId:draft.id,userId:actor.linkedUserId,telegramIdentityId:actor.identityId,chatId,shiftLabel:data.shiftLabel,payload},select:{id:true}});reportIdResult=report.id;
-   postings=await postTelegramInventory(tx,report.id,actor.linkedUserId,actor.identityId,data,shiftStart,new Date());
-   const openingClosed=await tx.telegramDraft.updateMany({where:{id:shiftOpening.row.id,status:'CONFIRMED'},data:{payload:{...shiftOpening.payload,closedAt:new Date().toISOString(),closingReportId:report.id} as object}});
+   postings=await postTelegramInventory(tx,report.id,actor.linkedUserId,actor.identityId,data,shiftStart,checkedAt);
+   const openingClosed=await tx.telegramDraft.updateMany({where:{id:shiftOpening.row.id,status:'CONFIRMED'},data:{payload:{...shiftOpening.payload,closedAt:checkedAt.toISOString(),closingReportId:report.id} as object}});
    if(openingClosed.count!==1)throw new Error('SHIFT_OPENING_ALREADY_CLOSED');
    await tx.telegramShiftReport.update({where:{id:report.id},data:{payload:{...payload,inventoryPostings:postings} as object}});
-   await setCombinedBalance(tx,{targetBalance:BigInt(recapTotals(data).total_balance),createdById:actor.linkedUserId,sourceDraftId:draft.id,note:'Saldo total diperbarui dari rekap shift yang dikonfirmasi.'});
-   await tx.telegramDraft.update({where:{id:draft.id},data:{status:'CONFIRMED',confirmedAt:new Date()}});
+   if(freshBalanceCheck.status==='MATCH')await setCombinedBalance(tx,{targetBalance:endingBalance,createdById:actor.linkedUserId,sourceDraftId:draft.id,note:'Saldo total shift cocok dengan catatan RMCS.'});
+   await tx.telegramDraft.update({where:{id:draft.id},data:{status:'CONFIRMED',confirmedAt:checkedAt}});
    await tx.telegramSession.deleteMany({where:{telegramIdentityId:actor.identityId,chatId,draftId:draft.id}});
   },{isolationLevel:'Serializable',timeout:20000});
  }catch(e){
   if((e as Error).message==='DRAFT_ALREADY_PROCESSED'||(e as {code?:string}).code==='P2002'){await answerTelegramCallback(c.id,'Rekap sudah diproses sebelumnya.');return;}
   if((e as Error).message==='STALE_REPORT_REVISION'){await answerTelegramCallback(c.id,'Rekap berubah. Buka /rekap untuk meninjau versi terbaru.');return;}
   if((e as Error).message==='SHIFT_OPENING_ALREADY_CLOSED'){await answerTelegramCallback(c.id,'Shift ini sudah ditutup.');return;}
+  if((e as Error).message==='BALANCE_CHECK_STALE'){
+   const refreshed={...data,balanceCheck:await calculateBalanceCheck(prisma,shiftStart,openingBalance,endingBalance,new Date(),data)};
+   const newRevision=await saveInventoryDraft(active.id,draft.id,active.revision,refreshed);
+   await answerTelegramCallback(c.id,'Catatan saldo berubah. Pratinjau diperbarui; periksa lagi.');
+   if(newRevision!==null)await sendReportDraft(chatId,actor,active.id,draft.id);
+   return;
+  }
   if(e instanceof TelegramInventoryError){await answerTelegramCallback(c.id,e.message);await sendTelegramMessage(chatId,e.message+' Tidak ada stok yang diubah. Periksa /rekap atau minta tinjauan owner.');return;}
   throw e;
  }
- await answerTelegramCallback(c.id,'Rekap dikonfirmasi dan stok diperbarui.');
+ await answerTelegramCallback(c.id,finalBalanceCheck?.status==='MATCH'?'Rekap disimpan. Saldo cocok.':'Rekap tersimpan; selisih saldo dikirim ke Owner.');
  const summary=postings.map(posting=>{const ids=posting.lineId.split(',');const label=ids.map(id=>(data.inventoryLines??[]).find(line=>line.id===id)?.label).filter(Boolean).join(' / ');return '• '+label+': '+posting.appliedQty+' unit dikurangi';}).join('\n');
  const correctionHelp=postings.map(posting=>' /koreksi '+reportIdResult+' '+posting.lineId+' <jumlah-baru> <alasan>').join('\n');
- await sendTelegramMessage(chatId,'✅ REKAP BERHASIL DISIMPAN'+(data.shiftLabel?'\nShift '+data.shiftLabel:'')+(summary?'\n\n'+summary:'\n\nTidak ada perubahan stok.')+'\n\nAdmin TF + TD: '+formatTelegramRupiah(BigInt(recapTotals(data).service_fee))+'\nPengeluaran: '+formatTelegramRupiah(BigInt(recapTotals(data).expense))+'\nSaldo awal (kas + elektronik): '+formatTelegramRupiah(openingBalance)+'\nSaldo akhir (kas + elektronik): '+formatTelegramRupiah(endingBalance)+'\nPerubahan bersih saldo: '+formatTelegramRupiah(endingBalance-openingBalance)+(postings.length?'\n\nID laporan: '+reportIdResult+'\nKoreksi stok setelah disimpan:'+correctionHelp:''));
+ const reconciliationText=finalBalanceCheck?formatBalanceCheck(finalBalanceCheck):'Saldo belum berhasil direkonsiliasi.';
+ await sendLongTelegramMessage(chatId,'✅ REKAP BERHASIL DISIMPAN'+(data.shiftLabel?'\nShift '+data.shiftLabel:'')+(summary?'\n\n'+summary:'\n\nTidak ada perubahan stok.')+'\n\nAdmin TF + TD: '+formatTelegramRupiah(BigInt(recapTotals(data).service_fee))+'\nPengeluaran: '+formatTelegramRupiah(BigInt(recapTotals(data).expense))+'\n'+reconciliationText+(finalBalanceCheck?.status==='MATCH'?'\nSaldo RMCS diperbarui ke nilai yang cocok.':'\nSaldo RMCS tidak diubah otomatis; Owner diminta meninjau.')+(postings.length?'\n\nID laporan: '+reportIdResult+'\nKoreksi stok setelah disimpan:'+correctionHelp:''));
+ if(finalBalanceCheck&&finalBalanceCheck.status!=='MATCH')await notifyBalanceOwner(chatId,actor.identityId,finalBalanceCheck);
 }
 async function processUpdate(u:TelegramUpdate){
  const id=telegramId(u.update_id);if(id===null)throw new Error('Invalid Telegram update_id');
