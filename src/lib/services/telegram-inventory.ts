@@ -41,8 +41,8 @@ export async function resolveInventoryMappings(draft: RecapDraft): Promise<Recap
   return { ...draft, inventoryLines: resolved };
 }
 
-export async function inventoryPreview(userId: number | null, draft: RecapDraft, now = new Date()) {
-  const { start } = await shiftOpening(now);
+export async function inventoryPreview(userId: number | null, draft: RecapDraft, now = new Date(), shiftStartOverride?: Date) {
+  const { start } = shiftStartOverride ? { start: shiftStartOverride } : await shiftOpening(now);
   const productIds = [...new Set((draft.inventoryLines ?? []).flatMap(line => line.productId ? [line.productId] : []))];
   const rows = await prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true, stock: true, locationId: true } });
   const items = await Promise.all(rows.map(async product => {
@@ -96,9 +96,9 @@ export async function postTelegramInventory(tx: Prisma.TransactionClient, report
   return postings;
 }
 
-export async function prepareInventoryReview(userId: number | null, draft: RecapDraft, now = new Date()) {
+export async function prepareInventoryReview(userId: number | null, draft: RecapDraft, now = new Date(), shiftStartOverride?: Date) {
   const mapped = await resolveInventoryMappings(draft);
-  const preview = await inventoryPreview(userId, mapped, now);
+  const preview = await inventoryPreview(userId, mapped, now, shiftStartOverride);
   const byId = new Map(preview.items.map(item => [item.id, item]));
   let lines = (mapped.inventoryLines ?? []).map(line => {
     const item = line.productId ? byId.get(line.productId) : null;
@@ -120,3 +120,4 @@ export async function prepareInventoryReview(userId: number | null, draft: Recap
   }
   return { draft: { ...mapped, inventoryLines: lines }, preview };
 }
+
