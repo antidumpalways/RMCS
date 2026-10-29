@@ -2,7 +2,8 @@ export type RecapCategory = 'service_volume' | 'service_fee' | 'sale' | 'expense
 export type RecapEntry = { category: RecapCategory; label: string; amount: string; operation: 'add' | 'correct' | 'set' };
 export type RecapInventoryLine = { id:string; sourceText:string; label:string; quantity:number; unit:string; productId:number|null; candidateProductIds:number[]; mappingStatus:'UNMATCHED'|'MATCHED'|'AMBIGUOUS'|'OWNER_REVIEW'; coverage:'UNDECIDED'|'INCLUDES_APP_SALES'|'UNRECORDED_ONLY'|'OWNER_REVIEW'; recordedWebQty?:number; appliedQty?:number };
 export type RecapInventoryExtraction = { sourceText:string; label:string; quantity:number|string|null; unit:string|null; operation:'add'|'correct'|'set'|null; ambiguity?:string|null };
-export type RecapDraft = { shiftLabel: string | null; entries: RecapEntry[]; inventoryLines?:RecapInventoryLine[]; unresolved: string[]; messages: string[]; processedUpdateIds?: string[]; photoReviews?:RecapPhotoReview[]; correctionPhotoId?:string|null };
+export type RecapBalanceCheck={openingBalance:string;expectedBalance:string;actualBalance:string;movementDelta:string;difference:string;status:'MATCH'|'SHORT'|'EXCESS';sourceConflicts:string[]};
+export type RecapDraft = { shiftLabel: string | null; entries: RecapEntry[]; inventoryLines?:RecapInventoryLine[]; unresolved: string[]; messages: string[]; processedUpdateIds?: string[]; photoReviews?:RecapPhotoReview[]; correctionPhotoId?:string|null; balanceCheck?:RecapBalanceCheck };
 export type RecapExtraction = { shiftLabel?: string | null; entries: RecapEntry[]; inventoryLines?:RecapInventoryExtraction[]; unresolved: string[]; resolved?: string[] };
 export type RecapVisionLine={lineNumber:number;sourceText:string;lineType:'entry'|'subtotal'|'note'|'unreadable';category:RecapCategory|null;label:string|null;amount:string|null;quantity:string|null;unit:string|null;accountName:string|null;note:string|null;correctionTarget:string|null;operation:'add'|'correct'|'set'|null;ambiguity:string|null};
 export type RecapPhotoReview={id:string;fileId:string;fileUniqueId:string;sha256:string;mimeType:string;caption:string|null;quality?:'clear'|'mixed'|'unreadable';sourceLines:RecapVisionLine[];entries:RecapEntry[];inventoryLines?:RecapInventoryExtraction[];unresolved:string[];status:'PROCESSING'|'PENDING_REVIEW'|'CORRECTING'|'MERGED'|'IGNORED'|'FAILED';metrics?:{latencyMs:number;promptTokens:number;completionTokens:number;approximateInputTokens:number;failureCode?:string};createdAt:string;correctionMessages?:string[]};
@@ -113,3 +114,4 @@ export function deterministicExtraction(text:string):RecapExtraction{
  } if(!entries.length&&!inventoryLines.length&&!unresolved.length)unresolved.push('Belum ada nominal rekap yang terbaca.');
  return {shiftLabel:/\b(pagi|siang|malam)\b/i.exec(text)?.[1]?.toLowerCase()??null,entries,inventoryLines,unresolved};
 }
+
