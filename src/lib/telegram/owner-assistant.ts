@@ -496,6 +496,14 @@ function uniqueMessages(parts: Array<string | null | undefined>) {
     return true;
   }).join('\n\n');
 }
+function clarificationReply(content: string, clarification: string) {
+  const details = uniqueMessages([content, clarification])
+    .replace(/\bBelum ada perubahan\b[.!?]*/gi, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return [details, 'Belum ada perubahan.'].filter(Boolean).join('\n\n');
+}
 function rememberOwnerReply(state: OwnerChatState, reply: string) {
   const assistantTurn = [...state.history].reverse().find(message => message.role === 'assistant');
   if (assistantTurn) assistantTurn.content = reply.slice(0, 1200);
@@ -965,10 +973,11 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     return;
   }
   if (clarification) {
-    rememberOwnerReply(state, [content, clarification, 'Belum ada perubahan.'].filter(Boolean).join('\n\n'));
+    const clarificationResponse = clarificationReply(content, clarification);
+    rememberOwnerReply(state, clarificationResponse);
     await saveOwnerChatState(rowId, chatId, state);
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
-    return sendTelegramMessage(chatId, [content, clarification, 'Belum ada perubahan.'].filter(Boolean).join('\n\n'));
+    return sendTelegramMessage(chatId, clarificationResponse);
   }
   if (businessDraft) {
     const saved = await createAssistantActionDraft(chatId, ownerId, businessDraft);
