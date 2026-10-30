@@ -510,6 +510,30 @@ model TelegramInventoryPosting {
 }
 
 // Corrections preserve the original recap and apply an idempotent compensating movement after owner approval.
+model TelegramOwnerReviewTask {
+  id                        String   @id @default(cuid())
+  operationKey              String   @unique
+  kind                      String   // BALANCE_DISCREPANCY | STOCK_OPENING_DISCREPANCY | STOCK_CLOSING_DISCREPANCY
+  status                    String   @default("PENDING") // PENDING | REVIEWED
+  chatId                    BigInt
+  telegramIdentityId        String?
+  reportId                  String?
+  payload                   Json
+  reviewedByTelegramUserId  BigInt?
+  reviewedAt                DateTime?
+  createdAt                 DateTime @default(now())
+
+  @@index([status, createdAt])
+  @@index([reportId, createdAt])
+  @@index([chatId, createdAt])
+}
+// Shared register for the single group-level cash/inventory shift.
+model TelegramShiftRegister {
+  chatId          BigInt   @id
+  activeShiftId   String?
+  recapIdentityId String?
+  updatedAt       DateTime @updatedAt
+}
 model TelegramReportCorrection {
   id             String   @id @default(cuid())
   operationKey   String   @unique

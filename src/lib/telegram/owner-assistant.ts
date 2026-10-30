@@ -1356,16 +1356,38 @@ function ownerDraftDescription(row: { kind: string; payload: unknown }): string 
   if (product) return `Draf barang baru — ${product.name}\nKategori: ${product.categoryName}${product.subcategoryName ? ' / ' + product.subcategoryName : ''}\nStok awal: ${product.stock}\nModal/unit: ${formatIdr(BigInt(product.costPrice))}\nHarga jual: ${formatIdr(BigInt(product.sellPrice))}`;
   return null;
 }
+async function reviewTaskDescription(task: { kind: string; payload: unknown }) {
+  const payload = task.payload && typeof task.payload === 'object' ? task.payload as Record<string, unknown> : {};
+  const titles: Record<string, string> = { BALANCE_DISCREPANCY: 'Selisih saldo shift', STOCK_OPENING_DISCREPANCY: 'Selisih stok awal shift', STOCK_CLOSING_DISCREPANCY: 'Selisih stok akhir shift' };
+  const details = typeof payload.summary === 'string' ? payload.summary : JSON.stringify(payload, null, 2);
+  return (titles[task.kind] ?? 'Tinjauan shift') + '\n\n' + details;
+}
+async function showReviewTask(callback: OwnerCallback, ownerId: number, taskId: string) {
+  const task = await prisma.telegramOwnerReviewTask.findUnique({ where: { id: taskId } });
+  if (!task || task.status !== 'PENDING') return answerTelegramCallback(callback.id, 'Tugas tinjauan sudah diproses atau tidak ditemukan.');
+  await answerTelegramCallback(callback.id, 'Tinjauan dibuka.');
+  return sendTelegramMessage(BigInt(ownerId), await reviewTaskDescription(task) + '\n\nTandai selesai hanya setelah diperiksa secara fisik.', keyboard([[{ text: '✅ Tandai sudah ditinjau', callback_data: 'rcms:owner:reviewtaskdone:' + task.id }], [{ text: '⬅️ Persetujuan', callback_data: 'rcms:owner:menu:approval' }]]));
+}
+async function completeReviewTask(callback: OwnerCallback, ownerId: number, taskId: string) {
+  const result = await prisma.telegramOwnerReviewTask.updateMany({ where: { id: taskId, status: 'PENDING' }, data: { status: 'REVIEWED', reviewedByTelegramUserId: BigInt(ownerId), reviewedAt: new Date() } });
+  await answerTelegramCallback(callback.id, result.count ? 'Ditandai sudah ditinjau.' : 'Tugas sudah diproses.');
+  return sendTelegramMessage(BigInt(ownerId), result.count ? 'Tinjauan dicatat. Nilai saldo/stok tidak diubah otomatis.' : 'Tugas ini sudah tidak menunggu tinjauan.', ownerMenuKeyboard('home'));
+}
 async function showPendingOwnerApprovals(chatId: bigint, ownerId: number) {
-  const rows = await prisma.telegramDraft.findMany({ where: { chatId, kind: { in: ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'] }, status: 'PENDING', expiresAt: { gt: new Date() } }, orderBy: { createdAt: 'desc' }, take: 50 });
+  const [rows, tasks] = await Promise.all([
+    prisma.telegramDraft.findMany({ where: { chatId, kind: { in: ['OWNER_OPERATION', 'OWNER_ASSISTANT_ACTION'] }, status: 'PENDING', expiresAt: { gt: new Date() } }, orderBy: { createdAt: 'desc' }, take: 50 }),
+    prisma.telegramOwnerReviewTask.findMany({ where: { status: 'PENDING' }, orderBy: { createdAt: 'desc' }, take: 50 }),
+  ]);
   const { state } = await getOwnerChatState(chatId, ownerId);
   const pending = rows.filter(row => ownerDraftOwnerId(row) === String(ownerId) && ownerDraftDescription(row) &&
     (!validateBatch(row.payload) || state.proposalDraftId === row.id));
-  if (!pending.length) return sendTelegramMessage(chatId, 'Tidak ada draf Owner yang menunggu persetujuan.', ownerMenuKeyboard('home'));
-  const visible = pending.slice(0, 20);
+  if (!pending.length && !tasks.length) return sendTelegramMessage(chatId, 'Tidak ada draf atau tinjauan shift yang menunggu.', ownerMenuKeyboard('home'));
+  const visible = pending.slice(0, 20), visibleTasks = tasks.slice(0, 20);
   const rowsKeyboard = visible.map(row => [{ text: `Tinjau draf ${row.id.slice(-6)}`, callback_data: 'rcms:owner:review:' + row.id }]);
+  for (const task of visibleTasks) rowsKeyboard.push([{ text: `Tinjau shift ${task.id.slice(-6)}`, callback_data: 'rcms:owner:reviewtask:' + task.id }]);
   rowsKeyboard.push([{ text: '⬅️ Menu Owner', callback_data: 'rcms:owner:menu:home' }]);
-  return sendTelegramMessage(chatId, `Draf menunggu persetujuan (${pending.length}):\n${visible.map(row => `• ${row.id.slice(-6)} · ${row.createdAt.toLocaleString('id-ID')}`).join('\n')}${pending.length > 20 ? '\nDaftar dibatasi ke 20 draf terbaru.' : ''}`, keyboard(rowsKeyboard));
+  const lines = [...visible.map(row => `• Draf ${row.id.slice(-6)} · ${row.createdAt.toLocaleString('id-ID')}`), ...visibleTasks.map(task => `• ${task.kind.toLocaleLowerCase('id-ID').replaceAll('_', ' ')} ${task.id.slice(-6)} · ${task.createdAt.toLocaleString('id-ID')}`)];
+  return sendTelegramMessage(chatId, `Menunggu persetujuan/tinjauan (${pending.length + tasks.length}):\n${lines.join('\n')}${pending.length > 20 || tasks.length > 20 ? '\nMasing-masing daftar dibatasi 20 item terbaru.' : ''}`, keyboard(rowsKeyboard));
 }
 async function reviewOwnerDraft(callback: OwnerCallback, ownerId: number, draftId: string) {
   const chatId = BigInt(ownerId);
@@ -1393,6 +1415,10 @@ export async function handleOwnerCallback(callback: OwnerCallback, ownerId: numb
     await answerTelegramCallback(callback.id, 'Alur dibatalkan.');
     return showOwnerMenu(BigInt(chat.id));
   }
+  const reviewTask = /^rcms:owner:reviewtask:([A-Za-z0-9_-]{10,40})$/.exec(data);
+  if (reviewTask) return showReviewTask(callback, ownerId, reviewTask[1]);
+  const completeTask = /^rcms:owner:reviewtaskdone:([A-Za-z0-9_-]{10,40})$/.exec(data);
+  if (completeTask) return completeReviewTask(callback, ownerId, completeTask[1]);
   const review = /^rcms:owner:review:([A-Za-z0-9_-]{10,40})$/.exec(data);
   if (review) return reviewOwnerDraft(callback, ownerId, review[1]);
   const menuAction = /^rcms:owner:menu:do:([a-z_]+)$/.exec(data);
