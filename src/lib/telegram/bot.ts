@@ -50,7 +50,7 @@ async function sendLongTelegramMessage(chatId:bigint|number,text:string,replyMar
 function groupMenuKeyboard(actor:TelegramActor):InlineKeyboard{
  const rows:Array<Array<{text:string;callback_data?:string;url?:string}>>=[
   [{text:'🕒 Mulai shift',callback_data:'rcms:group:menu:shift_open'}],
-  [{text:'🧾 Rekap shift',callback_data:'rcms:group:menu:rekap'}],
+  [{text:'🧾 Rekap / tutup shift',callback_data:'rcms:group:menu:rekap'}],
   [{text:'📄 Status rekap',callback_data:'rcms:group:menu:status'},{text:'🔎 Cek harga/stok',callback_data:'rcms:group:menu:check'}],
   [{text:'❌ Batal rekap',callback_data:'rcms:group:menu:cancel'}],
  ];
@@ -66,12 +66,9 @@ function addressedToGroupAssistant(m:TelegramMessage){const username=configuredB
 function naturalRecapStart(text:string){return splitRecapStart(text);}
 function formatDraft(d:RecapDraft):string{
  const totals=recapTotals(d);
- const labels:{[K in keyof typeof totals]:string}={service_volume:'Volume jasa',service_fee:'Biaya jasa',sale:'Penjualan barang',expense:'Pengeluaran',cash_balance:'Saldo kas akhir',electronic_balance:'Saldo elektronik akhir',total_balance:'Saldo total (kas + elektronik)'};
- const keys=(Object.keys(labels) as (keyof typeof totals)[]).filter(k=>k!=='cash_balance'&&k!=='electronic_balance');
- const rows=keys.filter(k=>BigInt(totals[k])!==0n).map(k=>labels[k]+': '+formatTelegramRupiah(BigInt(totals[k])));
- const detail=d.entries.map(e=>'• '+e.label+': '+formatTelegramRupiah(parseIndonesianRupiah(e.amount) ?? 0n)+(e.category==='service_volume'?' (volume)':e.category==='service_fee'?' (biaya jasa)':e.category==='sale'?' (penjualan)':e.category==='expense'?' (pengeluaran)':e.category==='cash_balance'?' (legacy kas akhir)':e.category==='electronic_balance'?' (legacy saldo elektronik)':e.category==='total_balance'?' (saldo total)':''));
- const summary=rows.length?rows.join('\n'):'Belum ada angka yang tercatat.';
- return '🧾 DRAF REKAP'+(d.shiftLabel?' — '+d.shiftLabel.toLocaleUpperCase('id-ID'):'')+'\n'+summary+(detail.length?'\n\nRincian yang Anda kirim:\n'+detail.join('\n'):'')+'\n\nIni masih draf. Belum ada transaksi atau stok RMCS yang diubah.';
+ const labels:Array<[keyof typeof totals,string]>=[['service_fee','Admin jasa'],['sale','Penjualan (rupiah)'],['service_volume','Volume jasa'],['expense','Pengeluaran']];
+ const rows=labels.filter(([key])=>BigInt(totals[key])!==0n).map(([key,label])=>label+': '+formatTelegramRupiah(BigInt(totals[key])));
+ return '🧾 REKAP SHIFT'+(d.shiftLabel?' '+d.shiftLabel.toLocaleUpperCase('id-ID'):'')+' (belum disimpan)'+(rows.length?'\n'+rows.join('\n'):'');
 }
 type ShiftOpeningLine={productId:number;name:string;provider?:string|null;sku:string|null;expectedQty:number;actualQty:number|null};
 type ShiftOpeningPayload={version:1;shiftId?:string;stage:'CHECK'|'COUNT'|'REVIEW';shiftStart:string;shiftLabel:string|null;openingBalance:string;openedByIdentityId:string;lines:ShiftOpeningLine[];reviewStatus?:'CLEAR'|'OWNER_REVIEW';startedAt?:string;closedAt?:string;closingReportId?:string;closedByIdentityId?:string};
@@ -220,7 +217,7 @@ async function handleShiftOpeningCallback(c:TelegramCallback,actor:TelegramActor
  await answerTelegramCallback(c.id,differences.length?'Shift dibuka; selisih dicatat.':'Shift dibuka.');
  if(openingReviewTaskId)await notifyOwnerReviewTask(openingReviewTaskId,'Selisih stok awal shift. Buka antrean untuk rincian.');
  const pendingBalanceReviews=await prisma.telegramOwnerReviewTask.count({where:{kind:'BALANCE_DISCREPANCY',status:'PENDING'}});
- return sendTelegramMessage(chatId,'✅ SHIFT DIMULAI\nID shift: '+(next.shiftId??row.id)+'\nStok awal dicatat untuk '+next.lines.length+' barang.'+(differences.length?'\n⚠️ Selisih stok dicatat untuk tinjauan Owner.':'\nJumlah stok awal cocok.')+(pendingBalanceReviews?'\n⚠️ Ada selisih saldo shift sebelumnya yang belum diputuskan Owner. Saldo awal shift ini masih memakai angka lama, jadi selisih bisa muncul lagi di rekap.':'')+'\n\nSaat selesai, kirim /rekap.');
+ return sendTelegramMessage(chatId,'✅ Shift dimulai. Stok awal sudah dicatat.'+(differences.length?'\n⚠️ Selisih stok awal sudah dicatat untuk owner.':'')+(pendingBalanceReviews?'\n⚠️ Ada selisih saldo shift sebelumnya yang belum diputuskan owner, jadi selisih bisa muncul lagi di rekap.':'')+'\n\nSaat shift selesai, tekan tombol Rekap di bawah lalu tulis jualan dan saldo akhir.',{inline_keyboard:[[{text:'🧾 Rekap shift (saat selesai)',callback_data:'rcms:group:menu:rekap'}]]});
 }
 async function captureShiftOpeningBalance(){
  const now=new Date(),cashOpening=await shiftOpening(now),ledgerCash=await cashOnHandAt(cashOpening.start),total=await combinedBalanceAt(now);
@@ -321,22 +318,22 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
   session={...session,revision};draft=nextDraft;
  }
  const stockOpeningText=opening.payload.reviewStatus==='OWNER_REVIEW'?'\n\nSTOK AWAL: ada selisih untuk tinjauan Owner.':'';
- const balanceText='\n\nPENCOCOKAN SALDO\nSaldo awal shift (kas + elektronik): '+formatTelegramRupiah(openingBalance)+'\n'+(balanceCheck?formatBalanceCheck(balanceCheck):'Saldo akhir belum dicatat di rekap.');
+ const balanceText=balanceCheck?'\n\n💰 SALDO AKHIR: '+formatTelegramRupiah(BigInt(balanceCheck.actualBalance))+(balanceCheck.status==='MATCH'?' ✅ cocok':' ⚠️ '+(balanceCheck.status==='SHORT'?'kurang ':'lebih ')+formatTelegramRupiah(BigInt(balanceCheck.difference)<0n?-BigInt(balanceCheck.difference):BigInt(balanceCheck.difference))+' (owner akan mengecek)'):'';
  const issues=recapIssues(draft),stockRows:string[]=[];
  const productIds=[...new Set([...(draft.inventoryLines??[]).flatMap(line=>line.productId?[line.productId]:[]),...opening.payload.lines.map(line=>line.productId)])];
  const products=await prisma.product.findMany({where:{id:{in:productIds}},select:{id:true,name:true,stock:true,location:true}});
  const byId=new Map(products.map(product=>[product.id,product]));
  const unresolvedLines=(draft.inventoryLines??[]).filter(line=>!line.productId||line.mappingStatus!=='MATCHED');
- for(const line of unresolvedLines)stockRows.push('• '+line.label+': '+line.quantity+' '+line.unit+' — '+(line.mappingStatus==='AMBIGUOUS'?'pilih varian katalog':line.mappingStatus==='UNMATCHED'?'tidak ditemukan; perlu owner':'menunggu owner'));
+ for(const line of unresolvedLines)stockRows.push('• '+line.label+' — '+line.quantity+' '+line.unit+(line.mappingStatus==='AMBIGUOUS'?' (pilih barangnya)':line.mappingStatus==='UNMATCHED'?' (tidak ditemukan)':' (menunggu owner)'));
  const grouped=new Map<number,typeof draft.inventoryLines>();for(const line of draft.inventoryLines??[])if(line.productId)grouped.set(line.productId,[...(grouped.get(line.productId)??[]),line]);
  let stockInsufficient=false;
- for(const [productId,lines] of grouped){const product=byId.get(productId);if(!product||!lines)continue;const quantity=lines.reduce((sum,line)=>sum+line.quantity,0),recorded=Math.max(...lines.map(line=>line.recordedWebQty??0)),coverage=lines[0].coverage;const applied=calculateUnrecordedQuantity(quantity,recorded,coverage==='INCLUDES_APP_SALES'?'INCLUDES_APP_SALES':'UNRECORDED_ONLY')??quantity;stockRows.push('• '+lines.map(line=>line.label).join(' / ')+': terjual '+quantity+' pcs; stok saat ini '+product.stock+(product.location?.name?' ('+product.location.name+')':'')+'; dikurangi '+applied+'; sisa '+(product.stock-applied));if(applied>product.stock)stockInsufficient=true;}
- const stockText=(stockRows.length?'\n\nBARANG TERJUAL / PERUBAHAN STOK:\n'+stockRows.join('\n')+'\n\nPengurangan hanya mengikuti jumlah unit yang Anda tulis'+'.':'\n\nBARANG TERJUAL: belum ada jumlah unit yang tercatat; stok belum diajukan untuk berubah.');
+ for(const [productId,lines] of grouped){const product=byId.get(productId);if(!product||!lines)continue;const quantity=lines.reduce((sum,line)=>sum+line.quantity,0);stockRows.push('• '+lines.map(line=>line.label).join(' / ')+' — '+quantity+' pcs (stok jadi '+(product.stock-quantity)+')');if(quantity>product.stock)stockInsufficient=true;}
+ const stockText=stockRows.length?'\n\n📦 BARANG TERJUAL:\n'+stockRows.join('\n'):'';
  const countByProduct=new Map((draft.closingStockCounts??[]).map(item=>[item.productId,item.actualQty]));
  const stockCountComplete=opening.payload.lines.every(line=>countByProduct.has(line.productId));
  const counted=countByProduct.size;
- const closeCountText='\n\nSTOK AKHIR: '+(stockCountComplete?'sudah dicatat.':'tekan “Stok akhir sesuai” jika semua barang cocok, atau “Ada selisih” bila ada yang berbeda.');
- const allIssues=[...issues,...(stockInsufficient?['Stok saat ini tidak cukup untuk seluruh jumlah yang diajukan. Minta owner meninjau; laporan tidak akan diposting sebagian.']:[])]; const inputGuide=draft.entries.length===0&&(draft.inventoryLines??[]).length===0?'\n\nTulis saja, boleh bertahap. Contoh:\n• Admin 45rb\n• Rokok 3 bungkus\n• Axis 13GB 7 hari 2 pcs\n• Saldo total akhir 25.168.000':''; await deliverDraftMessage(chatId,draftId,draft.draftMessageId,formatDraft(draft)+inputGuide+balanceText+stockOpeningText+stockText+closeCountText+(allIssues.length?'\n\nPerlu dilengkapi:\n• '+allIssues.join('\n• '):stockCountComplete?'\n\nPeriksa rekap di atas, lalu tekan Selesai.':''),keyboard(draftId,session.revision,stockCountComplete,allIssues.length===0));
+ const closeCountText='\n\n📋 STOK AKHIR: '+(stockCountComplete?'sudah dicek ✅':'belum dicek');
+ const allIssues=[...issues,...(stockInsufficient?['Ada barang yang jumlahnya lebih banyak dari stok di sistem. Cek lagi jumlahnya, atau minta owner.']:[])]; const inputGuide=draft.entries.length===0&&(draft.inventoryLines??[]).length===0?'\n\nTulis saja, boleh bertahap. Contoh:\n• Admin 45rb\n• Rokok 3 bungkus\n• Axis 13GB 7 hari 2 pcs\n• Saldo total akhir 25.168.000':''; const todo=allIssues.length?'\n\nTinggal:\n'+allIssues.map((item,index)=>(index+1)+'. '+item).join('\n')+(stockCountComplete?'':'\n'+(allIssues.length+1)+'. Cek stok akhir (tombol di bawah).'):stockCountComplete?'\n\nSudah lengkap. Tekan Selesai untuk menyimpan.':'\n\nTinggal cek stok akhir (tombol di bawah).'; await deliverDraftMessage(chatId,draftId,draft.draftMessageId,formatDraft(draft)+balanceText+stockOpeningText+stockText+closeCountText+todo,keyboard(draftId,session.revision,stockCountComplete,allIssues.length===0));
  for(const line of draft.inventoryLines??[]){
   if(line.mappingStatus==='AMBIGUOUS'){
    const candidates=await prisma.product.findMany({where:{id:{in:line.candidateProductIds}},orderBy:{name:'asc'},select:{id:true,name:true,stock:true}});

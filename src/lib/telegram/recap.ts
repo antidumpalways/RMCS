@@ -73,8 +73,8 @@ export function recapIssues(d:RecapDraft):string[] {
  const hasTotal=d.entries.some(e=>e.category==='total_balance');
  const hasLegacyCash=d.entries.some(e=>e.category==='cash_balance');
  const hasLegacyElectronic=d.entries.some(e=>e.category==='electronic_balance');
- if(!hasTotal&&!(hasLegacyCash&&hasLegacyElectronic))a.push('Saldo total kas + elektronik belum disebutkan.');
- if(!d.entries.length&&!(d.inventoryLines?.length))a.push('Belum ada angka rekap yang terbaca.');for(const line of d.inventoryLines??[]){if(line.mappingStatus!=='MATCHED')a.push('Produk '+line.label+' belum dipastikan di katalog.');if(line.coverage==='OWNER_REVIEW'||line.mappingStatus==='OWNER_REVIEW')a.push('Produk '+line.label+' menunggu tinjauan owner.');}return [...new Set(a)];
+ if(!hasTotal&&!(hasLegacyCash&&hasLegacyElectronic))a.push('Tulis saldo akhir (kas + saldo elektronik digabung). Contoh: saldo akhir 25.000.000');
+ if(!d.entries.length&&!(d.inventoryLines?.length))a.push('Tulis jualan atau angka shift. Contoh: Admin 45rb, Axis 13GB 2 pcs');for(const line of d.inventoryLines??[]){if(line.mappingStatus!=='MATCHED')a.push('Pilih barang “'+line.label+'” dengan tombol di bawah.');if(line.coverage==='OWNER_REVIEW'||line.mappingStatus==='OWNER_REVIEW')a.push('Barang “'+line.label+'” menunggu pengecekan owner.');}return [...new Set(a)];
 }
 export async function extractRecapMessage(text:string,d:RecapDraft):Promise<RecapExtraction>{
  const key=process.env.DEEPSEEK_API_KEY;if(!key)return deterministicExtraction(text);
