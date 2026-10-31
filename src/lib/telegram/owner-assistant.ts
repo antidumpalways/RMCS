@@ -1619,11 +1619,11 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
       apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL });
     let reply = '';
     if (turn.actions.some(action => !isGroupReadAction(action))) {
-      reply = 'Di grup saya hanya bisa membantu cek informasi barang. Untuk menambah atau mengubah katalog, harga, dan stok, minta owner melakukannya lewat chat pribadi.';
+      reply = 'Di grup saya hanya bisa membantu cek informasi barang. Untuk menambah atau mengubah katalog, harga, dan stok, minta owner melakukannya lewat chat pribadi. Untuk mencatat penjualan atau rekap shift, kirim /rekap lalu tulis barangnya.';
     } else if (turn.clarification) {
       reply = turn.clarification;
     } else if (!turn.actions.length) {
-      reply = 'Saya bisa bantu cek harga dan stok barang di grup. Untuk menambah atau mengubah produk, stok, harga, atau lokasi, minta owner lewat chat pribadi.';
+      reply = 'Saya bisa bantu cek harga dan stok barang di grup. Untuk menambah atau mengubah produk, stok, harga, atau lokasi, minta owner lewat chat pribadi. Untuk mencatat penjualan atau rekap shift, kirim /rekap lalu tulis barangnya.';
     } else {
       const catalog = await getCatalog();
       const evidence: string[] = [];

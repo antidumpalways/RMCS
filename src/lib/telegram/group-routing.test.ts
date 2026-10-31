@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { looksLikeCatalogQuestion, splitRecapStart, stripRecapHeader } from './group-routing';
+import { deterministicExtraction } from './recap';
+
+test('catatan penjualan bukan pertanyaan katalog, pertanyaan harga/stok tetap ke asisten', () => {
+  assert.equal(looksLikeCatalogQuestion('Axis 13 gb 7 hari: 2 pcs\nTelkomsel 7gb 5 hari : 2 pcs'), false);
+  assert.equal(looksLikeCatalogQuestion('Barang terjual\nAxis 13 gb 7 hari: 2 pcs'), false);
+  assert.equal(looksLikeCatalogQuestion('Rokok 3 bungkus'), false);
+  assert.equal(looksLikeCatalogQuestion('harga axis 13gb berapa?'), true);
+  assert.equal(looksLikeCatalogQuestion('cek stok charger type c'), true);
+  assert.equal(looksLikeCatalogQuestion('ada kabel data?'), true);
+});
+
+test('judul "Rekap" atau "Barang terjual" dibuang bila ada isi di bawahnya', () => {
+  assert.equal(stripRecapHeader('Rekap\nAxis 13 gb 7 hari: 2 pcs'), 'Axis 13 gb 7 hari: 2 pcs');
+  assert.equal(stripRecapHeader('Barang terjual\nAxis 13 gb 7 hari: 2 pcs\nTelkomsel 7gb 5 hari : 2 pcs'), 'Axis 13 gb 7 hari: 2 pcs\nTelkomsel 7gb 5 hari : 2 pcs');
+  assert.equal(stripRecapHeader('Rekap'), 'Rekap');
+  assert.equal(stripRecapHeader('Admin 45rb'), 'Admin 45rb');
+});
+
+test('pesan "rekap" dengan isi di baris berikutnya membuka rekap sekaligus mencatat isinya', () => {
+  assert.deepEqual(splitRecapStart('Rekap\nAxis 13 gb 7 hari: 2 pcs'), { shiftLabel: null, rest: 'Axis 13 gb 7 hari: 2 pcs' });
+  assert.deepEqual(splitRecapStart('mau rekap shift malam'), { shiftLabel: 'malam', rest: '' });
+  assert.equal(splitRecapStart('Axis 13 gb: 2 pcs'), null);
+});
+
+test('baris barang bernama panjang terbaca tanpa AI', () => {
+  const x = deterministicExtraction('Axis 13 gb 7 hari: 2 pcs\nTelkomsel 7gb 5 hari : 2 pcs');
+  assert.deepEqual(x.inventoryLines?.map(line => [line.label, line.quantity, line.unit]), [['Axis 13 gb 7 hari', '2', 'pcs'], ['Telkomsel 7gb 5 hari', '2', 'pcs']]);
+  assert.equal(x.entries.length, 0);
+});

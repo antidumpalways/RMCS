@@ -4,7 +4,7 @@ import { shiftOpening } from '@/lib/automation';
 import { catalogQueryKey } from '@/lib/catalog-search';
 import { semanticCatalogSearch } from '@/lib/semantic-catalog';
 import type { RecapDraft, RecapInventoryLine } from '@/lib/telegram/recap';
-import { calculateUnrecordedQuantity, evaluateInventoryDeduction, normalizeStockUnit, resolveInventoryProduct, telegramWebAppSaleScope, type InventoryCatalogProduct } from '@/lib/telegram/inventory';
+import { evaluateInventoryDeduction, normalizeStockUnit, resolveInventoryProduct, type InventoryCatalogProduct } from '@/lib/telegram/inventory';
 
 export class TelegramInventoryError extends Error {
   constructor(readonly code: 'INVENTORY_UNMAPPED' | 'INVENTORY_COVERAGE' | 'INVENTORY_STALE' | 'INVENTORY_INSUFFICIENT' | 'INVENTORY_UNIT', message: string) { super(message); }
@@ -45,10 +45,8 @@ export async function inventoryPreview(userId: number | null, draft: RecapDraft,
   const { start } = shiftStartOverride ? { start: shiftStartOverride } : await shiftOpening(now);
   const productIds = [...new Set((draft.inventoryLines ?? []).flatMap(line => line.productId ? [line.productId] : []))];
   const rows = await prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true, stock: true, locationId: true } });
-  const items = await Promise.all(rows.map(async product => {
-    const sales = await prisma.saleItem.aggregate({ where: { productId: product.id, sale: telegramWebAppSaleScope(userId, start, now) }, _sum: { qty: true } });
-    return { ...product, recordedWebQty: sales._sum.qty ?? 0 };
-  }));
+  // Web App tidak dipakai lagi: rekap Telegram adalah satu-satunya sumber pengurangan stok.
+  const items = rows.map(product => ({ ...product, recordedWebQty: 0 }));
   return { start, items };
 }
 
@@ -59,7 +57,7 @@ export async function postTelegramInventory(tx: Prisma.TransactionClient, report
   const aggregated = new Map<number, { lines: RecapInventoryLine[]; quantity: number; coverage: RecapInventoryLine['coverage']; recorded: number }>();
   for (const line of lines) {
     if (!normalizeStockUnit(line.unit)) throw new TelegramInventoryError('INVENTORY_UNIT', 'Satuan harus diperjelas sebelum stok diubah.');
-    if (line.coverage !== 'UNRECORDED_ONLY' && line.coverage !== 'INCLUDES_APP_SALES') throw new TelegramInventoryError('INVENTORY_COVERAGE', 'Cakupan penjualan Web App belum dikonfirmasi.');
+    if (line.coverage === 'OWNER_REVIEW') throw new TelegramInventoryError('INVENTORY_COVERAGE', 'Produk menunggu tinjauan owner.');
     const id = line.productId!;
     const group = aggregated.get(id);
     if (group && group.coverage !== line.coverage) throw new TelegramInventoryError('INVENTORY_COVERAGE', 'Cakupan penjualan untuk produk yang sama bertentangan.');
@@ -71,10 +69,8 @@ export async function postTelegramInventory(tx: Prisma.TransactionClient, report
   const postings = [];
   for (const product of products) {
     const group = aggregated.get(product.id)!;
-    const sales = await tx.saleItem.aggregate({ where: { productId: product.id, sale: telegramWebAppSaleScope(userId, shiftStart, now) }, _sum: { qty: true } });
-    const recorded = sales._sum.qty ?? 0;
-    if (recorded !== group.recorded) throw new TelegramInventoryError('INVENTORY_STALE', `Penjualan Web App untuk ${product.name} berubah sejak pratinjau. Tinjau laporan lagi.`);
-    const plan = evaluateInventoryDeduction(group.quantity, recorded, product.stock, group.coverage === 'INCLUDES_APP_SALES' ? 'INCLUDES_APP_SALES' : 'UNRECORDED_ONLY');
+    const recorded = 0;
+    const plan = evaluateInventoryDeduction(group.quantity, recorded, product.stock, 'UNRECORDED_ONLY');
     const appliedQty = plan.appliedQty;
     if (plan.status === 'REVIEW' || appliedQty === null) throw new TelegramInventoryError('INVENTORY_COVERAGE', `Jumlah rekap ${product.name} lebih kecil dari penjualan Web App; minta tinjauan owner.`);
     if (appliedQty > 0) {
@@ -90,7 +86,7 @@ export async function postTelegramInventory(tx: Prisma.TransactionClient, report
     }
     const posting = await tx.telegramInventoryPosting.create({ data: { operationKey: `${reportId}:${lineId}:TELEGRAM_SHIFT_RECAP`, reportId, lineId,
       productId: product.id, sourceText: group.lines.map(line => line.sourceText).join(' | ').slice(0, 2000), productLabel: group.lines.map(line => line.label).join(' / ').slice(0, 500),
-      reportedQty: group.quantity, webAppQty: recorded, coverage: group.coverage, appliedQty, movementId }, select: { id: true, productId: true, appliedQty: true, lineId: true } });
+      reportedQty: group.quantity, webAppQty: recorded, coverage: 'UNRECORDED_ONLY', appliedQty, movementId }, select: { id: true, productId: true, appliedQty: true, lineId: true } });
     postings.push(posting);
   }
   return postings;
@@ -99,25 +95,9 @@ export async function postTelegramInventory(tx: Prisma.TransactionClient, report
 export async function prepareInventoryReview(userId: number | null, draft: RecapDraft, now = new Date(), shiftStartOverride?: Date) {
   const mapped = await resolveInventoryMappings(draft);
   const preview = await inventoryPreview(userId, mapped, now, shiftStartOverride);
-  const byId = new Map(preview.items.map(item => [item.id, item]));
-  let lines = (mapped.inventoryLines ?? []).map(line => {
-    const item = line.productId ? byId.get(line.productId) : null;
-    if (!item) return line;
-    const recordedWebQty = item.recordedWebQty;
-    let coverage = line.coverage;
-    if (line.recordedWebQty !== recordedWebQty) coverage = recordedWebQty === 0 ? 'UNRECORDED_ONLY' : 'UNDECIDED';
-    if (recordedWebQty === 0 && coverage === 'UNDECIDED') coverage = 'UNRECORDED_ONLY';
-    return { ...line, recordedWebQty, coverage, appliedQty: undefined };
-  });
-  const grouped = new Map<number, RecapInventoryLine[]>();
-  for (const line of lines) if (line.productId) grouped.set(line.productId, [...(grouped.get(line.productId) ?? []), line]);
-  for (const [productId, group] of grouped) {
-    const recorded = byId.get(productId)?.recordedWebQty ?? 0;
-    const selected = [...new Set(group.map(line => line.coverage).filter(value => value !== 'UNDECIDED'))];
-    let coverage: RecapInventoryLine['coverage'] = selected.length > 1 ? 'OWNER_REVIEW' : (selected[0] ?? 'UNDECIDED');
-    if (coverage === 'INCLUDES_APP_SALES' && group.reduce((sum, line) => sum + line.quantity, 0) < recorded) coverage = 'OWNER_REVIEW';
-    lines = lines.map(line => line.productId === productId ? { ...line, coverage, recordedWebQty: recorded } : line);
-  }
+  // Setiap jumlah yang ditulis karyawan adalah penjualan yang belum tercatat; tidak ada pertanyaan cakupan lagi.
+  const lines = (mapped.inventoryLines ?? []).map(line => ({ ...line, recordedWebQty: 0, appliedQty: undefined,
+    coverage: line.mappingStatus === 'OWNER_REVIEW' || line.coverage === 'OWNER_REVIEW' ? 'OWNER_REVIEW' as const : 'UNRECORDED_ONLY' as const }));
   return { draft: { ...mapped, inventoryLines: lines }, preview };
 }
 

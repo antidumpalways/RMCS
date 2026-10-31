@@ -14,9 +14,13 @@ async function callTelegram<T>(method: string, payload: Record<string, unknown>)
 }
 
 export function sendTelegramMessage(chatId: number | bigint, text: string, replyMarkup?: TelegramReplyMarkup) {
-  return callTelegram('sendMessage', { chat_id: chatId.toString(), text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
+  return callTelegram<{ message_id?: number }>('sendMessage', { chat_id: chatId.toString(), text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
 }
 
 export function answerTelegramCallback(callbackQueryId: string, text: string) {
   return callTelegram('answerCallbackQuery', { callback_query_id: callbackQueryId, text, show_alert: false });
+}
+
+export function deleteTelegramMessage(chatId: number | bigint, messageId: number) {
+  return callTelegram('deleteMessage', { chat_id: chatId.toString(), message_id: messageId });
 }
