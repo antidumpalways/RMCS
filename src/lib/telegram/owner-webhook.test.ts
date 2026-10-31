@@ -40,6 +40,7 @@ async function modules() {
         if (throwCatalogQuery) throw new Error('synthetic database failure with private details');
         return fakeProducts;
       }
+      if (params.model === 'AssistantMemory' && params.action === 'findMany') return [];
       if (params.model === 'Product' && params.action === 'findFirst') return null;
       if (params.model === 'Category' && params.action === 'findFirst') {
         const name = String(params.args.where.name.equals ?? '').toLocaleLowerCase('id-ID');
