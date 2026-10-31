@@ -79,7 +79,7 @@ export function recapIssues(d:RecapDraft):string[] {
 export async function extractRecapMessage(text:string,d:RecapDraft):Promise<RecapExtraction>{
  const key=process.env.DEEPSEEK_API_KEY;if(!key)return deterministicExtraction(text);
  const response=await fetch('https://api.deepseek.com/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({
-  model:process.env.DEEPSEEK_MODEL||'deepseek-flash',response_format:{type:'json_object'},max_tokens:500,
+  model:process.env.DEEPSEEK_MODEL||'deepseek-flash',response_format:{type:'json_object'},temperature:0,max_tokens:500,
    messages:[{role:'system',content:'Pahami bahasa sehari-hari, singkatan, typo ringan, pesan bertahap, dan koreksi seperti ‘eh tadi salah, axis bukan 7 tapi 5 pcs’ atau ‘saldo cash akhir 2jt’. Gunakan konteks draft untuk menerapkan koreksi pada baris yang benar; jika target atau satuan tidak jelas, tandai unresolved dan jangan menebak. Ekstrak laporan shift informal Indonesia sebagai JSON {"shiftLabel":string|null,"entries":[{"category":"service_volume|service_fee|sale|expense|cash_balance|electronic_balance|total_balance","label":string,"amount":string,"operation":"add|correct|set"}],"inventoryLines":[{"sourceText":string,"label":string,"quantity":integer|null,"unit":string|null,"operation":"add|correct|set","ambiguity":string|null}],"unresolved":[string],"resolved":[string]}. Ekstrak unit produk hanya jika jumlah dan satuan tertulis eksplisit. Jangan infer jumlah dari nominal; nominal penjualan tetap aggregate sale terpisah. Unit yang tak jelas wajib ambiguity. Jangan menebak produk/SKU. Tandai nilai bertentangan unresolved. Jangan buat profit atau fakta. Pertahankan nominal asli. service_volume=pokok jasa; service_fee=admin; sale=omzet barang; expense=pengeluaran; cash_balance=kas; electronic_balance=saldo elektronik. Jika ada dua nominal kas dan elektronik, keduanya dijumlahkan menjadi saldo gabungan; untuk satu angka gunakan total_balance. Usahakan minta dan catat satu angka saldo total saja. Koreksi eksplisit correct; saldo set; aktivitas add. Draft angka keuangan: '+JSON.stringify(d.entries)+' Draft barang dan jumlah sebelumnya: '+JSON.stringify((d.inventoryLines??[]).map(line=>({label:line.label,quantity:line.quantity,unit:line.unit,sourceText:line.sourceText})))+' Klarifikasi: '+JSON.stringify(d.unresolved)+'. Isi resolved hanya untuk persoalan yang dijawab. Pesan terbaru: '+text}],stream:false
  }),signal:AbortSignal.timeout(15000)});
  if(!response.ok)throw new Error('AI rekap tidak tersedia. Pesan belum disimpan; coba lagi.');
@@ -95,15 +95,15 @@ export function deterministicExtraction(text:string):RecapExtraction{
  const specs:Array<[RecapCategory,string,RegExp,'add'|'set']>=[
  ['total_balance','saldo total',/(?:saldo\s*(?:total(?:\s*nya)?|gabungan|sekarang(?:\s+total(?:\s*nya)?)?|akhir)|total\s+saldo)\s*[:=]?\s*(\d[\d.,]*\s*(?:(?:jt|juta|m)\s*)?(?:\d[\d.,]*\s*(?:rb|ribu|k))?)/i,'set'],
 
- ['total_balance','saldo elektronik',/(?:saldo\s*)?(?:cash|kas|dana|gopay|ovo|rekening|elektronik)(?:\s*(?:akhir|sisa))?\s*[:=]?\s*(\d[\d.,]*\s*(?:(?:jt|juta|m)\s*)?(?:\d[\d.,]*\s*(?:rb|ribu|k))?)/i,'set'],
- ['service_fee','admin transfer',/(?:admin|fee)\s*(?:tf|transfer)?\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
- ['service_fee','admin tarik tunai',/(?:admin|fee)\s*(?:tarik(?:\s*tunai)?)\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
- ['expense','pengeluaran',/(?:pengeluaran|biaya)\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
- ['service_volume','pulsa',/pulsa\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
- ['sale','rokok',/rokok\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
+ ['total_balance','saldo elektronik',/\b(?:saldo\s*)?(?:cash|kas|dana|gopay|ovo|rekening|elektronik)\b(?:\s*(?:akhir|sisa))?\s*[:=]?\s*(\d[\d.,]*\s*(?:(?:jt|juta|m)\s*)?(?:\d[\d.,]*\s*(?:rb|ribu|k))?)/i,'set'],
+ ['service_fee','admin transfer',/\b(?:admin|fee)\b\s*(?:tf|transfer)?\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
+ ['service_fee','admin tarik tunai',/\b(?:admin|fee)\b\s*(?:tarik(?:\s*tunai)?)\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
+ ['expense','pengeluaran',/\b(?:pengeluaran|biaya)\b\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
+ ['service_volume','pulsa',/\bpulsa\b\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
+ ['sale','rokok',/\brokok\b\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
  ['sale','voucher telkomsel',/(?:vc|voucher)\s+telkomsel\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
- ['service_volume','transfer keluar',/(?:tf|transfer)\s*(?:keluar)?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
- ['service_volume','tarik tunai',/tarik(?:\s*tunai)?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add']];
+ ['service_volume','transfer keluar',/\b(?:tf|transfer)\b\s*(?:keluar)?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
+ ['service_volume','tarik tunai',/\btarik\b(?:\s*tunai)?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add']];
  for(const [category,label,re,operation] of specs){const m=re.exec(rest);if(!m)continue;const amount=m[m.length-1].trim();if(parseIndonesianRupiah(amount)!==null)entries.push({category,label,amount,operation});else unresolved.push('Nominal '+amount+' ambigu.');rest=rest.replace(m[0],' ');}
  for(const m of rest.matchAll(/([\w-]+)\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/gi)){if(!['shift','pagi','siang','malam','eh','tadi','salah','bukan','tapi'].includes(m[1].toLowerCase()))unresolved.push('Kategori '+m[1]+' perlu diperjelas: omzet barang, volume jasa, atau biaya.');}
  const balanceEntries=entries.filter(entry=>entry.category==='cash_balance'||entry.category==='electronic_balance'||entry.category==='total_balance');

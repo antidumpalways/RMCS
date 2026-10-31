@@ -7,7 +7,7 @@ console.log('=== RCMS Deploy Helper ===\n');
 
 console.log('[1/2] Pushing Prisma schema...');
 try {
-  execSync('npx prisma db push --skip-generate --accept-data-loss', {
+  execSync('npx prisma db push --skip-generate', {
     stdio: 'inherit',
   });
   console.log('  ✓ Schema synced\n');
@@ -16,7 +16,7 @@ try {
   process.exit(1);
 }
 
-console.log('[2/2] Seeding default data (idempotent)...');
+console.log('[2/2] Seeding data contoh (dilewati otomatis jika database sudah berisi data)...');
 try {
   execSync('npx tsx prisma/seed.ts', {
     stdio: 'inherit',

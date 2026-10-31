@@ -21,7 +21,7 @@ test('multiple messages accumulate activities while setting balances',()=>{
  let d=emptyRecap();
  d=applyExtraction(d,{entries:[add('service_volume','transfer keluar','2,5jt'),add('sale','rokok','175rb')],unresolved:[]},'shift pagi tf keluar 2,5jt rokok 175rb');
  d=applyExtraction(d,{entries:[add('cash_balance','kas','2,1jt','set'),add('electronic_balance','dana','3,5jt','set')],unresolved:[]},'saldo dana akhir 3,5jt cash 2,1jt');
- assert.deepEqual(recapTotals(d),{service_volume:'2500000',service_fee:'0',sale:'175000',expense:'0',cash_balance:'2100000',electronic_balance:'3500000'});
+ assert.deepEqual(recapTotals(d),{service_volume:'2500000',service_fee:'0',sale:'175000',expense:'0',cash_balance:'2100000',electronic_balance:'3500000',total_balance:'5600000'});
  assert.deepEqual(recapIssues(d),[]); assert.equal(canFinalizeRecap(d),true);
 });
 test('the same reported update cannot add its amount twice',()=>{

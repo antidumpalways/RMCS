@@ -58,7 +58,7 @@ export async function extractHandwrittenImage(bytes:Uint8Array,mimeType:string,c
  try{
   const response=await fetch('https://api.deepseek.com/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+apiKey,'Content-Type':'application/json'},body:JSON.stringify({
    model,messages:[{role:'system',content:prompt},{role:'user',content:[{type:'text',text:userPrompt},{type:'image_url',image_url:{url:image,detail:'high'}}]}],
-   response_format:{type:'json_object'},thinking:{type:'disabled'},max_tokens:2400,stream:false
+   response_format:{type:'json_object'},thinking:{type:'disabled'},temperature:0,max_tokens:2400,stream:false
   }),signal:AbortSignal.timeout(45000)});
   const latencyMs=Date.now()-started;
   if(!response.ok)throw new VisionExtractionError('provider_http',{latencyMs,promptTokens:0,completionTokens:0,approximateInputTokens:Math.ceil(bytes.byteLength/1024)},'Pembacaan foto gagal. Anda bisa mengetik rekap manual.');

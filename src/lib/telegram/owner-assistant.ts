@@ -11,6 +11,8 @@ import { catalogSearchTerms, rankCatalogProducts } from '@/lib/catalog-search';
 import { respectsNumericAttributes, semanticCatalogSearch } from '@/lib/semantic-catalog';
 import { answerTelegramCallback, sendTelegramMessage, type InlineKeyboard } from './client';
 import { parseOwnerRupiah, telegramOwnerAuthorized, validateOwnerIntent, type OwnerIntent } from './owner-intent';
+import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumRecapReports } from './shift-summary';
+import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerBusinessKind, type OwnerChatMessage } from './owner-agent';
 
 type OwnerMessage = { chat: { id: number; type: string }; from?: { id: number; first_name?: string; last_name?: string }; text?: string };
@@ -217,14 +219,6 @@ function productDescription(product: CatalogProduct): string {
   ].join('\n');
 }
 
-function reportedRecapTotal(payload: unknown, category: 'sale' | 'service_fee' | 'expense'): bigint {
-  if (!payload || typeof payload !== 'object' || !('totals' in payload)) return 0n;
-  const totals = (payload as { totals?: unknown }).totals;
-  if (!totals || typeof totals !== 'object' || !(category in totals)) return 0n;
-  const value = (totals as Record<string, unknown>)[category];
-  return typeof value === 'string' && /^\d{1,16}$/.test(value) ? BigInt(value) : 0n;
-}
-
 async function saveSelection(chatId: bigint, intent: OwnerIntent, products: CatalogProduct[], kind: string): Promise<string> {
   const draft = await prisma.telegramDraft.create({
     data: { chatId, kind, payload: { version: 1, intent, candidateIds: products.map(product => product.id) },
@@ -296,46 +290,26 @@ async function showBusinessReport(requestedDate: string | null, shift: string | 
   const date = requestedDate ?? today.date;
   const start = requestedDate ? new Date(requestedDate + 'T00:00:00+07:00') : today.start;
   const end = new Date(start.getTime() + 86_400_000);
-  const shiftFilter = shift ? { user: { is: { shift: { equals: shift, mode: 'insensitive' as const } } } } : {};
-  const [sales, services, expenses, productRows, recapReports, inventoryProducts] = await Promise.all([
-    prisma.saleTransaction.findMany({ where: { createdAt: { gte: start, lt: end }, ...shiftFilter }, select: { totalRevenue: true, totalProfit: true } }),
-    prisma.serviceTransaction.findMany({ where: { createdAt: { gte: start, lt: end }, ...shiftFilter }, select: { profit: true } }),
-    prisma.expense.findMany({ where: { createdAt: { gte: start, lt: end }, ...shiftFilter }, select: { amount: true } }),
-    prisma.saleItem.groupBy({ by: ['productId'], where: { sale: { createdAt: { gte: start, lt: end }, ...shiftFilter } },
-      _sum: { qty: true, revenue: true }, orderBy: { _sum: { revenue: 'desc' } }, take: 8 }),
-    prisma.telegramShiftReport.findMany({ where: { confirmedAt: { gte: start, lt: end },
-      ...(shift ? { shiftLabel: { equals: shift, mode: 'insensitive' as const } } : {}) }, select: { payload: true } }),
-    prisma.product.findMany({ select: { stock: true, costPrice: true, sellPrice: true } }),
+  const trendStart = new Date(start.getTime() - 6 * 86_400_000);
+  const shiftWhere = shift ? { shiftLabel: { equals: shift, mode: 'insensitive' as const } } : {};
+  // Web App sudah tidak dipakai: sumber utama adalah rekap shift Telegram yang sudah dikonfirmasi.
+  const [recentReports, postings] = await Promise.all([
+    prisma.telegramShiftReport.findMany({ where: { confirmedAt: { gte: trendStart, lt: end }, ...shiftWhere },
+      select: { confirmedAt: true, shiftLabel: true, payload: true }, orderBy: { confirmedAt: 'asc' }, take: 500 }),
+    prisma.telegramInventoryPosting.groupBy({ by: ['productId'],
+      where: { report: { confirmedAt: { gte: start, lt: end }, ...shiftWhere } },
+      _sum: { appliedQty: true }, orderBy: { _sum: { appliedQty: 'desc' } }, take: 8 }),
   ]);
-  const salesRevenue = sales.reduce((sum, sale) => sum + sale.totalRevenue, 0n);
-  const goodsProfit = sales.reduce((sum, sale) => sum + sale.totalProfit, 0n);
-  const serviceProfit = services.reduce((sum, service) => sum + service.profit, 0n);
-  const totalRevenue = salesRevenue + serviceProfit;
-  const grossProfit = goodsProfit + serviceProfit;
-  const totalExpenses = expenses.reduce((sum, expense) => sum + expense.amount, 0n);
-  const totalModalInventory = inventoryProducts.reduce((sum, product) => sum + product.costPrice * BigInt(product.stock), 0n);
-  const totalRetailInventory = inventoryProducts.reduce((sum, product) => sum + product.sellPrice * BigInt(product.stock), 0n);
-  const recapSales = recapReports.reduce((sum, report) => sum + reportedRecapTotal(report.payload, 'sale'), 0n);
-  const recapFees = recapReports.reduce((sum, report) => sum + reportedRecapTotal(report.payload, 'service_fee'), 0n);
-  const recapExpenses = recapReports.reduce((sum, report) => sum + reportedRecapTotal(report.payload, 'expense'), 0n);
-  const ids = productRows.map(row => row.productId);
-  const names = await prisma.product.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } });
+  const todayReports = recentReports.filter(report => report.confirmedAt >= start && report.confirmedAt < end);
+  const names = await prisma.product.findMany({ where: { id: { in: postings.map(row => row.productId) } }, select: { id: true, name: true } });
   const nameById = new Map(names.map(product => [product.id, product.name]));
-  const breakdown = productRows.map(row => '• ' + (nameById.get(row.productId) ?? 'Barang dihapus') + ': ' +
-    (row._sum.qty ?? 0) + ' unit · ' + formatIdr(row._sum.revenue ?? 0n));
-  return 'Ringkasan tercatat — ' + date + ' (WIB)' + (shift ? ' · shift ' + shift : '') + '\nOmzet barang + admin jasa: ' + formatIdr(totalRevenue) +
-    '\nLaba kotor tercatat: ' + formatIdr(grossProfit) + '\nPengeluaran: ' + formatIdr(totalExpenses) +
-    '\nProfit tercatat setelah pengeluaran: ' + formatIdr(grossProfit - totalExpenses) +
-    '\nSnapshot persediaan saat ini (' + inventoryProducts.length + ' produk):' +
-    '\nTotal modal stok: ' + formatIdr(totalModalInventory) +
-    '\nNilai inventory pada harga jual: ' + formatIdr(totalRetailInventory) +
-    '\n\nBarang teratas:\n' + (breakdown.length ? breakdown.join('\n') : 'Belum ada penjualan barang tercatat.') +
-    '\n\nRekap shift Telegram terkonfirmasi (dilaporkan terpisah, tidak dijumlahkan):\nOmzet barang: ' + formatIdr(recapSales) +
-    '\nAdmin jasa: ' + formatIdr(recapFees) + '\nPengeluaran: ' + formatIdr(recapExpenses) +
-    '\nJumlah laporan: ' + recapReports.length +
-    '\n\nLaba hanya dihitung dari transaksi yang menyimpan harga jual dan modal. Angka rekap agregat tidak digabung dengan transaksi Web App agar tidak menghitung ganda.';
+  const topItems = postings.filter(row => (row._sum.appliedQty ?? 0) > 0)
+    .map(row => '• ' + (nameById.get(row.productId) ?? 'Barang dihapus') + ': ' + (row._sum.appliedQty ?? 0) + ' unit');
+  return formatRecapReport({
+    dateLabel: date, shift, today: sumRecapReports(todayReports), recent: dailyRecapSummaries(recentReports),
+    topItems, formatMoney: formatIdr,
+  });
 }
-
 async function showInventoryValue(chatId: bigint) {
   const catalog = await getCatalog();
   if (catalog.length > 3000) return sendTelegramMessage(chatId, 'Katalog terlalu besar untuk menghitung nilai inventory dengan aman.');
@@ -1366,7 +1340,55 @@ async function showReviewTask(callback: OwnerCallback, ownerId: number, taskId: 
   const task = await prisma.telegramOwnerReviewTask.findUnique({ where: { id: taskId } });
   if (!task || task.status !== 'PENDING') return answerTelegramCallback(callback.id, 'Tugas tinjauan sudah diproses atau tidak ditemukan.');
   await answerTelegramCallback(callback.id, 'Tinjauan dibuka.');
-  return sendTelegramMessage(BigInt(ownerId), await reviewTaskDescription(task) + '\n\nTandai selesai hanya setelah diperiksa secara fisik.', keyboard([[{ text: '✅ Tandai sudah ditinjau', callback_data: 'rcms:owner:reviewtaskdone:' + task.id }], [{ text: '⬅️ Persetujuan', callback_data: 'rcms:owner:menu:approval' }]]));
+  const rows: InlineKeyboard['inline_keyboard'] = [];
+  const target = task.kind === 'BALANCE_DISCREPANCY' ? parseBalanceTaskTarget(task.payload) : null;
+  if (target) rows.push([{ text: '💰 Terima hitungan karyawan jadi saldo RMCS', callback_data: 'rcms:owner:reviewtaskaccept:' + task.id }]);
+  rows.push([{ text: '✅ Tandai sudah ditinjau (saldo tidak diubah)', callback_data: 'rcms:owner:reviewtaskdone:' + task.id }], [{ text: '⬅️ Persetujuan', callback_data: 'rcms:owner:menu:approval' }]);
+  const hint = target
+    ? '\n\nJika hitungan fisik karyawan benar, tekan "Terima hitungan" agar saldo RMCS dan saldo awal shift berikutnya memakai angka itu (' + formatIdr(target.actual) + '). Jika belum yakin, periksa fisik dulu.'
+    : '\n\nTandai selesai hanya setelah diperiksa secara fisik.';
+  return sendTelegramMessage(BigInt(ownerId), await reviewTaskDescription(task) + hint, keyboard(rows));
+}
+// Menjadikan hitungan karyawan sebagai saldo RMCS agar selisih tidak terbawa ke shift berikutnya.
+async function acceptReviewTaskBalance(callback: OwnerCallback, ownerId: number, taskId: string) {
+  const task = await prisma.telegramOwnerReviewTask.findUnique({ where: { id: taskId } });
+  if (!task || task.status !== 'PENDING' || task.kind !== 'BALANCE_DISCREPANCY') return answerTelegramCallback(callback.id, 'Tugas sudah diproses atau bukan selisih saldo.');
+  const target = parseBalanceTaskTarget(task.payload);
+  if (!target) return answerTelegramCallback(callback.id, 'Data selisih tidak lengkap. Gunakan menu saldo untuk menyesuaikan.');
+  const report = task.reportId ? await prisma.telegramShiftReport.findUnique({ where: { id: task.reportId }, select: { confirmedAt: true } }) : null;
+  const since = report?.confirmedAt ?? task.createdAt;
+  const [laterReports, laterAdjustments, activeShifts] = await Promise.all([
+    prisma.telegramShiftReport.count({ where: { confirmedAt: { gt: since } } }),
+    prisma.balanceAdjustment.count({ where: { createdAt: { gt: task.createdAt } } }),
+    prisma.telegramShiftRegister.count({ where: { activeShiftId: { not: null } } }),
+  ]);
+  const blocked = laterReports > 0 ? 'Sudah ada rekap shift yang lebih baru. Periksa saldo lewat menu saldo, bukan dari tugas lama ini.'
+    : laterAdjustments > 0 ? 'Saldo sudah pernah disesuaikan setelah selisih ini. Periksa saldo terbaru dulu.'
+    : activeShifts > 0 ? 'Ada shift yang sedang berjalan dengan saldo awal lama. Tunggu rekap shift itu selesai, lalu terima hitungan.' : null;
+  if (blocked) {
+    await answerTelegramCallback(callback.id, 'Belum bisa diterima.');
+    return sendTelegramMessage(BigInt(ownerId), blocked);
+  }
+  const owner = await prisma.user.findUnique({ where: { telegramUserId: BigInt(ownerId) }, select: { id: true } });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const result = await prisma.$transaction(async tx => {
+        const claimed = await tx.telegramOwnerReviewTask.updateMany({ where: { id: taskId, status: 'PENDING' },
+          data: { status: 'REVIEWED', reviewedByTelegramUserId: BigInt(ownerId), reviewedAt: new Date() } });
+        if (claimed.count !== 1) throw new Error('TASK_ALREADY_REVIEWED');
+        return setCombinedBalance(tx, { targetBalance: target.actual, createdById: owner?.id ?? null,
+          note: 'Hitungan karyawan diterima owner dari selisih rekap shift (tugas ' + task.id + ').' });
+      }, { isolationLevel: 'Serializable', timeout: 15_000 });
+      await answerTelegramCallback(callback.id, 'Saldo diperbarui.');
+      return sendTelegramMessage(BigInt(ownerId), 'Saldo RMCS diperbarui dari ' + formatIdr(result.previousBalance) + ' menjadi ' + formatIdr(result.newBalance) +
+        ' (selisih ' + formatIdr(result.delta) + ' tercatat di riwayat penyesuaian). Shift berikutnya akan mulai dari angka ini.', ownerMenuKeyboard('home'));
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'P2034' && attempt === 0) continue;
+      if ((error as Error).message === 'TASK_ALREADY_REVIEWED') return answerTelegramCallback(callback.id, 'Tugas sudah diproses.');
+      throw error;
+    }
+  }
 }
 async function completeReviewTask(callback: OwnerCallback, ownerId: number, taskId: string) {
   const result = await prisma.telegramOwnerReviewTask.updateMany({ where: { id: taskId, status: 'PENDING' }, data: { status: 'REVIEWED', reviewedByTelegramUserId: BigInt(ownerId), reviewedAt: new Date() } });
@@ -1419,6 +1441,8 @@ export async function handleOwnerCallback(callback: OwnerCallback, ownerId: numb
   if (reviewTask) return showReviewTask(callback, ownerId, reviewTask[1]);
   const completeTask = /^rcms:owner:reviewtaskdone:([A-Za-z0-9_-]{10,40})$/.exec(data);
   if (completeTask) return completeReviewTask(callback, ownerId, completeTask[1]);
+  const acceptTask = /^rcms:owner:reviewtaskaccept:([A-Za-z0-9_-]{10,40})$/.exec(data);
+  if (acceptTask) return acceptReviewTaskBalance(callback, ownerId, acceptTask[1]);
   const review = /^rcms:owner:review:([A-Za-z0-9_-]{10,40})$/.exec(data);
   if (review) return reviewOwnerDraft(callback, ownerId, review[1]);
   const menuAction = /^rcms:owner:menu:do:([a-z_]+)$/.exec(data);

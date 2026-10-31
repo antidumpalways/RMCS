@@ -57,12 +57,13 @@ export function telegramId(value: unknown): bigint | null {
   return BigInt(value);
 }
 
-export function duplicateUpdateDisposition(status: string | null, leaseUntil: Date | null, now: Date): 'PROCESSED' | 'BUSY' | 'CLAIMED' {
-  if (status === 'PROCESSED') return 'PROCESSED';
-  if (status === 'FAILED' || (status === 'PROCESSING' && leaseUntil !== null && leaseUntil < now)) return 'CLAIMED';
+// Update yang gagal diulang Telegram; setelah batas ini dilewati agar satu pesan bermasalah tidak berputar selamanya.
+export const MAX_UPDATE_ATTEMPTS = 5;
+
+export function duplicateUpdateDisposition(status: string | null, leaseUntil: Date | null, now: Date, attempts = 0): 'PROCESSED' | 'BUSY' | 'CLAIMED' {
+  if (status === 'PROCESSED' || status === 'DEAD') return 'PROCESSED';
+  const reclaimable = status === 'FAILED' || (status === 'PROCESSING' && leaseUntil !== null && leaseUntil < now);
+  if (reclaimable && attempts >= MAX_UPDATE_ATTEMPTS) return 'PROCESSED';
+  if (reclaimable) return 'CLAIMED';
   return 'BUSY';
 }
-
-
-
-

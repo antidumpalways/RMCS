@@ -3,6 +3,14 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
+  // Seed ini MENGHAPUS user, produk, dan transaksi lalu mengisi ulang data contoh.
+  // Jangan pernah berjalan di database yang sudah berisi data kecuali sengaja diminta.
+  const existing = (await prisma.user.count()) + (await prisma.product.count()) + (await prisma.telegramShiftReport.count());
+  if (existing > 0 && process.env.ALLOW_DESTRUCTIVE_SEED !== 'yes') {
+    console.log('⏭  Seed dilewati: database sudah berisi data (' + existing + ' baris user/produk/rekap).');
+    console.log('   Untuk reset total di database development, jalankan dengan ALLOW_DESTRUCTIVE_SEED=yes.');
+    return;
+  }
   console.log('🌱 Seeding RCMS...');
 
   // Settings

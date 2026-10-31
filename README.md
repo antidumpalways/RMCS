@@ -306,3 +306,11 @@ Private / internal use untuk R-CELL.
 - Agar pesan biasa seperti “aku mau rekap shift pagi” dapat diterima, buka `@BotFather` → `/setprivacy` → pilih bot → **Disable**, lalu keluarkan dan tambahkan kembali bot ke grup privat. Telegram secara default hanya mengirim pesan yang ditujukan ke bot; lihat [Bots FAQ](https://core.telegram.org/bots/faq).
 - Bot tetap hanya memproses grup yang tercantum di `TELEGRAM_ALLOWED_GROUP_IDS`. Di luar sesi rekap, ia diam pada obrolan biasa; untuk cek harga/stok, sebut `@username_bot` atau balas pesan bot.
 - Saat sesi rekap aktif, karyawan dapat mengetik rangkuman dan koreksi dalam bahasa biasa. Rekap masih memerlukan tombol konfirmasi. Pertanyaan grup hanya boleh membaca info katalog yang aman; perubahan katalog dan laporan finansial tetap melalui owner.
+
+### Operasional bot (catatan perubahan terbaru)
+
+- **Selisih saldo shift**: di `/menu → Persetujuan`, tugas selisih saldo punya tombol **Terima hitungan karyawan jadi saldo RMCS**. Tanpa itu, saldo awal shift berikutnya tetap memakai angka lama dan selisihnya muncul lagi.
+- **Laporan owner** kini bersumber dari rekap shift Telegram yang terkonfirmasi (bukan tabel Web App) dan menampilkan tren 7 hari. Laba tidak dihitung karena modal tidak ada di rekap.
+- **Pembersihan data otomatis**: `vercel.json` menjadwalkan `/api/cron/telegram-cleanup` setiap hari. Set `CRON_SECRET` di Vercel. Rekap, posting stok, koreksi, dan tugas tinjauan tidak pernah dihapus.
+- **Pesan gagal**: update Telegram yang gagal diproses 5 kali ditandai `DEAD`, dilewati, dan owner diberi tahu.
+- **Seed aman**: `prisma/seed.ts` dilewati jika database sudah berisi data. Untuk reset total di development: `ALLOW_DESTRUCTIVE_SEED=yes`.

@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@/lib/prisma';
-import { allowedTelegramGroup, authorizedTelegramGroupSender, callbackBelongsToActor, duplicateUpdateDisposition, formatTelegramRupiah, parseTelegramCallback, parseTelegramCommand, telegramId } from './core';
+import { MAX_UPDATE_ATTEMPTS, allowedTelegramGroup, authorizedTelegramGroupSender, callbackBelongsToActor, duplicateUpdateDisposition, formatTelegramRupiah, parseTelegramCallback, parseTelegramCommand, telegramId } from './core';
 import { answerTelegramCallback, sendTelegramMessage, type InlineKeyboard } from './client';
 import { applyExtraction, buildAggregateReport, canFinalizeRecap, emptyRecap, extractRecapMessage, parseIndonesianRupiah, recapIssues, recapTotals, type RecapDraft } from './recap';
 import { correctTelegramPhotoFromText, handleTelegramPhoto, handleTelegramVisionCallback, sendLatestPhotoReview, visionCallbackFromData } from './photo-flow';
@@ -26,10 +26,15 @@ async function claimUpdate(updateId:bigint):Promise<'CLAIMED'|'PROCESSED'|'BUSY'
  const now=new Date(),leaseUntil=new Date(now.getTime()+UPDATE_LEASE);
  try{await prisma.telegramUpdate.create({data:{updateId,status:'PROCESSING',leaseUntil}});return 'CLAIMED';}
  catch(e){if((e as {code?:string}).code!=='P2002')throw e;}
- const reclaimed=await prisma.telegramUpdate.updateMany({where:{updateId,OR:[{status:'FAILED'},{status:'PROCESSING',leaseUntil:{lt:now}}]},data:{status:'PROCESSING',attempts:{increment:1},leaseUntil,lastError:null}});
+ const reclaimed=await prisma.telegramUpdate.updateMany({where:{updateId,attempts:{lt:MAX_UPDATE_ATTEMPTS},OR:[{status:'FAILED'},{status:'PROCESSING',leaseUntil:{lt:now}}]},data:{status:'PROCESSING',attempts:{increment:1},leaseUntil,lastError:null}});
  if(reclaimed.count===1)return 'CLAIMED';
- const current=await prisma.telegramUpdate.findUnique({where:{updateId},select:{status:true,leaseUntil:true}});
- const disposition=duplicateUpdateDisposition(current?.status??null,current?.leaseUntil??null,now);
+ const current=await prisma.telegramUpdate.findUnique({where:{updateId},select:{status:true,leaseUntil:true,attempts:true,lastError:true}});
+ const disposition=duplicateUpdateDisposition(current?.status??null,current?.leaseUntil??null,now,current?.attempts??0);
+ // Pesan yang gagal berulang kali ditandai DEAD (dilewati) dan owner diberi tahu sekali.
+ if(disposition==='PROCESSED'&&current&&current.status!=='PROCESSED'&&current.status!=='DEAD'){
+  const dead=await prisma.telegramUpdate.updateMany({where:{updateId,status:current.status},data:{status:'DEAD',leaseUntil:null}});
+  if(dead.count===1)await notifyOwnersText('⚠️ Satu pesan Telegram gagal diproses '+MAX_UPDATE_ATTEMPTS+' kali dan dilewati (update '+updateId.toString()+'). Penyebab terakhir: '+(current.lastError??'tidak diketahui')+'\nMinta karyawan mengirim ulang pesannya bila perlu.').catch(()=>{});
+ }
  return disposition;
 }
 function groupAllowed(c:TelegramChat){return allowedTelegramGroup(c.id,c.type,process.env.TELEGRAM_ALLOWED_GROUP_IDS);}
@@ -212,7 +217,8 @@ async function handleShiftOpeningCallback(c:TelegramCallback,actor:TelegramActor
  if(!result){await answerTelegramCallback(c.id,'Shift sudah diproses.');return true;}
  await answerTelegramCallback(c.id,differences.length?'Shift dibuka; selisih dicatat.':'Shift dibuka.');
  if(openingReviewTaskId)await notifyOwnerReviewTask(openingReviewTaskId,'Selisih stok awal shift. Buka antrean untuk rincian.');
- return sendTelegramMessage(chatId,'✅ SHIFT DIMULAI\nID shift: '+(next.shiftId??row.id)+'\nStok awal dicatat untuk '+next.lines.length+' barang.'+(differences.length?'\n⚠️ Selisih stok dicatat untuk tinjauan Owner.':'\nJumlah stok awal cocok.')+'\n\nSaat selesai, kirim /rekap.');
+ const pendingBalanceReviews=await prisma.telegramOwnerReviewTask.count({where:{kind:'BALANCE_DISCREPANCY',status:'PENDING'}});
+ return sendTelegramMessage(chatId,'✅ SHIFT DIMULAI\nID shift: '+(next.shiftId??row.id)+'\nStok awal dicatat untuk '+next.lines.length+' barang.'+(differences.length?'\n⚠️ Selisih stok dicatat untuk tinjauan Owner.':'\nJumlah stok awal cocok.')+(pendingBalanceReviews?'\n⚠️ Ada selisih saldo shift sebelumnya yang belum diputuskan Owner. Saldo awal shift ini masih memakai angka lama, jadi selisih bisa muncul lagi di rekap.':'')+'\n\nSaat selesai, kirim /rekap.');
 }
 async function captureShiftOpeningBalance(){
  const now=new Date(),cashOpening=await shiftOpening(now),ledgerCash=await cashOnHandAt(cashOpening.start),total=await combinedBalanceAt(now);
@@ -249,6 +255,11 @@ async function notifyBalanceOwner(chatId:bigint,identityId:string,check:NonNulla
  const identity=await prisma.telegramIdentity.findUnique({where:{id:identityId},select:{displayName:true}});
  const message='⚠️ SELISIH SALDO REKAP SHIFT\nKaryawan: '+(identity?.displayName??'Telegram')+'\nGrup: '+chatId+'\n'+formatBalanceCheck(check)+'\n\nTinjauan tersimpan. Buka /menu → Persetujuan di chat pribadi untuk melihat antrean.';
  for(const ownerId of ownerIds){try{await sendTelegramMessage(BigInt(ownerId),message);}catch{/* A notification failure must not roll back a committed shift report. */}}
+}
+async function notifyOwnersText(text:string){
+ const owners=await prisma.user.findMany({where:{role:'owner',active:true,telegramUserId:{not:null}},select:{telegramUserId:true}});
+ const ownerIds=new Set([...configuredTelegramOwners(),...owners.flatMap(owner=>owner.telegramUserId===null?[]:[owner.telegramUserId.toString()])]);
+ for(const ownerId of ownerIds){try{await sendTelegramMessage(BigInt(ownerId),text);}catch{/* Notification is best effort. */}}
 }
 async function notifyOwnerReviewTask(taskId:string,summary:string){
  const owners=await prisma.user.findMany({where:{role:'owner',active:true,telegramUserId:{not:null}},select:{telegramUserId:true}});
@@ -300,8 +311,8 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
  const appSalesLabel=actor.linkedUserId===null?'total transaksi Web App toko pada shift ini':'transaksi Web App Anda pada shift ini';
  const grouped=new Map<number,typeof draft.inventoryLines>();for(const line of draft.inventoryLines??[])if(line.productId)grouped.set(line.productId,[...(grouped.get(line.productId)??[]),line]);
  let stockInsufficient=false;
- for(const [productId,lines] of grouped){const product=byId.get(productId);if(!product||!lines)continue;const quantity=lines.reduce((sum,line)=>sum+line.quantity,0),recorded=Math.max(...lines.map(line=>line.recordedWebQty??0)),coverage=lines[0].coverage;const applied=calculateUnrecordedQuantity(quantity,recorded,coverage==='INCLUDES_APP_SALES'?'INCLUDES_APP_SALES':'UNRECORDED_ONLY')??quantity;stockRows.push('• '+lines.map(line=>line.label).join(' / ')+': terjual '+quantity+' pcs; stok saat ini '+product.stock+(product.location?.name?' ('+product.location.name+')':'')+'; '+appSalesLabel+' '+recorded+'; dikurangi '+applied+'; sisa '+(product.stock-applied));if(applied>product.stock)stockInsufficient=true;}
- const stockText=(stockRows.length?'\n\nBARANG TERJUAL / PERUBAHAN STOK:\n'+stockRows.join('\n')+'\n\nPengurangan hanya mengikuti jumlah unit yang Anda tulis dan cakupan transaksi Web App.':'\n\nBARANG TERJUAL: belum ada jumlah unit yang tercatat; stok belum diajukan untuk berubah.');
+ for(const [productId,lines] of grouped){const product=byId.get(productId);if(!product||!lines)continue;const quantity=lines.reduce((sum,line)=>sum+line.quantity,0),recorded=Math.max(...lines.map(line=>line.recordedWebQty??0)),coverage=lines[0].coverage;const applied=calculateUnrecordedQuantity(quantity,recorded,coverage==='INCLUDES_APP_SALES'?'INCLUDES_APP_SALES':'UNRECORDED_ONLY')??quantity;stockRows.push('• '+lines.map(line=>line.label).join(' / ')+': terjual '+quantity+' pcs; stok saat ini '+product.stock+(product.location?.name?' ('+product.location.name+')':'')+(recorded>0?'; '+appSalesLabel+' '+recorded:'')+'; dikurangi '+applied+'; sisa '+(product.stock-applied));if(applied>product.stock)stockInsufficient=true;}
+ const stockText=(stockRows.length?'\n\nBARANG TERJUAL / PERUBAHAN STOK:\n'+stockRows.join('\n')+'\n\nPengurangan hanya mengikuti jumlah unit yang Anda tulis'+((draft.inventoryLines??[]).some(line=>(line.recordedWebQty??0)>0)?' dan cakupan transaksi Web App.':'.'):'\n\nBARANG TERJUAL: belum ada jumlah unit yang tercatat; stok belum diajukan untuk berubah.');
  const countByProduct=new Map((draft.closingStockCounts??[]).map(item=>[item.productId,item.actualQty]));
  const stockCountComplete=opening.payload.lines.every(line=>countByProduct.has(line.productId));
  const counted=countByProduct.size;
@@ -590,6 +601,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
   },{isolationLevel:'Serializable',timeout:20000});
  }catch(e){
   if((e as Error).message==='DRAFT_ALREADY_PROCESSED'||(e as {code?:string}).code==='P2002'){await answerTelegramCallback(c.id,'Rekap sudah diproses sebelumnya.');return;}
+  if((e as {code?:string}).code==='P2034'){await answerTelegramCallback(c.id,'Ada perubahan bersamaan di database. Belum ada yang tersimpan; tekan Konfirmasi sekali lagi.');return;}
   if((e as Error).message==='STALE_REPORT_REVISION'){await answerTelegramCallback(c.id,'Rekap berubah. Buka /rekap untuk meninjau versi terbaru.');return;}
   if((e as Error).message==='SHIFT_OPENING_ALREADY_CLOSED'){await answerTelegramCallback(c.id,'Shift ini sudah ditutup.');return;}
   if((e as Error).message==='BALANCE_CHECK_STALE'){
