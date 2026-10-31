@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
-import { deterministicExtraction } from './recap';
+import { applyExtraction, deterministicExtraction, emptyRecap, recapIssues } from './recap';
 
 test('catatan penjualan bukan pertanyaan katalog, pertanyaan harga/stok tetap ke asisten', () => {
   assert.equal(looksLikeCatalogQuestion('Axis 13 gb 7 hari: 2 pcs\nTelkomsel 7gb 5 hari : 2 pcs'), false);
@@ -34,4 +34,16 @@ test('baris barang bernama panjang terbaca tanpa AI', () => {
 test('menghapus mention bot tidak menggabungkan baris rekap', () => {
   assert.equal(removeBotMention('@RCell25_Bot Rekap\nAxis 13 gb 7 hari: 2 pcs\nTelkomsel 7gb 5 hari : 2 pcs', 'rcell25_bot'), 'Rekap\nAxis 13 gb 7 hari: 2 pcs\nTelkomsel 7gb 5 hari : 2 pcs');
   assert.equal(removeBotMention('Axis: 2 pcs\nTelkomsel: 2 pcs', ''), 'Axis: 2 pcs\nTelkomsel: 2 pcs');
+});
+
+test('menambah catatan tidak menghilangkan id pesan draf yang sedang aktif', () => {
+  const draft = { ...emptyRecap(), draftMessageId: 321 };
+  const next = applyExtraction(draft, deterministicExtraction('Admin 45rb'), 'Admin 45rb', 'u1');
+  assert.equal(next.draftMessageId, 321);
+});
+
+test('pesan tanpa angka tidak memblokir rekap yang sudah berisi barang', () => {
+  const withItems = applyExtraction(emptyRecap(), deterministicExtraction('Axis 13 gb 7 hari: 2 pcs'), 'Axis 13 gb 7 hari: 2 pcs', 'u1');
+  const afterChatter = applyExtraction(withItems, { entries: [], unresolved: ['Belum ada nominal rekap yang terbaca.'] }, 'oke', 'u2');
+  assert.equal(recapIssues(afterChatter).includes('Belum ada nominal rekap yang terbaca.'), false);
 });

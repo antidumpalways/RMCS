@@ -56,7 +56,7 @@ export function applyExtraction(d:RecapDraft,x:RecapExtraction,message:string,up
   else if(i>=0)entries[i]={...e,operation:'set'};else entries.push({...e,operation:'set'});
  }
  const unresolved=[...x.unresolved];const inventoryLines=[...(d.inventoryLines??[])];for(let i=0;i<(x.inventoryLines??[]).length;i++){const incoming=x.inventoryLines![i],qty=typeof incoming.quantity==='number'?incoming.quantity:Number(incoming.quantity),label=incoming.label.trim().toLocaleLowerCase('id-ID'),unit=(incoming.unit??'').trim().toLocaleLowerCase('id-ID');if(incoming.ambiguity){unresolved.push(incoming.ambiguity);continue;}if(!Number.isSafeInteger(qty)||qty<=0||qty>1000000||!label||!unit){unresolved.push('Jumlah atau satuan produk perlu diperjelas: '+incoming.sourceText);continue;}const index=inventoryLines.findIndex(line=>line.label===label);if(incoming.operation==='correct'||incoming.operation==='set'){if(index<0){unresolved.push('Koreksi jumlah '+label+' belum memiliki baris sebelumnya.');continue;}inventoryLines[index]={...inventoryLines[index],sourceText:incoming.sourceText,label,quantity:qty,unit,productId:null,candidateProductIds:[],mappingStatus:'UNMATCHED',coverage:'UNDECIDED',recordedWebQty:undefined,appliedQty:undefined};}else if(index>=0){if(inventoryLines[index].unit!==unit){unresolved.push('Satuan untuk '+label+' berbeda; perlu diperjelas.');continue;}inventoryLines[index]={...inventoryLines[index],sourceText:inventoryLines[index].sourceText+'; '+incoming.sourceText,quantity:inventoryLines[index].quantity+qty,productId:null,candidateProductIds:[],mappingStatus:'UNMATCHED',coverage:'UNDECIDED'};}else inventoryLines.push({id:'line-'+(updateId??'manual')+'-'+i,sourceText:incoming.sourceText,label,quantity:qty,unit,productId:null,candidateProductIds:[],mappingStatus:'UNMATCHED',coverage:'UNDECIDED'});}
- return {shiftLabel:x.shiftLabel??d.shiftLabel,entries,inventoryLines,unresolved:[...new Set([...d.unresolved.filter(q=>!x.resolved?.some(r=>q.toLowerCase().includes(r.toLowerCase())||r.toLowerCase().includes(q.toLowerCase()))),...x.unresolved])].slice(-12),messages:[...d.messages,message.slice(0,1000)].slice(-30),processedUpdateIds:[...(d.processedUpdateIds??[]),...(updateId?[updateId]:[])]};
+ return {draftMessageId:d.draftMessageId,shiftLabel:x.shiftLabel??d.shiftLabel,entries,inventoryLines,unresolved:[...new Set([...d.unresolved.filter(q=>!x.resolved?.some(r=>q.toLowerCase().includes(r.toLowerCase())||r.toLowerCase().includes(q.toLowerCase()))),...x.unresolved])].slice(-12),messages:[...d.messages,message.slice(0,1000)].slice(-30),processedUpdateIds:[...(d.processedUpdateIds??[]),...(updateId?[updateId]:[])]};
 }
 export function recapTotals(d:RecapDraft):RecapTotals {
  const t:RecapTotals={service_volume:'0',service_fee:'0',sale:'0',expense:'0',cash_balance:'0',electronic_balance:'0',total_balance:'0'};
@@ -69,7 +69,7 @@ export function buildAggregateReport(d:RecapDraft) {
  return {shiftLabel:d.shiftLabel,entries:d.entries.map(e=>({...e})),inventoryLines:(d.inventoryLines??[]).map(e=>({...e,candidateProductIds:[...e.candidateProductIds]})),totals:recapTotals(d),messages:[...d.messages],photoEvidence:(d.photoReviews??[]).map(p=>({ ...p, sourceLines:p.sourceLines.map(line=>({...line})), entries:p.entries.map(e=>({...e})) }))};
 }export function canFinalizeRecap(d:RecapDraft):boolean { return recapIssues(d).length===0; }
 export function recapIssues(d:RecapDraft):string[] {
- const a=[...d.unresolved];
+ const hasData=d.entries.length>0||(d.inventoryLines?.length??0)>0,a=d.unresolved.filter(item=>!(hasData&&item==='Belum ada nominal rekap yang terbaca.'));
  const hasTotal=d.entries.some(e=>e.category==='total_balance');
  const hasLegacyCash=d.entries.some(e=>e.category==='cash_balance');
  const hasLegacyElectronic=d.entries.some(e=>e.category==='electronic_balance');
@@ -84,7 +84,7 @@ export async function extractRecapMessage(text:string,d:RecapDraft):Promise<Reca
  }),signal:AbortSignal.timeout(15000)});}catch{return deterministicExtraction(text);}
  if(!response.ok)return deterministicExtraction(text);
  const data=await response.json() as {choices?:{message?:{content?:string}}[]};
- try{const ai=normalizeExtraction(JSON.parse(data.choices?.[0]?.message?.content||''));if(!ai.entries.length&&!(ai.inventoryLines?.length)){const local=deterministicExtraction(text);if(local.entries.length||local.inventoryLines?.length)return {...local,unresolved:[...new Set([...ai.unresolved,...local.unresolved])].slice(0,8)};}return ai;}catch{return deterministicExtraction(text);}
+ try{const ai=normalizeExtraction(JSON.parse(data.choices?.[0]?.message?.content||''));if(!(ai.inventoryLines?.length)){const local=deterministicExtraction(text);if(local.inventoryLines?.length)return {...ai,inventoryLines:local.inventoryLines};if(!ai.entries.length&&local.entries.length)return {...local,unresolved:[...new Set([...ai.unresolved,...local.unresolved])].slice(0,8)};}return ai;}catch{return deterministicExtraction(text);}
 }
 export function deterministicExtraction(text:string):RecapExtraction{
  const entries:RecapEntry[]=[],inventoryLines:RecapInventoryExtraction[]=[],unresolved:string[]=[];

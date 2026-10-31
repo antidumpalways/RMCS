@@ -353,7 +353,7 @@ async function handleInventoryCallback(c:TelegramCallback,actor:TelegramActor,ch
  if(!session||session.draftId!==parsed.draftId||session.revision!==parsed.revision){await answerTelegramCallback(c.id,'Draf berubah. Gunakan tombol terbaru atau /rekap.');return true;}
  const row=await prisma.telegramDraft.findUnique({where:{id:parsed.draftId}});if(!row||row.status!=='PENDING'){await answerTelegramCallback(c.id,'Draf tidak aktif.');return true;}
  const draft=row.payload as unknown as RecapDraft,line=(draft.inventoryLines??[])[parsed.lineIndex];if(!line){await answerTelegramCallback(c.id,'Baris stok tidak ditemukan.');return true;}
- let next:RecapDraft={...draft,inventoryLines:[...(draft.inventoryLines??[])]};const index=next.inventoryLines!.findIndex(item=>item.id===line.id),items=next.inventoryLines!;
+ let next:RecapDraft={...draft,closingStockAwaiting:false,closingStockCounts:undefined,inventoryLines:[...(draft.inventoryLines??[])]};const index=next.inventoryLines!.findIndex(item=>item.id===line.id),items=next.inventoryLines!;
  if(parsed.action==='select'){
   const productId=Number(parsed.value);if(!Number.isSafeInteger(productId)||!line.candidateProductIds.includes(productId)){await answerTelegramCallback(c.id,'Pilihan produk tidak valid.');return true;}
   items[index]={...line,productId,candidateProductIds:[productId],mappingStatus:'MATCHED',coverage:'UNDECIDED',recordedWebQty:undefined,appliedQty:undefined};
