@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { looksLikeCatalogQuestion, splitRecapStart, stripRecapHeader } from './group-routing';
+import { looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
 import { deterministicExtraction } from './recap';
 
 test('catatan penjualan bukan pertanyaan katalog, pertanyaan harga/stok tetap ke asisten', () => {
@@ -29,4 +29,9 @@ test('baris barang bernama panjang terbaca tanpa AI', () => {
   const x = deterministicExtraction('Axis 13 gb 7 hari: 2 pcs\nTelkomsel 7gb 5 hari : 2 pcs');
   assert.deepEqual(x.inventoryLines?.map(line => [line.label, line.quantity, line.unit]), [['Axis 13 gb 7 hari', '2', 'pcs'], ['Telkomsel 7gb 5 hari', '2', 'pcs']]);
   assert.equal(x.entries.length, 0);
+});
+
+test('menghapus mention bot tidak menggabungkan baris rekap', () => {
+  assert.equal(removeBotMention('@RCell25_Bot Rekap\nAxis 13 gb 7 hari: 2 pcs\nTelkomsel 7gb 5 hari : 2 pcs', 'rcell25_bot'), 'Rekap\nAxis 13 gb 7 hari: 2 pcs\nTelkomsel 7gb 5 hari : 2 pcs');
+  assert.equal(removeBotMention('Axis: 2 pcs\nTelkomsel: 2 pcs', ''), 'Axis: 2 pcs\nTelkomsel: 2 pcs');
 });

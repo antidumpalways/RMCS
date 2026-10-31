@@ -35,3 +35,10 @@ export function splitRecapStart(text: string): { shiftLabel: string | null; rest
   if (!match) return null;
   return { shiftLabel: match[1]?.toLocaleLowerCase('id-ID') ?? null, rest: lines.slice(1).join('\n').trim() };
 }
+
+// Membuang @mention bot tanpa meratakan baris baru: rekap multi-baris harus tetap satu barang per baris.
+export function removeBotMention(text: string, username: string): string {
+  const escaped = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const cleaned = username ? text.replace(new RegExp('@' + escaped + '\\b', 'ig'), ' ') : text;
+  return cleaned.split(/\r?\n/).map(line => line.replace(/[ \t]+/g, ' ').trim()).join('\n').trim();
+}

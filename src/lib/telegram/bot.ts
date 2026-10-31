@@ -12,7 +12,7 @@ import { combinedBalanceAt, recordedCombinedMovementsBetween, setCombinedBalance
 import { identifyTelegramActor, configuredTelegramOwners, type TelegramActor } from './identity';
 import { handleGroupAssistantMessage, handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
 import { authorizedOwnerPrivateChat } from './owner-intent';
-import { looksLikeCatalogQuestion, splitRecapStart, stripRecapHeader } from './group-routing';
+import { looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
 
 type TelegramChat={id:number;type:string};
 type TelegramUser={id:number;first_name?:string;last_name?:string;username?:string;is_bot?:boolean};
@@ -61,7 +61,7 @@ function groupMenuKeyboard(actor:TelegramActor):InlineKeyboard{
 function groupMenuText(actor:TelegramActor){return 'Menu R-CELL\nPilih tombol untuk rekap shift atau status. Untuk cek barang, tekan tombol lalu sebut nama produk. '+(actor.isOwner?'Panel Owner membuka chat pribadi agar saldo, laporan, dan perubahan usaha tidak tampil di grup.':'');}
 function configuredBotUsername(){return (process.env.TELEGRAM_BOT_USERNAME??'').trim().replace(/^@/,'').toLocaleLowerCase('id-ID');}
 function escapeRegex(value:string){return value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
-function stripBotMention(text:string){const username=configuredBotUsername();return username?text.replace(new RegExp('@'+escapeRegex(username),'ig'),' ').replace(/\s+/g,' ').trim():text.trim();}
+function stripBotMention(text:string){return removeBotMention(text,configuredBotUsername());}
 function addressedToGroupAssistant(m:TelegramMessage){const username=configuredBotUsername();if(!username)return false;const mention=!!m.text&&new RegExp('@'+escapeRegex(username)+'\\b','i').test(m.text);const reply=m.reply_to_message?.from;return mention||!!reply?.is_bot&&reply.username?.toLocaleLowerCase('id-ID')===username;}
 function naturalRecapStart(text:string){return splitRecapStart(text);}
 function formatDraft(d:RecapDraft):string{
