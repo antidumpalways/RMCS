@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@/lib/prisma';
 import { MAX_UPDATE_ATTEMPTS, allowedTelegramGroup, authorizedTelegramGroupSender, callbackBelongsToActor, duplicateUpdateDisposition, formatTelegramRupiah, parseTelegramCallback, parseTelegramCommand, telegramId } from './core';
+import { classifyShiftIntent, matchCorrectionPosting, worthClassifying, type ShiftIntent } from './shift-intent';
 import { answerTelegramCallback, sendTelegramMessage, type InlineKeyboard } from './client';
 import { applyExtraction, buildAggregateReport, canFinalizeRecap, emptyRecap, extractRecapMessage, parseIndonesianRupiah, recapIssues, recapTotals, type RecapDraft } from './recap';
 import { correctTelegramPhotoFromText, handleTelegramPhoto, handleTelegramVisionCallback, sendLatestPhotoReview, visionCallbackFromData } from './photo-flow';
@@ -463,12 +464,36 @@ async function requestReportCorrection(chatId:bigint,actor:TelegramActor,args:st
  const report=await prisma.telegramShiftReport.findUnique({where:{id:reportId},include:{inventoryPostings:true}});
  if(!report||(!callbackBelongsToActor(report.telegramIdentityId,actor.identityId)&&!actor.isOwner))return sendTelegramMessage(chatId,'Rekap tidak ditemukan atau Anda tidak berwenang mengoreksinya.');
  const posting=report.inventoryPostings.find(item=>item.lineId===lineId);if(!posting)return sendTelegramMessage(chatId,'Baris stok tidak ditemukan pada rekap tersebut.');
+ return submitReportCorrection(chatId,actor,report,posting,quantity,reason);
+}
+async function submitReportCorrection(chatId:bigint,actor:TelegramActor,report:{id:string},posting:{id:string;productLabel:string;reportedQty:number},quantity:number,reason:string,viaChat=false){
  const approved=await prisma.telegramReportCorrection.aggregate({where:{postingId:posting.id,status:'APPROVED'},_sum:{deltaQty:true}});
  const currentQty=posting.reportedQty+(approved._sum.deltaQty??0);if(currentQty===quantity)return sendTelegramMessage(chatId,'Jumlah tersebut sudah sesuai. Tidak ada koreksi yang dibuat.');
  const operationKey=createHash('sha256').update([report.id,posting.id,actor.telegramUserId,quantity,reason.toLocaleLowerCase('id-ID')].join('|')).digest('hex');
  const prior=await prisma.telegramReportCorrection.findUnique({where:{operationKey}});if(prior)return sendTelegramMessage(chatId,prior.status==='PENDING'?'Permintaan koreksi yang sama masih menunggu owner.':'Permintaan koreksi yang sama sudah diproses.');
  const correction=await prisma.telegramReportCorrection.create({data:{operationKey,reportId:report.id,postingId:posting.id,requestedById:actor.linkedUserId,requestedByTelegramIdentityId:actor.identityId,reason:reason.slice(0,500),previousQty:currentQty,requestedQty:quantity,deltaQty:quantity-currentQty}});
- await sendTelegramMessage(chatId,'Permintaan koreksi tercatat. Jumlah terjual pada rekap saat ini '+currentQty+'; target '+quantity+'. Owner harus menyetujui sebelum stok berubah.',{inline_keyboard:[[{text:'Setujui koreksi',callback_data:'rcms:cr:'+correction.id+':a'},{text:'Tolak',callback_data:'rcms:cr:'+correction.id+':r'}]]});
+ await sendTelegramMessage(chatId,(viaChat?'Saya tangkap koreksi “'+posting.productLabel+'”. ':'')+'Permintaan koreksi tercatat. Jumlah terjual pada rekap saat ini '+currentQty+'; target '+quantity+'. Owner harus menyetujui sebelum stok berubah.',{inline_keyboard:[[{text:'Setujui koreksi',callback_data:'rcms:cr:'+correction.id+':a'},{text:'Tolak',callback_data:'rcms:cr:'+correction.id+':r'}]]});
+}
+async function correctReportByChat(chatId:bigint,actor:TelegramActor,intent:ShiftIntent,text:string){
+ const report=await prisma.telegramShiftReport.findFirst({where:{chatId,confirmedAt:{gte:new Date(Date.now()-48*60*60_000)},...(actor.isOwner?{}:{telegramIdentityId:actor.identityId})},orderBy:{confirmedAt:'desc'},include:{inventoryPostings:true}});
+ if(!report)return sendTelegramMessage(chatId,'Saya tidak menemukan rekap Anda dalam 48 jam terakhir yang bisa dikoreksi.');
+ if(!report.inventoryPostings.length)return sendTelegramMessage(chatId,'Rekap terakhir tidak punya pengurangan stok, jadi tidak ada jumlah barang yang bisa dikoreksi dari sini. Hubungi owner untuk koreksi lain.');
+ const match=matchCorrectionPosting(report.inventoryPostings,intent.productText);
+ if(match.status!=='MATCH'||intent.newQuantity===null){
+  const list=report.inventoryPostings.map(item=>'• '+item.productLabel+': '+item.reportedQty+' pcs').join('\n');
+  return sendTelegramMessage(chatId,'Saya mengerti Anda ingin mengoreksi rekap, tapi belum yakin barang atau jumlahnya. Rekap terakhir:\n'+list+'\n\nTulis ulang dengan nama barang dan jumlah yang benar, misalnya “'+report.inventoryPostings[0].productLabel+' seharusnya 5, salah hitung”.');
+ }
+ const reason=intent.reason&&intent.reason.length>=5?intent.reason:'Koreksi lewat chat: '+text.slice(0,300);
+ return submitReportCorrection(chatId,actor,report,match.posting as (typeof report.inventoryPostings)[number],intent.newQuantity,reason,true);
+}
+async function handleAiShiftIntent(chatId:bigint,actor:TelegramActor,intent:ShiftIntent,text:string){
+ if(intent.intent==='open_shift')return startShiftOpening(chatId,actor,intent.shiftLabel);
+ if(intent.intent==='close_shift'){
+  const opening=await activeShiftOpening(chatId,actor.identityId);
+  if(!opening)return sendTelegramMessage(chatId,'Belum ada shift yang dibuka, jadi belum bisa direkap. Untuk mulai shift, tulis saja “mulai shift” atau tekan tombol di /menu.');
+  return openReport(chatId,actor,intent.shiftLabel);
+ }
+ return correctReportByChat(chatId,actor,intent,text);
 }
 async function handleCorrectionCallback(c:TelegramCallback,actor:TelegramActor,chatId:bigint){
  const match=/^rcms:cr:([A-Za-z0-9_-]{10,40}):(a|r)$/.exec(c.data??'');if(!match)return false;
@@ -668,17 +693,23 @@ async function processUpdate(u:TelegramUpdate){
  const startRequest=m?naturalRecapStart(m.text??m.caption??''):null;
  const assistantRequest=m?addressedToGroupAssistant(m):false;
  // Ignore ordinary group chatter before creating Telegram identities or update rows.
+ let aiIntent:ShiftIntent|null=null;
  if(!c&&!command&&!startRequest&&!assistantRequest){
   const existingIdentity=await prisma.telegramIdentity.findUnique({where:{telegramUserId:senderId},select:{id:true}});
-  if(!existingIdentity)return false;
-  const active=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId:BigInt(chat.id),telegramIdentityId:existingIdentity.id}},select:{state:true,draftId:true,expiresAt:true}});
-  if(!active||!['REPORTING','OPENING'].includes(active.state)||!active.draftId||active.expiresAt<=new Date())return false;
+  const active=existingIdentity?await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId:BigInt(chat.id),telegramIdentityId:existingIdentity.id}},select:{state:true,draftId:true,expiresAt:true}}):null;
+  const inFlow=!!active&&['REPORTING','OPENING'].includes(active.state)&&!!active.draftId&&active.expiresAt>new Date();
+  if(!inFlow){
+   // Bahasa bebas: AI hanya menilai niat pada pesan teks yang lolos penyaring kasar. Gagal/ragu = diam.
+   if(m&&!m.photo&&!m.document&&worthClassifying(m.text)){const found=await classifyShiftIntent(m.text!);if(found.intent!=='none'&&found.confidence==='high')aiIntent=found;}
+   if(!aiIntent)return false;
+  }
  }
  const claim=await claimUpdate(id);if(claim==='PROCESSED')return true;if(claim==='BUSY')throw new TelegramUpdateBusy();
  try{
   const actor=await identifyTelegramActor(from,BigInt(chat.id));if(!actor)throw new Error('Invalid sender id');
   if(c)await handleCallback(c,actor);
   else if(m&&command)await handleCommand(m,actor,command.command,command.args);
+  else if(m&&aiIntent)await handleAiShiftIntent(BigInt(chat.id),actor,aiIntent,m.text??'');
   else if(m&&startRequest){
    const chatId=BigInt(chat.id),opening=await activeShiftOpening(chatId,actor.identityId);
    if(!opening){await startShiftOpening(chatId,actor,startRequest.shiftLabel);if(m.photo||m.document)await sendTelegramMessage(chatId,'Selesaikan cek stok awal dahulu. Setelah shift dimulai, kirim foto rekap lagi agar terbaca.');}
