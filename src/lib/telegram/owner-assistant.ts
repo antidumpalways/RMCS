@@ -1588,7 +1588,7 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
       : initial;
   if (state.processedUpdateIds?.includes(input.updateId)) {
     await prisma.telegramDraft.update({ where: { id }, data: { status: 'PENDING' } });
-    return sendTelegramMessage(input.chatId, state.lastReply ?? 'Pesan itu sudah diproses.');
+    return;
   }
   try {
     const turn = await interpretOwnerTurn({ text: input.text, history: state.history, currentActions: [],
@@ -1622,7 +1622,6 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
       }
       reply = await composeOwnerReply({ text: input.text, history: state.history, evidence,
         apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL }) ?? evidence.join('\n');
-      if (evidence.length) reply += '\n\n' + evidence.join('\n');
     }
     const response = reply.slice(0, 3500);
     const nextHistory: OwnerChatMessage[] = [...state.history, { role: 'user', content: input.text.slice(0, 1000) },
@@ -1639,5 +1638,6 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
     throw error;
   }
 }
+
 
 
