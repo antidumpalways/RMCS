@@ -42,3 +42,11 @@ export function removeBotMention(text: string, username: string): string {
   const cleaned = username ? text.replace(new RegExp('@' + escaped + '\\b', 'ig'), ' ') : text;
   return cleaned.split(/\r?\n/).map(line => line.replace(/[ \t]+/g, ' ').trim()).join('\n').trim();
 }
+
+const LATE_ENTRY = /^(?:susulan|lupa\s+(?:catat|rekap))\b[\s:,.-]*(.*)$/is;
+
+// "susulan Axis 13gb 1 pcs": penjualan atau uang yang terlewat. Mengembalikan isinya (boleh kosong), atau null bila bukan susulan.
+export function lateEntryText(text: string): string | null {
+  const match = LATE_ENTRY.exec(text.trim().replace(/^@\w+\s*/, ''));
+  return match ? match[1].trim() : null;
+}

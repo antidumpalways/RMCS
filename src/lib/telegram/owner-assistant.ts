@@ -1332,7 +1332,7 @@ function ownerDraftDescription(row: { kind: string; payload: unknown }): string 
 }
 async function reviewTaskDescription(task: { kind: string; payload: unknown }) {
   const payload = task.payload && typeof task.payload === 'object' ? task.payload as Record<string, unknown> : {};
-  const titles: Record<string, string> = { BALANCE_DISCREPANCY: 'Selisih saldo shift', STOCK_OPENING_DISCREPANCY: 'Selisih stok awal shift', STOCK_CLOSING_DISCREPANCY: 'Selisih stok akhir shift' };
+  const titles: Record<string, string> = { BALANCE_DISCREPANCY: 'Selisih saldo shift', STOCK_OPENING_DISCREPANCY: 'Selisih stok awal shift', STOCK_CLOSING_DISCREPANCY: 'Selisih stok akhir shift', LATE_ENTRY: 'Susulan setelah rekap ditutup' };
   const details = typeof payload.summary === 'string' ? payload.summary : JSON.stringify(payload, null, 2);
   return (titles[task.kind] ?? 'Tinjauan shift') + '\n\n' + details;
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
+import { lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
 import { applyExtraction, deterministicExtraction, emptyRecap, recapIssues } from './recap';
 
 test('catatan penjualan bukan pertanyaan katalog, pertanyaan harga/stok tetap ke asisten', () => {
@@ -46,4 +46,13 @@ test('pesan tanpa angka tidak memblokir rekap yang sudah berisi barang', () => {
   const withItems = applyExtraction(emptyRecap(), deterministicExtraction('Axis 13 gb 7 hari: 2 pcs'), 'Axis 13 gb 7 hari: 2 pcs', 'u1');
   const afterChatter = applyExtraction(withItems, { entries: [], unresolved: ['Belum ada nominal rekap yang terbaca.'] }, 'oke', 'u2');
   assert.equal(recapIssues(afterChatter).includes('Belum ada nominal rekap yang terbaca.'), false);
+});
+
+test('susulan dikenali hanya bila diawali kata susulan atau lupa catat', () => {
+  assert.equal(lateEntryText('susulan Axis 13gb 7 hari 1 pcs'), 'Axis 13gb 7 hari 1 pcs');
+  assert.equal(lateEntryText('Susulan: admin 5rb'), 'admin 5rb');
+  assert.equal(lateEntryText('lupa catat rokok 2 bungkus'), 'rokok 2 bungkus');
+  assert.equal(lateEntryText('susulan'), '');
+  assert.equal(lateEntryText('hp saya ketinggalan di rumah'), null);
+  assert.equal(lateEntryText('Axis 13gb 1 pcs'), null);
 });
