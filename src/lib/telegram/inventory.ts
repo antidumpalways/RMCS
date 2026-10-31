@@ -51,7 +51,9 @@ export function resolveInventoryProduct(
   const second = ranked[1];
   const clearlySpecific = terms.length >= 2 && best.matched >= 2 && best.nameSimilarity >= 0.8 &&
     (!second || best.score >= second.score * 1.6);
-  if (ranked.length === 1 || clearlySpecific) {
+  // Semua kata yang ditulis karyawan cocok pada satu barang, dan barang lain cocok lebih sedikit: itu sudah jelas.
+  const matchesEveryTerm = terms.length >= 2 && best.matched >= Math.min(terms.length, 16) && (!second || second.matched < best.matched);
+  if (ranked.length === 1 || clearlySpecific || matchesEveryTerm) {
     return { status: 'MATCHED', productId: best.product.id, candidateProductIds: [best.product.id] };
   }
   return { status: 'AMBIGUOUS', productId: null, candidateProductIds: ranked.slice(0, 5).map(x => x.product.id) };

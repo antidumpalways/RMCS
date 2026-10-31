@@ -88,3 +88,14 @@ test('unlinked Telegram employees reconcile against all same-shift Web App sales
   assert.deepEqual(telegramWebAppSaleScope(null, from, to), { kind: 'SALE', createdAt: { gte: from, lte: to } });
   assert.deepEqual(telegramWebAppSaleScope(17, from, to), { userId: 17, kind: 'SALE', createdAt: { gte: from, lte: to } });
 });
+
+test('nama voucher lengkap (provider + paket + masa aktif) langsung cocok tanpa bertanya lagi', () => {
+  const mk = (id: number, name: string, provider: string, validity: string) => ({ id, name, sku: null, provider, validity, categoryName: 'Voucher', stock: 10, locationId: null });
+  const vouchers = [
+    ...['3GB', '5GB', '8GB', '13GB', '20GB'].flatMap((gb, i) => ['3 hari', '5 hari', '7 hari', '30 hari'].map((days, j) => mk(100 + i * 10 + j, 'Voucher Axis ' + gb, 'Axis', days))),
+    ...['2GB', '7GB', '12GB'].flatMap((gb, i) => ['3 hari', '5 hari', '7 hari'].map((days, j) => mk(200 + i * 10 + j, 'Voucher Telkomsel ' + gb, 'Telkomsel', days))),
+  ];
+  assert.equal(resolveInventoryProduct('Axis 13 gb 7 hari', vouchers).productId, 132);
+  assert.equal(resolveInventoryProduct('Telkomsel 7gb 5 hari', vouchers).productId, 211);
+  assert.equal(resolveInventoryProduct('axis 13gb', vouchers).status, 'AMBIGUOUS');
+});
