@@ -65,14 +65,14 @@ export function calculateUnrecordedQuantity(reportedQty: number, recordedWebQty:
   return reportedQty >= recordedWebQty ? reportedQty - recordedWebQty : null;
 }
 
-export type InventoryCallbackAction = 'select' | 'included' | 'unrecorded' | 'owner';
-const actionCode: Record<InventoryCallbackAction, string> = { select: 's', included: 'i', unrecorded: 'u', owner: 'o' };
+export type InventoryCallbackAction = 'select' | 'included' | 'unrecorded' | 'owner' | 'remove';
+const actionCode: Record<InventoryCallbackAction, string> = { select: 's', included: 'i', unrecorded: 'u', owner: 'o', remove: 'r' };
 const codeAction = Object.fromEntries(Object.entries(actionCode).map(([action, code]) => [code, action as InventoryCallbackAction]));
 export function inventoryCallback(action: InventoryCallbackAction, draftId: string, lineId: string, value: string, revision: number) {
   return `rcms:i:${actionCode[action]}:${draftId}:${lineId}:${value}:${revision}`;
 }
 export function parseInventoryCallback(data: string | undefined) {
-  const match = /^rcms:i:([siuo]):([A-Za-z0-9_-]{10,40}):([0-9]{1,4}):([A-Za-z0-9_-]{1,12}):([0-9]{1,10})$/.exec(data ?? '');
+  const match = /^rcms:i:([siuor]):([A-Za-z0-9_-]{10,40}):([0-9]{1,4}):([A-Za-z0-9_-]{1,12}):([0-9]{1,10})$/.exec(data ?? '');
   return match ? { action: codeAction[match[1]] as InventoryCallbackAction, draftId: match[2], lineIndex: Number(match[3]), value: match[4], revision: Number(match[5]) } : null;
 }
 export function findInventoryConflicts(current: RecapInventoryLine[], candidates: RecapInventoryExtraction[]) {

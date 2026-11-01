@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
+import { inventoryCallback, parseInventoryCallback } from './inventory';
 import { applyExtraction, deterministicExtraction, emptyRecap, recapIssues } from './recap';
 
 test('catatan penjualan bukan pertanyaan katalog, pertanyaan harga/stok tetap ke asisten', () => {
@@ -55,4 +56,15 @@ test('susulan dikenali hanya bila diawali kata susulan atau lupa catat', () => {
   assert.equal(lateEntryText('susulan'), '');
   assert.equal(lateEntryText('hp saya ketinggalan di rumah'), null);
   assert.equal(lateEntryText('Axis 13gb 1 pcs'), null);
+});
+
+test('beberapa barang dalam satu baris dipecah, bukan jadi satu barang palsu', () => {
+  const x = deterministicExtraction('Axis 13 gb 7 hari: 2 pcs Telkomsel 7gb 5 hari : 2 pcs');
+  assert.deepEqual(x.inventoryLines?.map(line => [line.label, line.quantity]), [['Axis 13 gb 7 hari', '2'], ['Telkomsel 7gb 5 hari', '2']]);
+});
+
+test('tombol hapus baris barang valid dan muat di batas callback Telegram', () => {
+  const data = inventoryCallback('remove', 'cmr1234567890123456789012', '3', '-', 12);
+  assert.ok(Buffer.byteLength(data, 'utf8') <= 64);
+  assert.equal(parseInventoryCallback(data)?.action, 'remove');
 });

@@ -345,9 +345,9 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
  for(const line of draft.inventoryLines??[]){
   if(line.mappingStatus==='AMBIGUOUS'){
    const candidates=await prisma.product.findMany({where:{id:{in:line.candidateProductIds}},orderBy:{name:'asc'},select:{id:true,name:true,stock:true}});
-   await sendTelegramMessage(chatId,'Pilih produk katalog yang cocok untuk “'+line.label+'” ('+line.quantity+' '+line.unit+'):',inventoryKeyboard(draftId,draft.inventoryLines!.findIndex(item=>item.id===line.id),session.revision,candidates.map(product=>({text:product.name+' · stok '+product.stock,action:'select',value:String(product.id)}))));
+   await sendTelegramMessage(chatId,'Pilih produk katalog yang cocok untuk “'+line.label+'” ('+line.quantity+' '+line.unit+'):',inventoryKeyboard(draftId,draft.inventoryLines!.findIndex(item=>item.id===line.id),session.revision,[...candidates.map(product=>({text:product.name+' · stok '+product.stock,action:'select' as const,value:String(product.id)})),{text:'🗑 Hapus baris ini',action:'remove' as const,value:'-'}]));
   }else if(line.mappingStatus==='UNMATCHED'){
-  await sendTelegramMessage(chatId,'Produk “'+line.label+'” tidak ditemukan. Tandai untuk tinjauan owner:',inventoryKeyboard(draftId,draft.inventoryLines!.findIndex(item=>item.id===line.id),session.revision,[{text:'Minta tinjauan owner',action:'owner',value:'-'}]));
+  await sendTelegramMessage(chatId,'Produk “'+line.label+'” tidak ditemukan. Tandai untuk tinjauan owner:',inventoryKeyboard(draftId,draft.inventoryLines!.findIndex(item=>item.id===line.id),session.revision,[{text:'Minta tinjauan owner',action:'owner',value:'-'},{text:'🗑 Hapus baris ini',action:'remove',value:'-'}]));
 
   }
  }
@@ -362,6 +362,8 @@ async function handleInventoryCallback(c:TelegramCallback,actor:TelegramActor,ch
  if(parsed.action==='select'){
   const productId=Number(parsed.value);if(!Number.isSafeInteger(productId)||!line.candidateProductIds.includes(productId)){await answerTelegramCallback(c.id,'Pilihan produk tidak valid.');return true;}
   items[index]={...line,productId,candidateProductIds:[productId],mappingStatus:'MATCHED',coverage:'UNDECIDED',recordedWebQty:undefined,appliedQty:undefined};
+ }else if(parsed.action==='remove'){
+  items.splice(index,1);
  }else if(parsed.action==='owner'){
   items[index]={...line,mappingStatus:'OWNER_REVIEW',coverage:'OWNER_REVIEW'};
  }else{
@@ -373,7 +375,7 @@ async function handleInventoryCallback(c:TelegramCallback,actor:TelegramActor,ch
   next.inventoryLines=items.map(item=>item.productId===product.id?{...item,recordedWebQty:recorded,coverage,appliedQty:undefined}:item);
  }
  const revision=await saveInventoryDraft(session.id,row.id,session.revision,next);if(revision===null){await answerTelegramCallback(c.id,'Draf berubah bersamaan; gunakan /rekap.');return true;}
- await answerTelegramCallback(c.id,parsed.action==='owner'?'Ditandai untuk tinjauan owner.':'Pilihan tersimpan.');
+ await answerTelegramCallback(c.id,parsed.action==='owner'?'Ditandai untuk tinjauan owner.':parsed.action==='remove'?'Baris dihapus.':'Pilihan tersimpan.');
  if(parsed.action==='owner'){
   await sendTelegramMessage(chatId,'Permintaan tinjauan produk '+line.label+' dicatat. Owner perlu memastikan pemetaan sebelum rekap dapat dikonfirmasi.');
   const linkedOwners=await prisma.user.findMany({where:{role:'owner',active:true,telegramUserId:{not:null}},select:{telegramUserId:true}});
