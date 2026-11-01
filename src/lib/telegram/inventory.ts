@@ -21,7 +21,7 @@ function normalize(value: string) {
 
 export function normalizeStockUnit(value: string): 'pcs' | null {
   const unit = value.trim().toLocaleLowerCase('id-ID').replace(/\./g, '');
-  if (['pc', 'pcs', 'unit', 'units', 'biji', 'buah', 'lembar'].includes(unit)) return 'pcs';
+  if (['pc', 'pcs', 'unit', 'units', 'biji', 'buah', 'lembar', 'bungkus', 'bks', 'pack', 'pak', 'botol'].includes(unit)) return 'pcs';
   return null;
 }
 
@@ -49,11 +49,13 @@ export function resolveInventoryProduct(
   if (!ranked.length) return { status: 'UNMATCHED', productId: null, candidateProductIds: [] };
   const best = ranked[0];
   const second = ranked[1];
-  const clearlySpecific = terms.length >= 2 && best.matched >= 2 && best.nameSimilarity >= 0.8 &&
+  // Pencocokan otomatis hanya bila SEMUA kata yang ditulis karyawan (termasuk angka GB/hari) cocok pada barang itu.
+  const everyTermMatched = best.matched >= Math.min(terms.length, 16);
+  const clearlySpecific = everyTermMatched && terms.length >= 2 && best.matched >= 2 && best.nameSimilarity >= 0.8 &&
     (!second || best.score >= second.score * 1.6);
   // Semua kata yang ditulis karyawan cocok pada satu barang, dan barang lain cocok lebih sedikit: itu sudah jelas.
   const matchesEveryTerm = terms.length >= 2 && best.matched >= Math.min(terms.length, 16) && (!second || second.matched < best.matched);
-  if (ranked.length === 1 || clearlySpecific || matchesEveryTerm) {
+  if ((ranked.length === 1 && everyTermMatched) || clearlySpecific || matchesEveryTerm) {
     return { status: 'MATCHED', productId: best.product.id, candidateProductIds: [best.product.id] };
   }
   return { status: 'AMBIGUOUS', productId: null, candidateProductIds: ranked.slice(0, 5).map(x => x.product.id) };

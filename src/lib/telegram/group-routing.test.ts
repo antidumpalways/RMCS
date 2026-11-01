@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
 import { answerTelegramCallback, tryAnswerTelegramCallback } from './client';
-import { inventoryCallback, parseInventoryCallback } from './inventory';
+import { inventoryCallback, normalizeStockUnit, parseInventoryCallback, resolveInventoryProduct } from './inventory';
 import { applyExtraction, deterministicExtraction, emptyRecap, recapIssues } from './recap';
 
 test('catatan penjualan bukan pertanyaan katalog, pertanyaan harga/stok tetap ke asisten', () => {
@@ -80,4 +80,32 @@ test('jawaban tombol yang kedaluwarsa tidak menggagalkan pemrosesan pesan', asyn
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test('koreksi tanpa baris sebelumnya tidak hilang diam-diam: peringatan muncul di draf', () => {
+  const draft = applyExtraction(emptyRecap(), deterministicExtraction('axis salah bukan 7 pcs tapi 5 pcs'), 'axis salah bukan 7 pcs tapi 5 pcs', 'u1');
+  assert.ok(draft.unresolved.some(item => item.includes('axis')));
+  assert.equal(draft.inventoryLines?.length, 0);
+});
+
+test('peringatan lama untuk sebuah barang hilang setelah barang itu berhasil ditulis', () => {
+  const warned = applyExtraction(emptyRecap(), deterministicExtraction('axis salah bukan 7 pcs tapi 5 pcs'), 'x', 'u1');
+  const fixed = applyExtraction(warned, deterministicExtraction('axis: 5 pcs'), 'axis: 5 pcs', 'u2');
+  assert.equal(fixed.unresolved.length, 0);
+  assert.equal(fixed.inventoryLines?.[0].quantity, 5);
+});
+
+test('barang tidak dicocokkan otomatis bila ada kata atau angka yang tidak cocok', () => {
+  const mk = (id: number, name: string, validity: string) => ({ id, name, sku: null, provider: 'Axis', validity, categoryName: 'Voucher', stock: 10, locationId: null });
+  const single = [mk(1, 'Voucher Axis 13GB', '7 hari')];
+  assert.equal(resolveInventoryProduct('axis 8gb', single).status, 'AMBIGUOUS');
+  const two = [mk(1, 'Voucher Axis 13GB', '7 hari'), mk(2, 'Voucher Axis 3GB', '3 hari')];
+  assert.notEqual(resolveInventoryProduct('axis 13gb 10 hari', two).productId, 1);
+  assert.equal(resolveInventoryProduct('axis 13gb 7 hari', two).productId, 1);
+});
+
+test('satuan bungkus dan pack dihitung sebagai pcs', () => {
+  assert.equal(normalizeStockUnit('bungkus'), 'pcs');
+  assert.equal(normalizeStockUnit('pack'), 'pcs');
+  assert.equal(normalizeStockUnit('box'), null);
 });

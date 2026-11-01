@@ -277,10 +277,11 @@ async function notifyOwnerReviewTask(taskId:string,summary:string){
  const message='⚠️ TINJAUAN SHIFT MENUNGGU\n'+summary+'\n\nTugas tersimpan: '+taskId+'\nBuka /menu → Persetujuan di chat pribadi untuk melihat dan menandai setelah diperiksa.';
  for(const ownerId of ownerIds){try{await sendTelegramMessage(BigInt(ownerId),message);}catch{/* The durable queue remains available from the owner menu. */}}
 }
-function keyboard(id:string,revision:number,stockCountComplete:boolean,canConfirm=true):InlineKeyboard{
+function keyboard(id:string,revision:number,stockCountComplete:boolean,canConfirm=true,removable:Array<{index:number;label:string}>=[]):InlineKeyboard{
  const rows:Array<Array<{text:string;callback_data:string}>>=[];
  if(!stockCountComplete)rows.push([{text:'✅ Stok akhir sesuai',callback_data:'rcms:stockok:'+id+':'+revision},{text:'⚠️ Ada selisih',callback_data:'rcms:stockend:'+id+':'+revision}]);
  else if(canConfirm)rows.push([{text:'✅ Selesai · Simpan rekap',callback_data:'rcms:ok:'+id+':'+revision}]);
+ for(const item of removable.slice(0,8))rows.push([{text:'🗑 Hapus: '+item.label.slice(0,26),callback_data:inventoryCallback('remove',id,String(item.index),'-',revision)}]);
  rows.push([{text:'Koreksi Rekap',callback_data:'rcms:edit:'+id+':'+revision},{text:'Batal',callback_data:'rcms:cancel:'+id+':'+revision}]);
  return{inline_keyboard:rows};
 }
@@ -339,13 +340,13 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
  for(const line of unresolvedLines)stockRows.push('• '+line.label+' — '+line.quantity+' '+line.unit+(line.mappingStatus==='AMBIGUOUS'?' (pilih barangnya)':line.mappingStatus==='UNMATCHED'?' (tidak ditemukan)':' (menunggu owner)'));
  const grouped=new Map<number,typeof draft.inventoryLines>();for(const line of draft.inventoryLines??[])if(line.productId)grouped.set(line.productId,[...(grouped.get(line.productId)??[]),line]);
  let stockInsufficient=false;
- for(const [productId,lines] of grouped){const product=byId.get(productId);if(!product||!lines)continue;const quantity=lines.reduce((sum,line)=>sum+line.quantity,0);itemMoney+=product.sellPrice*BigInt(quantity);stockRows.push('• '+lines.map(line=>line.label).join(' / ')+' — '+quantity+' pcs (stok jadi '+(product.stock-quantity)+')');if(quantity>product.stock)stockInsufficient=true;}
+ for(const [productId,lines] of grouped){const product=byId.get(productId);if(!product||!lines)continue;const quantity=lines.reduce((sum,line)=>sum+line.quantity,0);itemMoney+=product.sellPrice*BigInt(quantity);stockRows.push('• '+product.name+' — '+quantity+' pcs (stok jadi '+(product.stock-quantity)+')');if(quantity>product.stock)stockInsufficient=true;}
  const stockText=stockRows.length?'\n\n📦 BARANG TERJUAL:\n'+stockRows.join('\n')+(itemMoney>0n?'\nUang masuk dari barang (harga katalog): '+formatTelegramRupiah(itemMoney)+' — tidak perlu ditulis lagi.':''):'';
  const countByProduct=new Map((draft.closingStockCounts??[]).map(item=>[item.productId,item.actualQty]));
  const stockCountComplete=opening.payload.lines.every(line=>countByProduct.has(line.productId));
  const counted=countByProduct.size;
  const closeCountText='\n\n📋 STOK AKHIR: '+(stockCountComplete?'sudah dicek ✅':'belum dicek');
- const allIssues=[...issues,...(stockInsufficient?['Ada barang yang jumlahnya lebih banyak dari stok di sistem. Cek lagi jumlahnya, atau minta owner.']:[])]; const inputGuide=draft.entries.length===0&&(draft.inventoryLines??[]).length===0?'\n\nTulis saja, boleh bertahap. Contoh:\n• Admin 45rb\n• Rokok 3 bungkus\n• Axis 13GB 7 hari 2 pcs\n• Saldo total akhir 25.168.000':''; const todo=allIssues.length?'\n\nTinggal:\n'+allIssues.map((item,index)=>(index+1)+'. '+item).join('\n')+(stockCountComplete?'':'\n'+(allIssues.length+1)+'. Cek stok akhir (tombol di bawah).'):stockCountComplete?'\n\nSudah lengkap. Tekan Selesai untuk menyimpan.':'\n\nTinggal cek stok akhir (tombol di bawah).'; await deliverDraftMessage(chatId,draftId,draft.draftMessageId,formatDraft(draft)+balanceText+stockOpeningText+stockText+closeCountText+todo,keyboard(draftId,session.revision,stockCountComplete,allIssues.length===0));
+ const allIssues=[...issues,...(stockInsufficient?['Ada barang yang jumlahnya lebih banyak dari stok di sistem. Cek lagi jumlahnya, atau minta owner.']:[])]; const inputGuide=draft.entries.length===0&&(draft.inventoryLines??[]).length===0?'\n\nTulis saja, boleh bertahap. Contoh:\n• Admin 45rb\n• Axis 13GB 7 hari 2 pcs\n• Saldo total akhir 25.168.000':''; const todo=allIssues.length?'\n\nTinggal:\n'+allIssues.map((item,index)=>(index+1)+'. '+item).join('\n')+(stockCountComplete?'':'\n'+(allIssues.length+1)+'. Cek stok akhir (tombol di bawah).'):stockCountComplete?'\n\nSudah lengkap. Tekan Selesai untuk menyimpan.':'\n\nTinggal cek stok akhir (tombol di bawah).'; await deliverDraftMessage(chatId,draftId,draft.draftMessageId,formatDraft(draft)+balanceText+stockOpeningText+stockText+closeCountText+todo,keyboard(draftId,session.revision,stockCountComplete,allIssues.length===0,(draft.inventoryLines??[]).map((line,index)=>({index,label:(line.productId?byId.get(line.productId)?.name:undefined)??line.label}))));
  for(const line of draft.inventoryLines??[]){
   if(line.mappingStatus==='AMBIGUOUS'){
    const candidates=await prisma.product.findMany({where:{id:{in:line.candidateProductIds}},orderBy:{name:'asc'},select:{id:true,name:true,stock:true}});
