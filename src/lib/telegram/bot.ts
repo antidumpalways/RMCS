@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@/lib/prisma';
 import { MAX_UPDATE_ATTEMPTS, allowedTelegramGroup, authorizedTelegramGroupSender, callbackBelongsToActor, duplicateUpdateDisposition, formatTelegramRupiah, parseTelegramCallback, parseTelegramCommand, telegramId } from './core';
 import { classifyShiftIntent, matchCorrectionPosting, worthClassifying, type ShiftIntent } from './shift-intent';
-import { answerTelegramCallback, deleteTelegramMessage, sendTelegramMessage, type InlineKeyboard } from './client';
+import { answerTelegramCallback, deleteTelegramMessage, sendTelegramMessage, tryAnswerTelegramCallback, type InlineKeyboard } from './client';
 import { applyExtraction, buildAggregateReport, canFinalizeRecap, emptyRecap, extractRecapMessage, parseIndonesianRupiah, recapIssues, recapTotals, type RecapDraft } from './recap';
 import { correctTelegramPhotoFromText, handleTelegramPhoto, handleTelegramVisionCallback, sendLatestPhotoReview, visionCallbackFromData } from './photo-flow';
 import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, inventoryCallback, parseInventoryCallback, type InventoryCallbackAction } from './inventory';
@@ -633,6 +633,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
  const closingCounts=new Map((data.closingStockCounts??[]).map(item=>[item.productId,item.actualQty]));if(!shiftOpening.payload.lines.every(line=>closingCounts.has(line.productId))){await answerTelegramCallback(c.id,'Hitung stok fisik akhir dahulu.');return sendLongTelegramMessage(chatId,closingStockCountPrompt(shiftOpening.payload,await expectedClosingStock(shiftOpening.payload,data)));}
  const openingStockSnapshot={draftId:shiftOpening.row.id,startedAt:shiftOpening.payload.startedAt??shiftOpening.payload.shiftStart,reviewStatus:shiftOpening.payload.reviewStatus??'CLEAR',lines:shiftOpening.payload.lines};
  let postings:{productId:number;appliedQty:number;lineId:string}[]=[],reportIdResult='',finalBalanceCheck=data.balanceCheck,closingStockDifferences:Array<{productId:number;name:string;provider:string|null;expectedQty:number;actualQty:number}>=[],reviewTaskNotifications:Array<{id:string;summary:string}>=[];
+ const say=async(text:string)=>{if(!await tryAnswerTelegramCallback(c.id,text))await sendTelegramMessage(chatId,text);};
  try{
   await prisma.$transaction(async tx=>{
    const sessionClaim=await tx.telegramSession.updateMany({where:{id:active!.id,draftId:draft.id,state:'REPORTING',revision:parsed.revision},data:{revision:{increment:1}}});
@@ -658,18 +659,18 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
    await tx.telegramSession.deleteMany({where:{telegramIdentityId:actor.identityId,chatId,draftId:draft.id}});
   },{isolationLevel:'Serializable',timeout:20000});
  }catch(e){
-  if((e as Error).message==='DRAFT_ALREADY_PROCESSED'||(e as {code?:string}).code==='P2002'){await answerTelegramCallback(c.id,'Rekap sudah diproses sebelumnya.');return;}
-  if((e as {code?:string}).code==='P2034'){await answerTelegramCallback(c.id,'Ada perubahan bersamaan di database. Belum ada yang tersimpan; tekan Konfirmasi sekali lagi.');return;}
-  if((e as Error).message==='STALE_REPORT_REVISION'){await answerTelegramCallback(c.id,'Rekap berubah. Buka /rekap untuk meninjau versi terbaru.');return;}
-  if((e as Error).message==='SHIFT_OPENING_ALREADY_CLOSED'){await answerTelegramCallback(c.id,'Shift ini sudah ditutup.');return;}
+  if((e as Error).message==='DRAFT_ALREADY_PROCESSED'||(e as {code?:string}).code==='P2002'){await say('Rekap sudah diproses sebelumnya.');return;}
+  if((e as {code?:string}).code==='P2034'){await say('Ada perubahan bersamaan di database. Belum ada yang tersimpan; tekan Konfirmasi sekali lagi.');return;}
+  if((e as Error).message==='STALE_REPORT_REVISION'){await say('Rekap berubah. Buka /rekap untuk meninjau versi terbaru.');return;}
+  if((e as Error).message==='SHIFT_OPENING_ALREADY_CLOSED'){await say('Shift ini sudah ditutup.');return;}
   if((e as Error).message==='BALANCE_CHECK_STALE'){
    const refreshed={...data,balanceCheck:await calculateBalanceCheck(prisma,shiftStart,openingBalance,endingBalance,new Date(),data)};
    const newRevision=await saveInventoryDraft(active.id,draft.id,active.revision,refreshed);
-   await answerTelegramCallback(c.id,'Catatan saldo berubah. Pratinjau diperbarui; periksa lagi.');
+   await say('Catatan saldo berubah. Pratinjau diperbarui; periksa lagi.');
    if(newRevision!==null)await sendReportDraft(chatId,actor,active.id,draft.id);
    return;
   }
-  if(e instanceof TelegramInventoryError){await answerTelegramCallback(c.id,e.message);await sendTelegramMessage(chatId,e.message+' Tidak ada stok yang diubah. Periksa /rekap atau minta tinjauan owner.');return;}
+  if(e instanceof TelegramInventoryError){await say(e.message);await sendTelegramMessage(chatId,e.message+' Tidak ada stok yang diubah. Periksa /rekap atau minta tinjauan owner.');return;}
   throw e;
  }
  await answerTelegramCallback(c.id,finalBalanceCheck?.status==='MATCH'?'Rekap disimpan. Saldo cocok.':'Rekap tersimpan; selisih saldo dikirim ke Owner.');

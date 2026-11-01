@@ -17,8 +17,20 @@ export function sendTelegramMessage(chatId: number | bigint, text: string, reply
   return callTelegram<{ message_id?: number }>('sendMessage', { chat_id: chatId.toString(), text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
 }
 
-export function answerTelegramCallback(callbackQueryId: string, text: string) {
-  return callTelegram('answerCallbackQuery', { callback_query_id: callbackQueryId, text, show_alert: false });
+// Jawaban tombol hanya valid beberapa detik. Kalau sudah kedaluwarsa (mis. penyimpanan rekap lambat),
+// itu tidak boleh menggagalkan pesan: data sudah diproses dan Telegram akan mengulang pesan yang sama.
+export async function tryAnswerTelegramCallback(callbackQueryId: string, text: string): Promise<boolean> {
+  try {
+    await callTelegram('answerCallbackQuery', { callback_query_id: callbackQueryId, text, show_alert: false });
+    return true;
+  } catch (error) {
+    console.warn('answerCallbackQuery skipped:', error instanceof Error ? error.message : 'unknown');
+    return false;
+  }
+}
+
+export async function answerTelegramCallback(callbackQueryId: string, text: string): Promise<void> {
+  await tryAnswerTelegramCallback(callbackQueryId, text);
 }
 
 export function deleteTelegramMessage(chatId: number | bigint, messageId: number) {

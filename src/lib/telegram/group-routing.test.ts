@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
+import { answerTelegramCallback, tryAnswerTelegramCallback } from './client';
 import { inventoryCallback, parseInventoryCallback } from './inventory';
 import { applyExtraction, deterministicExtraction, emptyRecap, recapIssues } from './recap';
 
@@ -67,4 +68,16 @@ test('tombol hapus baris barang valid dan muat di batas callback Telegram', () =
   const data = inventoryCallback('remove', 'cmr1234567890123456789012', '3', '-', 12);
   assert.ok(Buffer.byteLength(data, 'utf8') <= 64);
   assert.equal(parseInventoryCallback(data)?.action, 'remove');
+});
+
+test('jawaban tombol yang kedaluwarsa tidak menggagalkan pemrosesan pesan', async () => {
+  const original = globalThis.fetch;
+  process.env.TELEGRAM_BOT_TOKEN = 'test-token';
+  globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, description: 'Bad Request: query is too old' }), { status: 400 });
+  try {
+    assert.equal(await tryAnswerTelegramCallback('q1', 'x'), false);
+    await assert.doesNotReject(answerTelegramCallback('q1', 'x'));
+  } finally {
+    globalThis.fetch = original;
+  }
 });
