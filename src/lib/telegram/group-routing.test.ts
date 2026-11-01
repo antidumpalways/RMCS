@@ -109,3 +109,16 @@ test('satuan bungkus dan pack dihitung sebagai pcs', () => {
   assert.equal(normalizeStockUnit('pack'), 'pcs');
   assert.equal(normalizeStockUnit('box'), null);
 });
+
+test('menambah catatan mempertahankan id pesan draf dan pesan pilihan barang', () => {
+  const draft = { ...emptyRecap(), draftMessageId: 11, choiceMessageId: 12 };
+  const next = applyExtraction(draft, deterministicExtraction('Admin 45rb'), 'Admin 45rb', 'u9');
+  assert.equal(next.draftMessageId, 11);
+  assert.equal(next.choiceMessageId, 12);
+});
+
+test('callback pilih barang untuk id produk besar tetap muat dan terbaca', () => {
+  const data = inventoryCallback('select', 'cmr1234567890123456789012', '7', '2147483647', 2147483647);
+  assert.ok(Buffer.byteLength(data, 'utf8') <= 64);
+  assert.deepEqual([parseInventoryCallback(data)?.action, parseInventoryCallback(data)?.lineIndex, parseInventoryCallback(data)?.value], ['select', 7, '2147483647']);
+});
