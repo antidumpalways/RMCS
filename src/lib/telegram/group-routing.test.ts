@@ -3,6 +3,7 @@ import test from 'node:test';
 import { lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
 import { answerTelegramCallback, tryAnswerTelegramCallback } from './client';
 import { inventoryCallback, normalizeStockUnit, parseInventoryCallback, parseStockCountLines, resolveInventoryProduct } from './inventory';
+import { planLateEntry } from './late-entry-plan';
 import { applyExtraction, deterministicExtraction, emptyRecap, parseIndonesianRupiah, recapIssues } from './recap';
 
 test('catatan penjualan bukan pertanyaan katalog, pertanyaan harga/stok tetap ke asisten', () => {
@@ -160,4 +161,24 @@ test('peringatan "Kategori total" hilang setelah saldo ditulis dengan benar', ()
   const fixed = applyExtraction(stuck, deterministicExtraction('saldo akhir 26jt'), 'saldo akhir 26jt', 'u1');
   assert.equal(recapIssues(fixed).some(item => item.includes('Kategori total')), false);
   assert.equal(recapIssues(fixed).some(item => item.includes('saldo akhir')), false);
+});
+
+test('susulan: stok dipotong dan uang dihitung dari harga katalog, stok kurang ditolak', () => {
+  const line = (id: string, productId: number, quantity: number) => ({ id, sourceText: 'x', label: 'axis', quantity, unit: 'pcs', productId, candidateProductIds: [productId],
+    mappingStatus: 'MATCHED' as const, coverage: 'UNRECORDED_ONLY' as const });
+  const products = [{ id: 7, name: 'Voucher Telkomsel 7GB/5 Hari', stock: 13, sellPrice: 25000n }];
+  const ok = planLateEntry([line('a', 7, 2)], 5000n, products);
+  assert.equal(ok.status, 'OK');
+  if (ok.status === 'OK') {
+    assert.equal(ok.itemMoney, 50000n);
+    assert.equal(ok.balanceDelta, 55000n);
+    assert.equal(ok.groups[0].qty, 2);
+  }
+  const merged = planLateEntry([line('a', 7, 2), line('b', 7, 3)], 0n, products);
+  assert.equal(merged.status === 'OK' ? merged.groups[0].qty : -1, 5);
+  assert.equal(planLateEntry([line('a', 7, 14)], 0n, products).status, 'REFUSED');
+  assert.equal(planLateEntry([{ ...line('a', 7, 1), mappingStatus: 'AMBIGUOUS' as const }], 0n, products).status, 'REFUSED');
+  assert.equal(planLateEntry([], -20000n, products).status === 'OK' ? 'OK' : 'REFUSED', 'OK');
+  assert.equal(planLateEntry([], 5_000_000n, products).status, 'REFUSED');
+  assert.equal(planLateEntry([], -1_000_001n, products).status, 'REFUSED');
 });

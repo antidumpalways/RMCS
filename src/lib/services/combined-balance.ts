@@ -43,7 +43,8 @@ export async function combinedBalanceAt(date: Date): Promise<bigint> {
   }, { isolationLevel: 'RepeatableRead' });
 }
 export async function setCombinedBalance(tx: Prisma.TransactionClient, input: {
-  targetBalance: bigint;
+  targetBalance?: bigint;
+  deltaBalance?: bigint;
   expectedBalance?: bigint;
   createdById: number | null;
   sourceDraftId?: string;
@@ -66,18 +67,19 @@ export async function setCombinedBalance(tx: Prisma.TransactionClient, input: {
   if (input.expectedBalance !== undefined && previousBalance !== input.expectedBalance) {
     throw new Error('Saldo berubah sejak draf dibuat. Minta asisten cek ulang agar selisihnya tidak salah.');
   }
-  const delta = input.targetBalance - previousBalance;
+  const target = input.targetBalance ?? previousBalance + (input.deltaBalance ?? 0n);
+  const delta = target - previousBalance;
   await tx.settings.update({ where: { id: 1 }, data: { balanceInitial: settings.balanceInitial + delta } });
   await tx.balanceAdjustment.create({
     data: {
       account: 'TOTAL',
       previousBalance,
-      newBalance: input.targetBalance,
+      newBalance: target,
       delta,
       note: input.note ?? null,
       createdById: input.createdById,
       sourceDraftId: input.sourceDraftId ?? null,
     },
   });
-  return { previousBalance, newBalance: input.targetBalance, delta };
+  return { previousBalance, newBalance: target, delta };
 }

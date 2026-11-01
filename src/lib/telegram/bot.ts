@@ -14,6 +14,7 @@ import { handleGroupAssistantMessage, handleOwnerCallback, handleOwnerMessage } 
 import { authorizedOwnerPrivateChat } from './owner-intent';
 import { lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
 import type { Prisma } from '@prisma/client';
+import { applyLateEntry } from '@/lib/services/telegram-late-entry';
 
 type TelegramChat={id:number;type:string};
 type TelegramUser={id:number;first_name?:string;last_name?:string;username?:string;is_bot?:boolean};
@@ -729,13 +730,23 @@ async function handleLateEntry(m:TelegramMessage,actor:TelegramActor,content:str
  if(!content)return sendTelegramMessage(chatId,'Tulis isinya setelah kata susulan. Contoh: susulan Axis 13gb 7 hari 1 pcs, atau susulan admin 5rb.');
  const report=await prisma.telegramShiftReport.findFirst({where:{chatId,confirmedAt:{gte:new Date(Date.now()-48*60*60_000)},...(actor.isOwner?{}:{telegramIdentityId:actor.identityId})},orderBy:{confirmedAt:'desc'},select:{id:true,confirmedAt:true}});
  if(!report)return sendTelegramMessage(chatId,'Saya tidak menemukan rekap Anda dalam 48 jam terakhir. Kalau shift masih berjalan, tulis saja di rekap (tombol Rekap).');
+ // Susulan diterapkan langsung (stok dipotong, saldo disesuaikan); hanya bila tidak bisa otomatis diteruskan ke owner.
+ const applied=await applyLateEntry({reportId:report.id,chatId,identityId:actor.identityId,linkedUserId:actor.linkedUserId,displayName:actor.displayName,content,updateId:updateId.toString()});
+ if(applied.status==='DUPLICATE')return sendTelegramMessage(chatId,'Susulan ini sudah dicatat sebelumnya.');
+ if(applied.status==='APPLIED'){
+  const rupiah=(value:bigint)=>formatTelegramRupiah(value<0n?-value:value);
+  const itemText=applied.lines.map(line=>'• '+line.name+' — '+line.qty+' pcs (stok jadi '+line.stockAfter+')').join('\n');
+  const balanceText=applied.balanceDelta===0n?'':'\n💰 Saldo '+(applied.balanceDelta>0n?'bertambah ':'berkurang ')+rupiah(applied.balanceDelta)+(applied.balanceAfter!==null?' (sekarang '+formatTelegramRupiah(applied.balanceAfter)+')':'');
+  try{await notifyOwnersText('➕ SUSULAN DICATAT\nKaryawan: '+actor.displayName+'\nRekap: '+report.id+(itemText?'\n'+itemText:'')+balanceText+'\nTulisan karyawan: '+content.slice(0,200));}catch{/* Info untuk owner hanya pelengkap. */}
+  return sendTelegramMessage(chatId,'✅ Susulan dicatat'+(itemText?'\n'+itemText:'')+balanceText+'\nOwner sudah diberi tahu.');
+ }
  const employee=await prisma.telegramIdentity.findUnique({where:{id:actor.identityId},select:{displayName:true}});
  const summary='Karyawan: '+(employee?.displayName??actor.displayName)+'\n'+'Rekap terakhir: '+report.id+'\n'+'Susulan: '+content.slice(0,500);
  try{
   const task=await prisma.telegramOwnerReviewTask.create({data:{operationKey:'late-entry:'+updateId.toString(),kind:'LATE_ENTRY',chatId,telegramIdentityId:actor.identityId,reportId:report.id,payload:{summary,text:content.slice(0,500)}}});
   await notifyOwnerReviewTask(task.id,'Susulan setelah rekap ditutup.'+'\n'+summary);
  }catch(error){if((error as {code?:string}).code!=='P2002')throw error;}
- return sendTelegramMessage(chatId,'✅ Sudah saya teruskan ke owner. Stok dan saldo akan disesuaikan oleh owner.');
+ return sendTelegramMessage(chatId,'⚠️ Belum bisa dicatat otomatis ('+applied.reason+'). Sudah saya teruskan ke owner untuk disesuaikan.');
 }
 async function processUpdate(u:TelegramUpdate){
  const id=telegramId(u.update_id);if(id===null)throw new Error('Invalid Telegram update_id');
