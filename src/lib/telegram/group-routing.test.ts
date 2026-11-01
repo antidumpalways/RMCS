@@ -154,3 +154,10 @@ test('selisih stok akhir: nama longgar dicocokkan, nomor tetap diterima, nama as
   assert.deepEqual([...parseStockCountLines('Surya 12 28 pcs', lines).updates], [[3, 28]]);
   assert.equal(parseStockCountLines('barang misterius 5', lines).unknown.length, 1);
 });
+
+test('peringatan "Kategori total" hilang setelah saldo ditulis dengan benar', () => {
+  const stuck = { ...emptyRecap(), unresolved: ['Kategori total perlu diperjelas: omzet barang, volume jasa, atau biaya.'] };
+  const fixed = applyExtraction(stuck, deterministicExtraction('saldo akhir 26jt'), 'saldo akhir 26jt', 'u1');
+  assert.equal(recapIssues(fixed).some(item => item.includes('Kategori total')), false);
+  assert.equal(recapIssues(fixed).some(item => item.includes('saldo akhir')), false);
+});

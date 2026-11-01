@@ -48,6 +48,14 @@ export function normalizeExtraction(v:unknown):RecapExtraction {
    })(),   inventoryLines, unresolved: Array.isArray(r.unresolved) ? r.unresolved.filter((x): x is string => typeof x === 'string').map(x => x.slice(0, 180)).slice(0, 8) : [],
    resolved: Array.isArray(r.resolved) ? r.resolved.filter((x): x is string => typeof x === 'string').map(x => x.slice(0, 180)).slice(0, 8) : [] };
 }
+// Peringatan sementara dari pembaca teks ("Kategori total perlu diperjelas") tidak boleh menempel selamanya:
+// hilang bila pesan baru menyebut kata yang sama atau sudah mencatat saldo total.
+function staleWordWarning(q:string,message:string,x:RecapExtraction){
+ const match=/^Kategori (.+?) perlu diperjelas/.exec(q)??/^Nominal (.+?) ambigu/.exec(q);
+ if(!match)return false;
+ const token=match[1].toLowerCase();
+ return message.toLowerCase().includes(token)||(['total','saldo','akhir'].includes(token)&&x.entries.some(entry=>entry.category==='total_balance'));
+}
 export function applyExtraction(d:RecapDraft,x:RecapExtraction,message:string,updateId?:string):RecapDraft {
  if(updateId&&d.processedUpdateIds?.includes(updateId))return d;
  const entries=[...d.entries];
@@ -57,7 +65,7 @@ export function applyExtraction(d:RecapDraft,x:RecapExtraction,message:string,up
  }
  const unresolved=[...x.unresolved];const inventoryLines=[...(d.inventoryLines??[])];for(let i=0;i<(x.inventoryLines??[]).length;i++){const incoming=x.inventoryLines![i],qty=typeof incoming.quantity==='number'?incoming.quantity:Number(incoming.quantity),label=incoming.label.trim().toLocaleLowerCase('id-ID'),unit=(incoming.unit??'').trim().toLocaleLowerCase('id-ID');if(incoming.ambiguity){unresolved.push(incoming.ambiguity);continue;}if(!Number.isSafeInteger(qty)||qty<=0||qty>1000000||!label||!unit){unresolved.push('Jumlah atau satuan produk perlu diperjelas: '+incoming.sourceText);continue;}const index=inventoryLines.findIndex(line=>line.label===label);if(incoming.operation==='correct'||incoming.operation==='set'){if(index<0){unresolved.push('Koreksi jumlah '+label+' belum memiliki baris sebelumnya.');continue;}inventoryLines[index]={...inventoryLines[index],sourceText:incoming.sourceText,label,quantity:qty,unit,productId:null,candidateProductIds:[],mappingStatus:'UNMATCHED',coverage:'UNDECIDED',recordedWebQty:undefined,appliedQty:undefined};}else if(index>=0){if(inventoryLines[index].unit!==unit){unresolved.push('Satuan untuk '+label+' berbeda; perlu diperjelas.');continue;}inventoryLines[index]={...inventoryLines[index],sourceText:inventoryLines[index].sourceText+'; '+incoming.sourceText,quantity:inventoryLines[index].quantity+qty,productId:null,candidateProductIds:[],mappingStatus:'UNMATCHED',coverage:'UNDECIDED'};}else inventoryLines.push({id:'line-'+(updateId??'manual')+'-'+i,sourceText:incoming.sourceText,label,quantity:qty,unit,productId:null,candidateProductIds:[],mappingStatus:'UNMATCHED',coverage:'UNDECIDED'});}
  const appliedLabels=(x.inventoryLines??[]).map(item=>item.label.trim().toLocaleLowerCase('id-ID')).filter(label=>label&&!unresolved.some(message=>message.toLowerCase().includes(label)));
- return {draftMessageId:d.draftMessageId,choiceMessageId:d.choiceMessageId,shiftLabel:x.shiftLabel??d.shiftLabel,entries,inventoryLines,unresolved:[...new Set([...d.unresolved.filter(q=>!appliedLabels.some(label=>q.toLowerCase().includes(label))&&!x.resolved?.some(r=>q.toLowerCase().includes(r.toLowerCase())||r.toLowerCase().includes(q.toLowerCase()))),...unresolved])].slice(-12),messages:[...d.messages,message.slice(0,1000)].slice(-30),processedUpdateIds:[...(d.processedUpdateIds??[]),...(updateId?[updateId]:[])]};
+ return {draftMessageId:d.draftMessageId,choiceMessageId:d.choiceMessageId,shiftLabel:x.shiftLabel??d.shiftLabel,entries,inventoryLines,unresolved:[...new Set([...d.unresolved.filter(q=>!appliedLabels.some(label=>q.toLowerCase().includes(label))&&!staleWordWarning(q,message,x)&&!x.resolved?.some(r=>q.toLowerCase().includes(r.toLowerCase())||r.toLowerCase().includes(q.toLowerCase()))),...unresolved])].slice(-12),messages:[...d.messages,message.slice(0,1000)].slice(-30),processedUpdateIds:[...(d.processedUpdateIds??[]),...(updateId?[updateId]:[])]};
 }
 export function recapTotals(d:RecapDraft):RecapTotals {
  const t:RecapTotals={service_volume:'0',service_fee:'0',sale:'0',expense:'0',cash_balance:'0',electronic_balance:'0',total_balance:'0'};
