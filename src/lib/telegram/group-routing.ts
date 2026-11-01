@@ -1,7 +1,7 @@
 // Pembantu murni untuk menentukan apakah pesan grup adalah catatan rekap atau pertanyaan katalog.
 // Dipisah dari bot.ts agar mudah dites.
 
-const QUESTION_START = /^(?:tolong\s+)?(?:cek|cari|harga|berapa|ada|apakah|info|tanya|stok|stock)\b/i;
+const QUESTION_START = /^(?:tolong\s+)?(?:cek|cari|harga|berapa|apakah|tanya)\b/i;
 const QUESTION_WORD = /\b(?:harga|berapa)\b/i;
 
 // Pertanyaan tentang katalog (harga/stok) — bukan catatan penjualan seperti "Axis 13GB 2 pcs".
@@ -48,5 +48,8 @@ const LATE_ENTRY = /^(?:susulan|lupa\s+(?:catat|rekap))\b[\s:,.-]*(.*)$/is;
 // "susulan Axis 13gb 1 pcs": penjualan atau uang yang terlewat. Mengembalikan isinya (boleh kosong), atau null bila bukan susulan.
 export function lateEntryText(text: string): string | null {
   const match = LATE_ENTRY.exec(text.trim().replace(/^@\w+\s*/, ''));
-  return match ? match[1].trim() : null;
+  if (!match) return null;
+  const content = match[1].trim();
+  // Frasa tanpa angka ("lupa rekap tadi, maaf ya") hanya obrolan, bukan susulan.
+  return content && !/\d/.test(content) ? null : content;
 }

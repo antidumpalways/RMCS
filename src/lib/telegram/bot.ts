@@ -303,12 +303,25 @@ async function saveInventoryDraft(sessionId:string,draftId:string,revision:numbe
 function inventoryKeyboard(draftId:string,lineIndex:number,revision:number,choices:Array<{text:string;action:InventoryCallbackAction;value:string}>):InlineKeyboard{
  return{inline_keyboard:choices.map(choice=>[{text:choice.text,callback_data:inventoryCallback(choice.action,draftId,String(lineIndex),choice.value,revision)}])};
 }
+async function mergeDraftPayload(draftId:string,patch:Partial<RecapDraft>){
+ // Tulis hanya bila draf tidak berubah sejak dibaca (updatedAt); ulangi bila ada yang menulis bersamaan.
+ for(let attempt=0;attempt<3;attempt++){
+  const row=await prisma.telegramDraft.findUnique({where:{id:draftId},select:{payload:true,status:true,updatedAt:true}});
+  if(!row||row.status!=='PENDING'||!row.payload||typeof row.payload!=='object')return;
+  const saved=await prisma.telegramDraft.updateMany({where:{id:draftId,status:'PENDING',updatedAt:row.updatedAt},data:{payload:{...(row.payload as object),...patch} as object}});
+  if(saved.count===1)return;
+ }
+}
 async function deliverDraftMessage(chatId:bigint,draftId:string,previousMessageId:number|undefined,text:string,markup:InlineKeyboard){
  // Satu draf aktif saja: kirim yang baru di bagian bawah grup, lalu hapus draf lama agar chat tidak penuh.
- if(text.length>3900){await sendLongTelegramMessage(chatId,text,markup);return;}
+ if(text.length>3900){
+  await sendLongTelegramMessage(chatId,text,markup);
+  if(previousMessageId){try{await deleteTelegramMessage(chatId,previousMessageId);}catch{/* Pesan lama mungkin sudah terhapus atau terlalu lama. */}try{await mergeDraftPayload(draftId,{draftMessageId:undefined});}catch{/* Hanya kerapian. */}}
+  return;
+ }
  const sent=await sendTelegramMessage(chatId,text,markup),newId=sent?.message_id;
  if(previousMessageId&&previousMessageId!==newId){try{await deleteTelegramMessage(chatId,previousMessageId);}catch{/* Pesan lama mungkin sudah terhapus atau terlalu lama. */}}
- if(newId){try{const row=await prisma.telegramDraft.findUnique({where:{id:draftId},select:{payload:true,status:true}});if(row&&row.status==='PENDING'&&row.payload&&typeof row.payload==='object')await prisma.telegramDraft.updateMany({where:{id:draftId,status:'PENDING'},data:{payload:{...(row.payload as object),draftMessageId:newId} as object}});}catch{/* Penyimpanan id pesan hanya untuk kerapian. */}}
+ if(newId){try{await mergeDraftPayload(draftId,{draftMessageId:newId});}catch{/* Penyimpanan id pesan hanya untuk kerapian. */}}
 }
 async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:string,draftId:string){
  let session=await prisma.telegramSession.findUnique({where:{id:sessionId}}),row=await prisma.telegramDraft.findUnique({where:{id:draftId}});
@@ -341,7 +354,7 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
  const grouped=new Map<number,typeof draft.inventoryLines>();for(const line of draft.inventoryLines??[])if(line.productId)grouped.set(line.productId,[...(grouped.get(line.productId)??[]),line]);
  let stockInsufficient=false;
  for(const [productId,lines] of grouped){const product=byId.get(productId);if(!product||!lines)continue;const quantity=lines.reduce((sum,line)=>sum+line.quantity,0);itemMoney+=product.sellPrice*BigInt(quantity);stockRows.push('• '+product.name+' — '+quantity+' pcs (stok jadi '+(product.stock-quantity)+')');if(quantity>product.stock)stockInsufficient=true;}
- const stockText=stockRows.length?'\n\n📦 BARANG TERJUAL:\n'+stockRows.join('\n')+(itemMoney>0n?'\nUang masuk dari barang (harga katalog): '+formatTelegramRupiah(itemMoney)+' — tidak perlu ditulis lagi.':''):'';
+ const stockText=stockRows.length?'\n\n📦 BARANG TERJUAL:\n'+stockRows.join('\n')+(itemMoney>0n?'\nUang masuk dari barang (harga katalog): '+formatTelegramRupiah(itemMoney)+' — tidak perlu ditulis lagi.':'')+(draft.entries.some(entry=>entry.category==='sale')?'\n⚠️ Anda juga menulis penjualan dalam rupiah. Pastikan uang dari barang pcs di atas tidak ditulis dua kali.':''):'';
  const countByProduct=new Map((draft.closingStockCounts??[]).map(item=>[item.productId,item.actualQty]));
  const stockCountComplete=opening.payload.lines.every(line=>countByProduct.has(line.productId));
  const counted=countByProduct.size;
@@ -362,7 +375,7 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
   const sent=await sendTelegramMessage(chatId,'Pilih barang yang dimaksud:\n'+textRows.join('\n'),{inline_keyboard:rows});
   choiceMessageId=sent?.message_id;
  }
- if(choiceMessageId!==draft.choiceMessageId){try{const row=await prisma.telegramDraft.findUnique({where:{id:draftId},select:{payload:true,status:true}});if(row&&row.status==='PENDING'&&row.payload&&typeof row.payload==='object')await prisma.telegramDraft.updateMany({where:{id:draftId,status:'PENDING'},data:{payload:{...(row.payload as object),choiceMessageId} as object}});}catch{/* Hanya untuk kerapian chat. */}}
+ if(choiceMessageId!==draft.choiceMessageId){try{await mergeDraftPayload(draftId,{choiceMessageId});}catch{/* Hanya untuk kerapian chat. */}}
 }
 async function handleInventoryCallback(c:TelegramCallback,actor:TelegramActor,chatId:bigint){
  const parsed=parseInventoryCallback(c.data);if(!parsed)return false;
@@ -530,12 +543,14 @@ async function correctReportByChat(chatId:bigint,actor:TelegramActor,intent:Shif
  const reason=intent.reason&&intent.reason.length>=5?intent.reason:'Koreksi lewat chat: '+text.slice(0,300);
  return submitReportCorrection(chatId,actor,report,match.posting as (typeof report.inventoryPostings)[number],intent.newQuantity,reason,true);
 }
-async function handleAiShiftIntent(chatId:bigint,actor:TelegramActor,intent:ShiftIntent,text:string){
+async function handleAiShiftIntent(chatId:bigint,actor:TelegramActor,intent:ShiftIntent,text:string,message?:TelegramMessage,updateId?:bigint){
  if(intent.intent==='open_shift')return startShiftOpening(chatId,actor,intent.shiftLabel);
  if(intent.intent==='close_shift'){
   const opening=await activeShiftOpening(chatId,actor.identityId);
   if(!opening)return sendTelegramMessage(chatId,'Belum ada shift yang dibuka, jadi belum bisa direkap. Untuk mulai shift, tulis saja “mulai shift” atau tekan tombol di /menu.');
-  return openReport(chatId,actor,intent.shiftLabel);
+  // Bila pesan juga memuat isi rekap (beberapa baris atau ada angka), catat isinya, jangan dibuang.
+  const hasBody=!!message&&(text.split(/\r?\n/).length>1||/\d/.test(text));
+  return openReport(chatId,actor,intent.shiftLabel,hasBody?{...message!,text}:undefined,updateId);
  }
  return correctReportByChat(chatId,actor,intent,text);
 }
@@ -705,6 +720,8 @@ async function handleLateEntry(m:TelegramMessage,actor:TelegramActor,content:str
   if(!content)return sendTelegramMessage(chatId,'Rekap Anda masih terbuka. Tulis saja barang atau uangnya langsung, contoh: Axis 13gb 7 hari 1 pcs.');
   return recordReportMessage({...m,text:content},actor,updateId);
  }
+ const runningShift=await activeShiftOpening(chatId,actor.identityId);
+ if(runningShift&&content)return openReport(chatId,actor,null,{...m,text:content},updateId);
  if(!content)return sendTelegramMessage(chatId,'Tulis isinya setelah kata susulan. Contoh: susulan Axis 13gb 7 hari 1 pcs, atau susulan admin 5rb.');
  const report=await prisma.telegramShiftReport.findFirst({where:{chatId,confirmedAt:{gte:new Date(Date.now()-48*60*60_000)},...(actor.isOwner?{}:{telegramIdentityId:actor.identityId})},orderBy:{confirmedAt:'desc'},select:{id:true,confirmedAt:true}});
  if(!report)return sendTelegramMessage(chatId,'Saya tidak menemukan rekap Anda dalam 48 jam terakhir. Kalau shift masih berjalan, tulis saja di rekap (tombol Rekap).');
@@ -784,7 +801,7 @@ async function processUpdate(u:TelegramUpdate){
   if(c)await handleCallback(c,actor);
   else if(m&&command)await handleCommand(m,actor,command.command,command.args,id);
   else if(m&&lateEntry!==null)await handleLateEntry(m,actor,lateEntry,id);
-  else if(m&&aiIntent)await handleAiShiftIntent(BigInt(chat.id),actor,aiIntent,m.text??'');
+  else if(m&&aiIntent)await handleAiShiftIntent(BigInt(chat.id),actor,aiIntent,m.text??'',m,id);
   else if(m&&startRequest){
    const chatId=BigInt(chat.id),opening=await activeShiftOpening(chatId,actor.identityId),body=startRequest.rest;
    if(!opening){await startShiftOpening(chatId,actor,startRequest.shiftLabel);if(m.photo||m.document||body)await sendTelegramMessage(chatId,'Selesaikan cek stok awal dahulu. Setelah shift dimulai, kirim rekapnya lagi.');}

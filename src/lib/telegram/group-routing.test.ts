@@ -122,3 +122,13 @@ test('callback pilih barang untuk id produk besar tetap muat dan terbaca', () =>
   assert.ok(Buffer.byteLength(data, 'utf8') <= 64);
   assert.deepEqual([parseInventoryCallback(data)?.action, parseInventoryCallback(data)?.lineIndex, parseInventoryCallback(data)?.value], ['select', 7, '2147483647']);
 });
+
+test('obrolan tanpa angka bukan susulan, dan kalimat rekap dengan awalan ada/stok bukan pertanyaan katalog', () => {
+  assert.equal(lateEntryText('lupa rekap tadi, maaf ya'), null);
+  assert.equal(lateEntryText('susulan ya'), null);
+  assert.equal(looksLikeCatalogQuestion('ada selisih admin 5rb'), false);
+  assert.equal(looksLikeCatalogQuestion('ada tf 500rb'), false);
+  assert.equal(looksLikeCatalogQuestion('Stok Axis tinggal 5'), false);
+  assert.equal(looksLikeCatalogQuestion('stok axis 13gb ada?'), true);
+  assert.equal(looksLikeCatalogQuestion('cek stok charger'), true);
+});

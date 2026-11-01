@@ -1600,7 +1600,10 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
         kind: 'GROUP_ASSISTANT', payload: initial as object, status: 'PENDING', expiresAt: new Date(Date.now() + GROUP_ASSISTANT_TTL) } });
     } catch (error) { if ((error as { code?: string }).code !== 'P2002') throw error; }
   }
-  const claimed = await prisma.telegramDraft.updateMany({ where: { id, chatId: input.chatId, kind: 'GROUP_ASSISTANT', status: 'PENDING' },
+  let claimed = await prisma.telegramDraft.updateMany({ where: { id, chatId: input.chatId, kind: 'GROUP_ASSISTANT', status: 'PENDING' },
+    data: { status: 'PROCESSING' } });
+  // Proses yang mati di tengah jalan tidak boleh mengunci karyawan selamanya: ambil alih kunci yang lebih tua dari 2 menit.
+  if (claimed.count !== 1) claimed = await prisma.telegramDraft.updateMany({ where: { id, chatId: input.chatId, kind: 'GROUP_ASSISTANT', status: 'PROCESSING', updatedAt: { lt: new Date(Date.now() - 120_000) } },
     data: { status: 'PROCESSING' } });
   if (claimed.count !== 1) return sendTelegramMessage(input.chatId, 'Saya sedang memeriksa pertanyaan sebelumnya. Coba kirim lagi sebentar.');
   const claimedRow = await prisma.telegramDraft.findUnique({ where: { id } });
