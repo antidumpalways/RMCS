@@ -94,7 +94,7 @@ export function deterministicExtraction(text:string):RecapExtraction{
  const correction=/\b(rokok|pulsa|tf|transfer|tarik)\b(?:\s+\w+){0,3}\s+salah\s+bukan\s+(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)\s+(?:tapi|tp)\s+(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i.exec(rest);
  if(correction){const key=correction[1].toLowerCase();const category:RecapCategory=key==='rokok'?'sale':'service_volume';const label=key==='tf'||key==='transfer'?'transfer keluar':key==='tarik'?'tarik tunai':key;entries.push({category,label,amount:correction[3],operation:'correct'});rest=rest.replace(correction[0],' ');}
  const specs:Array<[RecapCategory,string,RegExp,'add'|'set']>=[
- ['total_balance','saldo total',/(?:saldo\s*(?:total(?:\s*nya)?|gabungan|sekarang(?:\s+total(?:\s*nya)?)?|akhir)|total\s+saldo)\s*[:=]?\s*(\d[\d.,]*\s*(?:(?:jt|juta|m)\s*)?(?:\d[\d.,]*\s*(?:rb|ribu|k))?)/i,'set'],
+ ['total_balance','saldo total',/(?:saldo\s*(?:akhir|total(?:\s*nya)?|gabungan|sekarang)(?:\s+(?:akhir|total(?:\s*nya)?|gabungan|sekarang))*|total\s+saldo(?:\s+akhir)?)\s*[:=]?\s*(\d[\d.,]*\s*(?:(?:jt|juta|m)\s*)?(?:\d[\d.,]*\s*(?:rb|ribu|k))?)/i,'set'],
 
  ['total_balance','saldo elektronik',/\b(?:saldo\s*)?(?:cash|kas|dana|gopay|ovo|rekening|elektronik)\b(?:\s*(?:akhir|sisa))?\s*[:=]?\s*(\d[\d.,]*\s*(?:(?:jt|juta|m)\s*)?(?:\d[\d.,]*\s*(?:rb|ribu|k))?)/i,'set'],
  ['service_fee','admin transfer',/\b(?:admin|fee)\b\s*(?:tf|transfer)?\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],

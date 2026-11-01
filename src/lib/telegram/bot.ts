@@ -5,7 +5,7 @@ import { classifyShiftIntent, matchCorrectionPosting, worthClassifying, type Shi
 import { answerTelegramCallback, deleteTelegramMessage, sendTelegramMessage, tryAnswerTelegramCallback, type InlineKeyboard } from './client';
 import { applyExtraction, buildAggregateReport, canFinalizeRecap, emptyRecap, extractRecapMessage, parseIndonesianRupiah, recapIssues, recapTotals, type RecapDraft } from './recap';
 import { correctTelegramPhotoFromText, handleTelegramPhoto, handleTelegramVisionCallback, sendLatestPhotoReview, visionCallbackFromData } from './photo-flow';
-import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, inventoryCallback, parseInventoryCallback, type InventoryCallbackAction } from './inventory';
+import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, inventoryCallback, parseInventoryCallback, parseStockCountLines, type InventoryCallbackAction } from './inventory';
 import { prepareInventoryReview, postTelegramInventory, inventoryPreview, TelegramInventoryError } from '@/lib/services/telegram-inventory';
 import { cashOnHandAt, shiftOpening } from '@/lib/automation';
 import { combinedBalanceAt, recordedCombinedMovementsBetween, setCombinedBalance } from '@/lib/services/combined-balance';
@@ -96,7 +96,7 @@ function shiftOpeningSummary(payload:ShiftOpeningPayload){
 async function sendShiftOpeningDraft(chatId:bigint,row:{id:string;payload:unknown}){
  const payload=shiftOpeningPayload(row.payload);if(!payload)return sendTelegramMessage(chatId,'Hitungan awal shift tidak dapat dibaca. Batalkan lalu mulai /shift kembali.');
  const list=shiftOpeningSummary(payload);
- if(payload.stage==='COUNT')return sendTelegramMessage(chatId,'Kirim hanya barang yang jumlah stoknya berbeda, satu per baris. Contoh:\n1 16\nAxis 16 pcs\n\nBarang yang tidak disebut dianggap cocok. Pakai nomor di depan atau nama persis dari daftar.');
+ if(payload.stage==='COUNT')return sendTelegramMessage(chatId,'Kirim hanya barang yang jumlah stoknya berbeda, satu per baris. Contoh:\n1 16\nAxis 16 pcs\n\nBarang yang tidak disebut dianggap cocok. Boleh pakai nomor di depan atau nama barang. Setelah dikirim, shift langsung dimulai.');
  const isCheck=payload.stage==='CHECK';
  const header=isCheck?'🕒 CEK STOK AWAL SHIFT\nCocokkan jumlah stok di rak dengan daftar ini.':'🕒 TINJAU STOK AWAL SHIFT';
  const footer=isCheck?'Kalau ada yang tidak cocok, tekan “Ada selisih” lalu kirim nomor barang dan jumlah stok sebenarnya. Barang lain dianggap cocok.':'Selisih dicatat untuk owner. Stok di sistem tidak diubah dan selisih tidak dianggap penjualan.';
@@ -182,10 +182,7 @@ async function recordShiftOpeningMessage(message:TelegramMessage,actor:TelegramA
  const parsed=parseOpeningCountLines(message.text,payload);
  if(parsed.unknown.length||!parsed.updates.size){await sendTelegramMessage(chatId,'Saya belum cocokkan: '+(parsed.unknown.join(', ')||'jumlah belum terbaca')+'. Kirim nomor/nama persis dari daftar dan jumlahnya, misalnya “1 16”.');return true;}
  const lines=payload.lines.map(line=>({...line,actualQty:parsed.updates.get(line.productId)??line.expectedQty}));
- const next:ShiftOpeningPayload={...payload,stage:'REVIEW',lines,reviewStatus:lines.some(line=>line.actualQty!==line.expectedQty)?'OWNER_REVIEW':'CLEAR'};
- const saved=await prisma.telegramDraft.updateMany({where:{id:row.id,kind:'SHIFT_OPENING',status:'PENDING',updatedAt:row.updatedAt},data:{payload:next as object}});
- if(saved.count!==1){await sendTelegramMessage(chatId,'Hitungan berubah bersamaan. Buka /shift untuk melihat data terbaru.');return true;}
- await sendShiftOpeningDraft(chatId,{id:row.id,payload:next});return true;
+ await completeShiftOpening(row,payload,lines,actor,chatId,async()=>{});return true;
 }
 async function handleShiftOpeningCallback(c:TelegramCallback,actor:TelegramActor,chatId:bigint){
  const match=/^rcms:shiftopen:(same|diff|confirm|edit|cancel):([A-Za-z0-9_-]{10,40})$/.exec(c.data??'');if(!match)return false;
@@ -203,10 +200,13 @@ async function handleShiftOpeningCallback(c:TelegramCallback,actor:TelegramActor
  }
  if(match[1]==='same'&&payload.stage!=='CHECK'||match[1]==='confirm'&&payload.stage!=='REVIEW'){await answerTelegramCallback(c.id,'Tinjau hitungan terbaru dahulu.');return true;}
  const lines=match[1]==='same'?payload.lines.map(line=>({...line,actualQty:line.expectedQty})):payload.lines;
+ return completeShiftOpening(row,payload,lines,actor,chatId,text=>answerTelegramCallback(c.id,text));
+}
+async function completeShiftOpening(row:{id:string},payload:ShiftOpeningPayload,lines:ShiftOpeningLine[],actor:TelegramActor,chatId:bigint,answer:(text:string)=>Promise<unknown>){
  const products=await prisma.product.findMany({where:{id:{in:lines.map(line=>line.productId)}},select:{id:true,stock:true}}),stocks=new Map(products.map(product=>[product.id,product.stock]));
  if(lines.some(line=>stocks.get(line.productId)!==line.expectedQty)){
   await prisma.$transaction(async tx=>{await tx.telegramDraft.updateMany({where:{id:row.id,status:'PENDING'},data:{status:'CANCELLED'}});await tx.telegramSession.deleteMany({where:{chatId,telegramIdentityId:actor.identityId,draftId:row.id,state:'OPENING'}});await tx.telegramShiftRegister.updateMany({where:{chatId,activeShiftId:row.id},data:{activeShiftId:null,recapIdentityId:null}});});
-  await answerTelegramCallback(c.id,'Stok di sistem berubah.');return sendTelegramMessage(chatId,'Stok di sistem berubah saat Anda menghitung. Proses dibatalkan; tekan /shift lalu cocokkan lagi dengan angka terbaru.');
+  await answer('Stok di sistem berubah.');return sendTelegramMessage(chatId,'Stok di sistem berubah saat Anda menghitung. Proses dibatalkan; tekan /shift lalu cocokkan lagi dengan angka terbaru.');
  }
  const now=new Date(),differences=lines.filter(line=>line.actualQty!==line.expectedQty),next:ShiftOpeningPayload={...payload,shiftId:payload.shiftId??row.id,stage:'REVIEW',shiftStart:now.toISOString(),lines,reviewStatus:differences.length?'OWNER_REVIEW':'CLEAR',startedAt:now.toISOString()};
  let openingReviewTaskId:string|null=null;
@@ -217,11 +217,11 @@ async function handleShiftOpeningCallback(c:TelegramCallback,actor:TelegramActor
   if(differences.length){const employee=await tx.telegramIdentity.findUnique({where:{id:actor.identityId},select:{displayName:true}});const summary=differences.map(line=>`${line.name}${line.provider?' · '+line.provider:''}: sistem ${line.expectedQty}, hitungan ${line.actualQty}`).join('\n');const task=await tx.telegramOwnerReviewTask.create({data:{operationKey:'shift-opening:'+row.id+':stock',kind:'STOCK_OPENING_DISCREPANCY',chatId,telegramIdentityId:actor.identityId,payload:{summary:'Karyawan: '+(employee?.displayName??actor.displayName)+'\n'+summary,openingDraftId:row.id}}});openingReviewTaskId=task.id;}
   return true;
  });
- if(!result){await answerTelegramCallback(c.id,'Shift sudah diproses.');return true;}
- await answerTelegramCallback(c.id,differences.length?'Shift dibuka; selisih dicatat.':'Shift dibuka.');
+ if(!result){await answer('Shift sudah diproses.');return true;}
+ await answer(differences.length?'Shift dibuka; selisih dicatat.':'Shift dibuka.');
  if(openingReviewTaskId)await notifyOwnerReviewTask(openingReviewTaskId,'Selisih stok awal shift. Buka antrean untuk rincian.');
  const pendingBalanceReviews=await prisma.telegramOwnerReviewTask.count({where:{kind:'BALANCE_DISCREPANCY',status:'PENDING'}});
- return sendTelegramMessage(chatId,'✅ Shift dimulai. Stok awal sudah dicatat.'+(differences.length?'\n⚠️ Selisih stok awal sudah dicatat untuk owner.':'')+(pendingBalanceReviews?'\n⚠️ Ada selisih saldo shift sebelumnya yang belum diputuskan owner, jadi selisih bisa muncul lagi di rekap.':'')+'\n\nSaat shift selesai, tekan tombol Rekap di bawah lalu tulis jualan dan saldo akhir.',{inline_keyboard:[[{text:'🧾 Rekap shift (saat selesai)',callback_data:'rcms:group:menu:rekap'}]]});
+ return sendTelegramMessage(chatId,'✅ Shift dimulai. Stok awal sudah dicatat.'+(differences.length?'\n⚠️ Selisih stok awal dicatat untuk owner:\n'+differences.map(line=>'• '+openingLineName(line)+': sistem '+line.expectedQty+' → stok '+line.actualQty).join('\n'):'')+(pendingBalanceReviews?'\n⚠️ Ada selisih saldo shift sebelumnya yang belum diputuskan owner, jadi selisih bisa muncul lagi di rekap.':'')+'\n\nSaat shift selesai, tekan tombol Rekap di bawah lalu tulis jualan dan saldo akhir.',{inline_keyboard:[[{text:'🧾 Rekap shift (saat selesai)',callback_data:'rcms:group:menu:rekap'}]]});
 }
 async function captureShiftOpeningBalance(){
  const now=new Date(),cashOpening=await shiftOpening(now),ledgerCash=await cashOnHandAt(cashOpening.start),total=await combinedBalanceAt(now);
@@ -285,6 +285,7 @@ function keyboard(id:string,revision:number,stockCountComplete:boolean,canConfir
  rows.push([{text:'Koreksi Rekap',callback_data:'rcms:edit:'+id+':'+revision},{text:'Batal',callback_data:'rcms:cancel:'+id+':'+revision}]);
  return{inline_keyboard:rows};
 }
+function parseClosingCountLines(text:string,payload:ShiftOpeningPayload){return parseStockCountLines(text,payload.lines);}
 function soldQuantities(draft:RecapDraft){const sold=new Map<number,number>();for(const line of draft.inventoryLines??[])if(line.productId&&line.mappingStatus==='MATCHED')sold.set(line.productId,(sold.get(line.productId)??0)+line.quantity);return sold;}
 async function expectedClosingStock(payload:ShiftOpeningPayload,draft:RecapDraft){
  const products=await prisma.product.findMany({where:{id:{in:payload.lines.map(line=>line.productId)}},select:{id:true,stock:true}}),stock=new Map(products.map(product=>[product.id,product.stock])),sold=soldQuantities(draft);
@@ -358,7 +359,8 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
  const countByProduct=new Map((draft.closingStockCounts??[]).map(item=>[item.productId,item.actualQty]));
  const stockCountComplete=opening.payload.lines.every(line=>countByProduct.has(line.productId));
  const counted=countByProduct.size;
- const closeCountText='\n\n📋 STOK AKHIR: '+(stockCountComplete?'sudah dicek ✅':'dianggap sesuai. Kalau ada yang beda, tekan “Ada selisih stok”.');
+ const soldNow=soldQuantities(draft),closingDiffs=stockCountComplete?opening.payload.lines.flatMap(line=>{const product=byId.get(line.productId),actual=countByProduct.get(line.productId);const expected=product?Math.max(0,product.stock-(soldNow.get(line.productId)??0)):undefined;return product&&actual!==undefined&&expected!==undefined&&actual!==expected?[{line,expected,actual}]:[];}):[];
+ const closeCountText='\n\n📋 STOK AKHIR: '+(stockCountComplete?'sudah dicek ✅'+closingDiffs.map(item=>'\n• '+openingLineName(item.line)+': seharusnya '+item.expected+', stok sebenarnya '+item.actual).join(''):'dianggap sesuai. Kalau ada yang beda, tekan “Ada selisih stok”.');
  const allIssues=[...issues,...(stockInsufficient?['Ada barang yang jumlahnya lebih banyak dari stok di sistem. Cek lagi jumlahnya, atau minta owner.']:[])]; const inputGuide=draft.entries.length===0&&(draft.inventoryLines??[]).length===0?'\n\nTulis saja, boleh bertahap. Contoh:\n• Admin 45rb\n• Axis 13GB 7 hari 2 pcs\n• Saldo total akhir 25.168.000':''; const todo=allIssues.length?'\n\nTinggal:\n'+allIssues.map((item,index)=>(index+1)+'. '+item).join('\n'):'\n\nSudah lengkap. Tekan Selesai untuk menyimpan.'; await deliverDraftMessage(chatId,draftId,draft.draftMessageId,formatDraft(draft)+balanceText+stockOpeningText+stockText+closeCountText+todo,keyboard(draftId,session.revision,stockCountComplete,allIssues.length===0,(draft.inventoryLines??[]).map((line,index)=>({index,label:(line.productId?byId.get(line.productId)?.name:undefined)??line.label}))));
  const choiceItems=(draft.inventoryLines??[]).map((line,index)=>({line,index})).filter(item=>item.line.mappingStatus==='AMBIGUOUS'||item.line.mappingStatus==='UNMATCHED');
  if(draft.choiceMessageId){try{await deleteTelegramMessage(chatId,draft.choiceMessageId);}catch{/* Pesan pilihan lama mungkin sudah terhapus. */}}
@@ -455,7 +457,7 @@ async function claimGroupShiftRecap(chatId:bigint,shiftId:string,identityId:stri
  return sendTelegramMessage(chatId,formatDraft(data)+"\n\nSilakan kirim ringkasan shift atau foto buku rekap.");
 }
 async function handleClosingStockCountCallback(c:TelegramCallback,actor:TelegramActor,chatId:bigint){
- const match=/^rcms:(stockend|stockok):([A-Za-z0-9_-]{10,40}):(\d{1,10})$/.exec(c.data??'');if(!match)return false;
+ const match=/^rcms:(stockend|stockok|stocklist):([A-Za-z0-9_-]{10,40}):(\d{1,10})$/.exec(c.data??'');if(!match)return false;
  const session=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId,telegramIdentityId:actor.identityId}}});
  if(!session||session.draftId!==match[2]||session.revision!==Number(match[3])){await answerTelegramCallback(c.id,'Tombol ini sudah lama. Pakai tombol di pesan rekap yang terbaru.');return true;}
  const [row,opening]=await Promise.all([prisma.telegramDraft.findUnique({where:{id:match[2]}}),activeShiftOpening(chatId,actor.identityId)]);
@@ -466,10 +468,12 @@ async function handleClosingStockCountCallback(c:TelegramCallback,actor:Telegram
   const saved=await saveInventoryDraft(session.id,row.id,session.revision,done);if(saved===null){await answerTelegramCallback(c.id,'Rekap baru saja berubah. Tekan tombol Rekap untuk melihat yang terbaru.');return true;}
   await answerTelegramCallback(c.id,'Stok akhir dicatat sesuai.');return sendReportDraft(chatId,actor,session.id,row.id);
  }
+ if(match[1]==='stocklist'){await answerTelegramCallback(c.id,'Daftar barang dikirim.');return sendLongTelegramMessage(chatId,closingStockCountPrompt(opening.payload,expected));}
  const next:RecapDraft={...current,closingStockAwaiting:true,closingStockCounts:[]};
  const revision=await saveInventoryDraft(session.id,row.id,session.revision,next);if(revision===null){await answerTelegramCallback(c.id,'Rekap baru saja berubah. Tekan tombol Rekap untuk melihat yang terbaru.');return true;}
  await answerTelegramCallback(c.id,'Kirim hanya barang yang berbeda.');
- return sendLongTelegramMessage(chatId,closingStockCountPrompt(opening.payload,expected));
+ if(match[1]==='stocklist')return sendLongTelegramMessage(chatId,closingStockCountPrompt(opening.payload,expected));
+ return sendTelegramMessage(chatId,'⚠️ SELISIH STOK AKHIR\nTulis barang yang stoknya beda dari sistem, satu per baris, diikuti jumlah stok sebenarnya. Contoh:\nAxis 13GB 3\nSurya 12 28\n\nBarang lain dianggap cocok.',{inline_keyboard:[[{text:'📋 Lihat daftar barang',callback_data:'rcms:stocklist:'+row.id+':'+revision}]]});
 }
 async function recordReportMessage(rawMessage:TelegramMessage,actor:TelegramActor,updateId:bigint){
  const message=rawMessage.text?{...rawMessage,text:stripRecapHeader(stripBotMention(rawMessage.text))}:rawMessage;
@@ -483,8 +487,8 @@ async function recordReportMessage(rawMessage:TelegramMessage,actor:TelegramActo
  if(prior.correctionPhotoId&&await correctTelegramPhotoFromText(message,actor.identityId,updateId))return;
  if(prior.closingStockAwaiting){
   const opening=await activeShiftOpening(chatId,actor.identityId);if(!opening){await sendTelegramMessage(chatId,'Shift sudah ditutup. Hitung stok tidak tersimpan.');return;}
-  const parsed=parseOpeningCountLines(message.text,{...opening.payload,lines:opening.payload.lines.map(line=>({...line,expectedQty:line.actualQty??line.expectedQty}))});
-  if(parsed.unknown.length||!parsed.updates.size){await sendTelegramMessage(chatId,'Saya belum cocokkan: '+(parsed.unknown.join(', ')||'jumlah belum terbaca')+'. Kirim nomor dan jumlah stok barang yang berbeda saja, misalnya “1 12”. Kalau semua sesuai, tekan “Stok akhir sesuai”.');return;}
+  const parsed=parseClosingCountLines(message.text,opening.payload);
+  if(parsed.unknown.length||!parsed.updates.size){await sendTelegramMessage(chatId,'Belum cocok: '+(parsed.unknown.join(', ')||'jumlah belum terbaca')+'.\nTulis nama barang lebih lengkap lalu jumlah stok sebenarnya, contoh “Axis 13GB 3”. Lupa nama barangnya? Tekan “Lihat daftar barang” di pesan sebelumnya.');return;}
   const expected=await expectedClosingStock(opening.payload,prior);
   const next:RecapDraft={...prior,closingStockAwaiting:false,closingStockCounts:opening.payload.lines.map(line=>({productId:line.productId,actualQty:parsed.updates.get(line.productId)??expected.get(line.productId)??line.actualQty??line.expectedQty})),processedUpdateIds:[...(prior.processedUpdateIds??[]),updateId.toString()]};
   const revision=await saveInventoryDraft(session.id,stored.id,session.revision,next);if(revision===null){await sendTelegramMessage(chatId,'Rekap baru saja berubah. Tekan tombol Rekap untuk melihat yang terbaru.');return;}

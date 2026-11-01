@@ -119,3 +119,27 @@ export function correctionDelta(currentAppliedQty: number, requestedAppliedQty: 
   if (!Number.isSafeInteger(currentAppliedQty) || currentAppliedQty < 0 || !Number.isSafeInteger(requestedAppliedQty) || requestedAppliedQty < 0) return null;
   return requestedAppliedQty - currentAppliedQty;
 }
+
+export type StockCountLine = { productId: number; name: string; sku: string | null; provider?: string | null; actualQty: number | null; expectedQty: number };
+
+// Membaca "nama barang + jumlah stok sebenarnya" (nama boleh longgar) atau "nomor jumlah" dari daftar.
+export function parseStockCountLines(text: string, lines: StockCountLine[]) {
+  const updates = new Map<number, number>();
+  const unknown: string[] = [];
+  const catalog = lines.map(line => ({ id: line.productId, name: line.name, sku: line.sku, provider: line.provider ?? null, validity: null,
+    categoryName: '', stock: line.actualQty ?? line.expectedQty, locationId: null }));
+  for (const raw of text.split(/[\n,;]+/).map(part => part.trim()).filter(Boolean)) {
+    const value = raw.replace(/\s*(?:pcs?|unit|units?|biji|buah|lembar|batang|bungkus)\s*$/i, '').trim();
+    const indexed = /^(?:#)?(\d{1,2})\s*(?:[:=]|\s)\s*(\d{1,7})$/.exec(value);
+    const named = indexed ? null : /^(.+?)\s*(?:[:=]\s*|\s+)(\d{1,7})$/.exec(value);
+    const quantity = Number(indexed?.[2] ?? named?.[2]);
+    let line = indexed ? lines[Number(indexed[1]) - 1] ?? null : null;
+    if (!line && named) {
+      const found = resolveInventoryProduct(named[1], catalog);
+      if (found.status === 'MATCHED') line = lines.find(item => item.productId === found.productId) ?? null;
+    }
+    if (!line || !Number.isSafeInteger(quantity) || quantity < 0 || quantity > 1_000_000 || updates.has(line.productId)) { unknown.push(raw); continue; }
+    updates.set(line.productId, quantity);
+  }
+  return { updates, unknown };
+}
