@@ -16,7 +16,7 @@ import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerBusinessKind, type OwnerChatMessage } from './owner-agent';
 
 type OwnerMessage = { chat: { id: number; type: string }; from?: { id: number; first_name?: string; last_name?: string }; text?: string };
-type OwnerCallback = { id: string; from: { id: number }; data?: string; message?: { chat: { id: number; type: string } } };
+type OwnerCallback = { id: string; from: { id: number }; data?: string; message?: { chat: { id: number; type: string } }; quiet?: boolean };
 export type CatalogProduct = {
   id: number; name: string; sku: string | null; provider: string | null; validity: string | null;
   stock: number; minStock: number; costPrice: bigint; sellPrice: bigint; locationId: number | null;
@@ -836,6 +836,18 @@ function queryForAction(action: OwnerAgentAction): string | null {
   return null;
 }
 
+// Perubahan yang dianggap aman langsung dijalankan tanpa tombol; hanya penghapusan dan perubahan massal tetap minta satu konfirmasi.
+// OWNER_AUTO_APPLY=0 mematikan eksekusi otomatis (dipakai tes agar jalur draf + konfirmasi tetap teruji).
+const ownerAutoApply = () => process.env.OWNER_AUTO_APPLY !== '0';
+const OWNER_CONFIRM_REQUIRED = new Set<string>(['catalog.delete', 'category.delete', 'subcategory.delete', 'debt.delete', 'opname.delete', 'price.bulk', 'catalog.cleanup']);
+async function autoApplyDraft(chatId: bigint, ownerId: number, draftId: string, successText: string) {
+  await confirmOperation({ id: '', from: { id: ownerId }, message: { chat: { id: Number(chatId), type: 'private' } }, quiet: true }, ownerId, draftId);
+  const row = await prisma.telegramDraft.findUnique({ where: { id: draftId }, select: { status: true, kind: true } });
+  if (row?.status === 'CONFIRMED') return sendTelegramMessage(chatId, successText);
+  if (row && row.kind === 'OWNER_OPERATION' && ['FAILED', 'PENDING', 'PROCESSING'].includes(row.status)) {
+    return sendTelegramMessage(chatId, 'Perubahan belum diterapkan karena datanya berubah atau tidak valid. Tidak ada yang diubah; kirim ulang permintaannya.');
+  }
+}
 async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string, state: OwnerChatState,
   reply: string, priorActions: OwnerAgentAction[]) {
   const previousDraftId = state.proposalDraftId;
@@ -961,6 +973,9 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     rememberOwnerReply(state, [content, saved.preview].filter(Boolean).join('\n\n'));
     await saveOwnerChatState(rowId, chatId, state);
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+    if (ownerAutoApply() && !OWNER_CONFIRM_REQUIRED.has(businessDraft.action)) {
+      return autoApplyDraft(chatId, ownerId, saved.draftId, '✅ ' + businessDraft.title.replace(/^Draf @@BS@@s*/i, '') + ' sudah diterapkan.\n' + businessDraft.lines.map(line => `${line.label}: ${line.value}`).join('\n'));
+    }
     return sendTelegramMessage(chatId, [content, saved.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(saved.draftId));
   }
   if (operations.length) {
@@ -973,6 +988,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       throw error;
     }
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+    if (ownerAutoApply()) return autoApplyDraft(chatId, ownerId, batch.draftId, '✅ Sudah diterapkan:\n' + operations.map((operation, index) => `• ${isProductCreate(operation) ? operation.name : operation.productName} — ${labels[index]}`).join('\n'));
     return sendTelegramMessage(chatId, [content, batch.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(batch.draftId));
   }
   // A completed read-only request should not be replayed as the next turn's proposal.
@@ -1133,6 +1149,7 @@ async function confirmBatchOperation(callback: OwnerCallback, ownerId: number, d
   }
   if (result === 'APPLIED') {
     await answerTelegramCallback(callback.id, 'Semua perubahan berhasil diterapkan.');
+    if (callback.quiet) return;
     const createdProducts = batch.operations.filter(isProductCreate);
     await sendTelegramMessage(chatId, createdProducts.length
       ? `✅ Produk ${createdProducts.map(product => `“${product.name}”`).join(', ')} berhasil ditambahkan ke katalog dengan stok awal ${createdProducts.map(product => product.stock).join(', ')} unit. Catatan stok awal sudah dibuat.`
@@ -1169,6 +1186,7 @@ async function confirmAssistantAction(callback: OwnerCallback, ownerId: number, 
       withAssistantAuthorization(() => applyAssistantDraft({ action: saved.action, payload: saved.payload, sourceDraftId: row.id })));
     await prisma.telegramDraft.update({ where: { id: row.id }, data: { status: 'CONFIRMED', confirmedAt: new Date() } });
     await answerTelegramCallback(callback.id, 'Perubahan berhasil diterapkan.');
+    if (callback.quiet) return;
     return sendTelegramMessage(row.chatId, '✅ ' + (typeof saved.preview === 'string' ? saved.preview.split('\n')[0] : 'Perubahan') + ' berhasil diterapkan di RMCS.');
   } catch (error) {
     await prisma.telegramDraft.updateMany({ where: { id: row.id, status: 'PROCESSING' }, data: { status: 'FAILED' } });

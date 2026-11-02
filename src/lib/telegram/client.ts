@@ -20,6 +20,7 @@ export function sendTelegramMessage(chatId: number | bigint, text: string, reply
 // Jawaban tombol hanya valid beberapa detik. Kalau sudah kedaluwarsa (mis. penyimpanan rekap lambat),
 // itu tidak boleh menggagalkan pesan: data sudah diproses dan Telegram akan mengulang pesan yang sama.
 export async function tryAnswerTelegramCallback(callbackQueryId: string, text: string): Promise<boolean> {
+  if (!callbackQueryId) return false;
   try {
     await callTelegram('answerCallbackQuery', { callback_query_id: callbackQueryId, text, show_alert: false });
     return true;

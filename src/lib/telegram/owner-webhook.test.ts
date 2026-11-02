@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+process.env.OWNER_AUTO_APPLY = '0'; // tes ini memeriksa jalur draf + konfirmasi
 let middlewareInstalled = false;
 let productReadCount = 0;
 let businessWriteCounts = { product: 0, movement: 0 };
