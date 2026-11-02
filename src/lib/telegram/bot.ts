@@ -215,12 +215,12 @@ async function completeShiftOpening(row:{id:string},payload:ShiftOpeningPayload,
   const claimed=await tx.telegramDraft.updateMany({where:{id:row.id,status:'PENDING'},data:{status:'PROCESSING'}});if(claimed.count!==1)return false;
   await tx.telegramDraft.update({where:{id:row.id},data:{status:'CONFIRMED',confirmedAt:new Date(),expiresAt:new Date(Date.now()+36*60*60_000),payload:next as object}});
   await tx.telegramSession.deleteMany({where:{chatId,telegramIdentityId:actor.identityId,draftId:row.id,state:'OPENING'}});
-  if(differences.length){const employee=await tx.telegramIdentity.findUnique({where:{id:actor.identityId},select:{displayName:true}});const summary=differences.map(line=>`${line.name}${line.provider?' · '+line.provider:''}: sistem ${line.expectedQty}, hitungan ${line.actualQty}`).join('\n');const task=await tx.telegramOwnerReviewTask.create({data:{operationKey:'shift-opening:'+row.id+':stock',kind:'STOCK_OPENING_DISCREPANCY',chatId,telegramIdentityId:actor.identityId,payload:{summary:'Karyawan: '+(employee?.displayName??actor.displayName)+'\n'+summary,openingDraftId:row.id}}});openingReviewTaskId=task.id;}
+  if(differences.length){const employee=await tx.telegramIdentity.findUnique({where:{id:actor.identityId},select:{displayName:true}});const summary=differences.map(line=>`${line.name}${line.provider?' · '+line.provider:''}: sistem ${line.expectedQty}, hitungan ${line.actualQty}`).join('\n');const task=await tx.telegramOwnerReviewTask.create({data:{operationKey:'shift-opening:'+row.id+':stock',kind:'STOCK_OPENING_DISCREPANCY',status:'REVIEWED',reviewedAt:new Date(),chatId,telegramIdentityId:actor.identityId,payload:{summary:'Karyawan: '+(employee?.displayName??actor.displayName)+'\n'+summary,openingDraftId:row.id}}});openingReviewTaskId=task.id;}
   return true;
  });
  if(!result){await answer('Shift sudah diproses.');return true;}
  await answer(differences.length?'Shift dibuka; selisih dicatat.':'Shift dibuka.');
- if(openingReviewTaskId)await notifyOwnerReviewTask(openingReviewTaskId,'Selisih stok awal shift. Buka antrean untuk rincian.');
+ if(differences.length){try{await notifyOwnersText('⚠️ SELISIH STOK AWAL SHIFT\nKaryawan: '+actor.displayName+'\n'+differences.map(line=>'• '+openingLineName(line)+': sistem '+line.expectedQty+', stok sebenarnya '+line.actualQty).join('\n'));}catch{/* Info untuk owner hanya pelengkap. */}}
  const pendingBalanceReviews=await prisma.telegramOwnerReviewTask.count({where:{kind:'BALANCE_DISCREPANCY',status:'PENDING'}});
  return sendTelegramMessage(chatId,'✅ Shift dimulai. Stok awal sudah dicatat.'+(differences.length?'\n⚠️ Selisih stok awal dicatat untuk owner:\n'+differences.map(line=>'• '+openingLineName(line)+': sistem '+line.expectedQty+' → stok '+line.actualQty).join('\n'):'')+(pendingBalanceReviews?'\n⚠️ Ada selisih saldo shift sebelumnya yang belum diputuskan owner, jadi selisih bisa muncul lagi di rekap.':'')+'\n\nSaat shift selesai, tekan tombol Rekap di bawah lalu tulis jualan dan saldo akhir.',{inline_keyboard:[[{text:'🧾 Rekap shift (saat selesai)',callback_data:'rcms:group:menu:rekap'}]]});
 }
@@ -528,12 +528,23 @@ async function requestReportCorrection(chatId:bigint,actor:TelegramActor,args:st
  const posting=report.inventoryPostings.find(item=>item.lineId===lineId);if(!posting)return sendTelegramMessage(chatId,'Baris stok tidak ditemukan pada rekap tersebut.');
  return submitReportCorrection(chatId,actor,report,posting,quantity,reason);
 }
+async function tryAutoApplyCorrection(chatId:bigint,actor:TelegramActor,correctionId:string){
+ // Koreksi kecil diterapkan langsung; yang besar/tidak jelas tetap menunggu owner.
+ try{return await prisma.$transaction(tx=>approveCorrectionTx(tx,correctionId,chatId,{userId:actor.linkedUserId,identityId:actor.identityId},'approve',CORRECTION_AUTO_LIMIT),{isolationLevel:'Serializable',timeout:15000});}
+ catch(error){const message=(error as Error).message;if(['CORRECTION_LIMIT','CORRECTION_STALE','CORRECTION_STOCK_INSUFFICIENT','CORRECTION_COVERAGE_REVIEW'].includes(message)||(error as {code?:string}).code==='P2034')return null;throw error;}
+}
 async function submitReportCorrection(chatId:bigint,actor:TelegramActor,report:{id:string},posting:{id:string;productLabel:string;reportedQty:number},quantity:number,reason:string,viaChat=false){
  const approved=await prisma.telegramReportCorrection.aggregate({where:{postingId:posting.id,status:'APPROVED'},_sum:{deltaQty:true}});
  const currentQty=posting.reportedQty+(approved._sum.deltaQty??0);if(currentQty===quantity)return sendTelegramMessage(chatId,'Jumlah tersebut sudah sesuai. Tidak ada koreksi yang dibuat.');
  const operationKey=createHash('sha256').update([report.id,posting.id,actor.telegramUserId,quantity,reason.toLocaleLowerCase('id-ID')].join('|')).digest('hex');
  const prior=await prisma.telegramReportCorrection.findUnique({where:{operationKey}});if(prior)return sendTelegramMessage(chatId,prior.status==='PENDING'?'Permintaan koreksi yang sama masih menunggu owner.':'Permintaan koreksi yang sama sudah diproses.');
  const correction=await prisma.telegramReportCorrection.create({data:{operationKey,reportId:report.id,postingId:posting.id,requestedById:actor.linkedUserId,requestedByTelegramIdentityId:actor.identityId,reason:reason.slice(0,500),previousQty:currentQty,requestedQty:quantity,deltaQty:quantity-currentQty}});
+ const auto=await tryAutoApplyCorrection(chatId,actor,correction.id);
+ if(auto&&auto.status==='APPROVED'){
+  const stockText=auto.stockDelta>0?'berkurang '+auto.stockDelta:auto.stockDelta<0?'bertambah '+Math.abs(auto.stockDelta):'tidak berubah';
+  try{await notifyOwnersText('✏️ KOREKSI REKAP DICATAT\nKaryawan: '+actor.displayName+'\nRekap: '+report.id+'\n'+auto.productName+': jumlah terjual '+currentQty+' → '+quantity+' (stok '+stockText+')\nAlasan: '+reason.slice(0,200));}catch{/* Info untuk owner hanya pelengkap. */}
+  return sendTelegramMessage(chatId,(viaChat?'Saya tangkap koreksi “'+posting.productLabel+'”. ':'')+'✅ Koreksi dicatat: jumlah terjual '+currentQty+' → '+quantity+'. Stok '+stockText+'. Owner sudah diberi tahu.');
+ }
  await sendTelegramMessage(chatId,(viaChat?'Saya tangkap koreksi “'+posting.productLabel+'”. ':'')+'Permintaan koreksi tercatat. Jumlah terjual pada rekap saat ini '+currentQty+'; target '+quantity+'. Owner harus menyetujui sebelum stok berubah.',{inline_keyboard:[[{text:'Setujui koreksi',callback_data:'rcms:cr:'+correction.id+':a'},{text:'Tolak',callback_data:'rcms:cr:'+correction.id+':r'}]]});
 }
 async function correctReportByChat(chatId:bigint,actor:TelegramActor,intent:ShiftIntent,text:string){
@@ -559,19 +570,16 @@ async function handleAiShiftIntent(chatId:bigint,actor:TelegramActor,intent:Shif
  }
  return correctReportByChat(chatId,actor,intent,text);
 }
-async function handleCorrectionCallback(c:TelegramCallback,actor:TelegramActor,chatId:bigint){
- const match=/^rcms:cr:([A-Za-z0-9_-]{10,40}):(a|r)$/.exec(c.data??'');if(!match)return false;
- if(!actor.isOwner){await answerTelegramCallback(c.id,'Hanya owner yang telah diotorisasi yang dapat menyetujui koreksi.');return true;}
- let result:{status:string;delta:number;stockDelta:number;productName:string}|null=null;
- try{
-  result=await prisma.$transaction(async tx=>{
-   await tx.$queryRaw`SELECT "id" FROM "TelegramReportCorrection" WHERE "id" = ${match[1]} FOR UPDATE`;
-   const correction=await tx.telegramReportCorrection.findUnique({where:{id:match[1]},include:{posting:{include:{product:true}},report:{select:{chatId:true}}}});
+type CorrectionApprover={userId:number|null;identityId:string|null};
+const CORRECTION_AUTO_LIMIT=1_000_000n;
+async function approveCorrectionTx(tx:Prisma.TransactionClient,correctionId:string,chatId:bigint,approver:CorrectionApprover,mode:'approve'|'reject',autoLimit?:bigint):Promise<{status:string;delta:number;stockDelta:number;productName:string}>{
+   await tx.$queryRaw`SELECT "id" FROM "TelegramReportCorrection" WHERE "id" = ${correctionId} FOR UPDATE`;
+   const correction=await tx.telegramReportCorrection.findUnique({where:{id:correctionId},include:{posting:{include:{product:true}},report:{select:{chatId:true}}}});
    if(!correction)throw new Error('CORRECTION_NOT_FOUND');
    if(correction.report.chatId!==chatId)throw new Error('CORRECTION_WRONG_CHAT');
    if(correction.status!=='PENDING')return{status:'ALREADY',delta:0,stockDelta:0,productName:correction.posting.product.name};
-   if(match[2]==='r'){
-    await tx.telegramReportCorrection.update({where:{id:correction.id},data:{status:'REJECTED',approvedById:actor.linkedUserId,approvedByTelegramIdentityId:actor.identityId,approvedAt:new Date()}});
+   if(mode==='reject'){
+    await tx.telegramReportCorrection.update({where:{id:correction.id},data:{status:'REJECTED',approvedById:approver.userId,approvedByTelegramIdentityId:approver.identityId,approvedAt:new Date()}});
     return{status:'REJECTED',delta:0,stockDelta:0,productName:correction.posting.product.name};
    }
    await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id" = ${correction.posting.productId} FOR UPDATE`;
@@ -583,12 +591,19 @@ async function handleCorrectionCallback(c:TelegramCallback,actor:TelegramActor,c
    const currentApplied=correctedStockDeduction(currentReported,correction.posting.webAppQty,coverage),nextApplied=correctedStockDeduction(nextReported,correction.posting.webAppQty,coverage);
    if(currentApplied===null||nextApplied===null)throw new Error('CORRECTION_COVERAGE_REVIEW');
    const stockDelta=correctionDelta(currentApplied,nextApplied);if(stockDelta===null)throw new Error('CORRECTION_STALE');
+   if(autoLimit!==undefined&&BigInt(Math.abs(stockDelta))*product.sellPrice>autoLimit)throw new Error('CORRECTION_LIMIT');
    if(stockDelta>0){const changed=await tx.product.updateMany({where:{id:product.id,stock:{gte:stockDelta}},data:{stock:{decrement:stockDelta}}});if(changed.count!==1)throw new Error('CORRECTION_STOCK_INSUFFICIENT');}
    else if(stockDelta<0)await tx.product.update({where:{id:product.id},data:{stock:{increment:-stockDelta}}});
-   const movement=stockDelta===0?null:await tx.inventoryMovement.create({data:{productId:product.id,type:'TELEGRAM_SHIFT_RECAP_CORRECTION',qty:-stockDelta,costAtTime:product.costPrice,note:`Koreksi rekap ${correction.reportId}; alasan: ${correction.reason}`,userId:actor.linkedUserId,telegramIdentityId:actor.identityId},select:{id:true}});
-   await tx.telegramReportCorrection.update({where:{id:correction.id},data:{status:'APPROVED',approvedById:actor.linkedUserId,approvedByTelegramIdentityId:actor.identityId,approvedAt:new Date(),deltaQty:delta,movementId:movement?.id??null}});
+   const movement=stockDelta===0?null:await tx.inventoryMovement.create({data:{productId:product.id,type:'TELEGRAM_SHIFT_RECAP_CORRECTION',qty:-stockDelta,costAtTime:product.costPrice,note:`Koreksi rekap ${correction.reportId}; alasan: ${correction.reason}`,userId:approver.userId,telegramIdentityId:approver.identityId},select:{id:true}});
+   await tx.telegramReportCorrection.update({where:{id:correction.id},data:{status:'APPROVED',approvedById:approver.userId,approvedByTelegramIdentityId:approver.identityId,approvedAt:new Date(),deltaQty:delta,movementId:movement?.id??null}});
    return{status:'APPROVED',delta,stockDelta,productName:product.name};
-  },{isolationLevel:'Serializable',timeout:15000});
+}
+async function handleCorrectionCallback(c:TelegramCallback,actor:TelegramActor,chatId:bigint){
+ const match=/^rcms:cr:([A-Za-z0-9_-]{10,40}):(a|r)$/.exec(c.data??'');if(!match)return false;
+ if(!actor.isOwner){await answerTelegramCallback(c.id,'Hanya owner yang telah diotorisasi yang dapat menyetujui koreksi.');return true;}
+ let result:{status:string;delta:number;stockDelta:number;productName:string}|null=null;
+ try{
+  result=await prisma.$transaction(tx=>approveCorrectionTx(tx,match[1],chatId,{userId:actor.linkedUserId,identityId:actor.identityId},match[2]==='r'?'reject':'approve'),{isolationLevel:'Serializable',timeout:15000});
  }catch(error){const message=(error as Error).message;if(message==='CORRECTION_WRONG_CHAT'){await answerTelegramCallback(c.id,'Tombol koreksi hanya berlaku di grup asal rekap.');return true;}if(message==='CORRECTION_STALE'||message==='CORRECTION_STOCK_INSUFFICIENT'||message==='CORRECTION_COVERAGE_REVIEW'){await answerTelegramCallback(c.id,'Koreksi tidak dapat diterapkan: '+(message==='CORRECTION_STALE'?'rekap telah dikoreksi sebelumnya.':message==='CORRECTION_COVERAGE_REVIEW'?'jumlah terjual bertentangan dengan penjualan Web App.':'stok tidak cukup untuk koreksi.'));return true;}throw error;}
  await answerTelegramCallback(c.id,result.status==='APPROVED'?'Koreksi disetujui.':result.status==='REJECTED'?'Koreksi ditolak.':'Permintaan sudah diproses.');
  if(result.status==='APPROVED')await sendTelegramMessage(chatId,'Koreksi '+result.productName+' disetujui. Perubahan stok: '+(result.stockDelta>0?'−'+result.stockDelta:result.stockDelta<0?'+'+Math.abs(result.stockDelta):'tidak berubah')+' unit. Jumlah terjual pada rekap: '+(result.delta>0?'bertambah '+result.delta:result.delta<0?'berkurang '+Math.abs(result.delta):'tetap')+'.');
@@ -681,7 +696,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
    postings=await postTelegramInventory(tx,report.id,actor.linkedUserId,actor.identityId,data,shiftStart,checkedAt);
    const closingStates=await tx.product.findMany({where:{id:{in:shiftOpening.payload.lines.map(line=>line.productId)}},select:{id:true,name:true,provider:true,stock:true}}),statesById=new Map(closingStates.map(product=>[product.id,product]));
    closingStockDifferences=shiftOpening.payload.lines.flatMap(line=>{const product=statesById.get(line.productId),actualQty=closingCounts.get(line.productId);return product&&actualQty!==undefined&&actualQty!==product.stock?[{productId:product.id,name:product.name,provider:product.provider,expectedQty:product.stock,actualQty}]:[];});
-   if(closingStockDifferences.length){const employee=await tx.telegramIdentity.findUnique({where:{id:actor.identityId},select:{displayName:true}}),summary='Karyawan: '+(employee?.displayName??actor.displayName)+'\n'+closingStockDifferences.map(item=>`${item.name}${item.provider?' · '+item.provider:''}: seharusnya ${item.expectedQty}, stok sebenarnya ${item.actualQty}`).join('\n');const task=await tx.telegramOwnerReviewTask.create({data:{operationKey:'shift-report:'+report.id+':stock-closing',kind:'STOCK_CLOSING_DISCREPANCY',chatId,telegramIdentityId:actor.identityId,reportId:report.id,payload:{summary,items:closingStockDifferences}}});reviewTaskNotifications.push({id:task.id,summary:'Ada selisih stok fisik akhir.\n'+summary});}
+   if(closingStockDifferences.length){const employee=await tx.telegramIdentity.findUnique({where:{id:actor.identityId},select:{displayName:true}}),summary='Karyawan: '+(employee?.displayName??actor.displayName)+'\n'+closingStockDifferences.map(item=>`${item.name}${item.provider?' · '+item.provider:''}: seharusnya ${item.expectedQty}, stok sebenarnya ${item.actualQty}`).join('\n');const task=await tx.telegramOwnerReviewTask.create({data:{operationKey:'shift-report:'+report.id+':stock-closing',kind:'STOCK_CLOSING_DISCREPANCY',status:'REVIEWED',reviewedAt:new Date(),chatId,telegramIdentityId:actor.identityId,reportId:report.id,payload:{summary,items:closingStockDifferences}}});reviewTaskNotifications.push({id:task.id,summary:'Ada selisih stok fisik akhir.\n'+summary});}
    const openingClosed=await tx.telegramDraft.updateMany({where:{id:shiftOpening.row.id,status:'CONFIRMED'},data:{payload:{...shiftOpening.payload,shiftId:shiftOpening.payload.shiftId??shiftOpening.row.id,closedAt:checkedAt.toISOString(),closingReportId:report.id,closedByIdentityId:actor.identityId} as object}});
    if(openingClosed.count!==1)throw new Error('SHIFT_OPENING_ALREADY_CLOSED');
    const releasedRegister=await tx.telegramShiftRegister.updateMany({where:{chatId,activeShiftId:shiftOpening.payload.shiftId??shiftOpening.row.id,recapIdentityId:actor.identityId},data:{activeShiftId:null,recapIdentityId:null}});if(releasedRegister.count!==1)throw new Error('SHIFT_OPENING_ALREADY_CLOSED');
@@ -709,12 +724,13 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
  const summary=postings.map(posting=>{const ids=posting.lineId.split(',');const label=ids.map(id=>(data.inventoryLines??[]).find(line=>line.id===id)?.label).filter(Boolean).join(' / ');return '• '+label+': '+posting.appliedQty+' unit dikurangi';}).join('\n');
  const correctionHelp=postings.map(posting=>' /koreksi '+reportIdResult+' '+posting.lineId+' <jumlah-baru> <alasan>').join('\n');
  const reconciliationText=finalBalanceCheck?formatBalanceCheck(finalBalanceCheck):'Saldo belum berhasil direkonsiliasi.';
- const finalTrackedStock=await closingTrackedStock();
- const finalStockText=finalTrackedStock.length?'\n\nSTOK TERSISA · VOUCHER, MINYAK & ROKOK\n'+finalTrackedStock.map(product=>'• '+product.name+(product.provider?' · '+product.provider:'')+': '+product.stock+' unit').join('\n'):'\n\nTidak ada produk voucher, minyak, atau rokok di katalog.';
  const closingStockReviewText=closingStockDifferences.length?'\n\n⚠️ Selisih stok akhir: '+closingStockDifferences.length+' produk. Tugas tinjauan tersimpan untuk Owner; stok tidak disesuaikan otomatis dari hitungan stok.':'\n\n✅ Stok akhir sesuai setelah pengurangan.';
- if(finalBalanceCheck)await notifyBalanceOwner(chatId,actor.identityId,finalBalanceCheck,reportIdResult);
- for(const task of reviewTaskNotifications){try{await notifyOwnerReviewTask(task.id,task.summary);}catch{/* Persistent owner queue remains available if Telegram delivery fails. */}}
- try{await notifyOwnersText('📋 REKAP DISIMPAN\nID laporan: '+reportIdResult+(summary?'\n'+summary:'')+'\nAdmin: '+formatTelegramRupiah(BigInt(recapTotals(data).service_fee))+' · Pengeluaran: '+formatTelegramRupiah(BigInt(recapTotals(data).expense))+closingStockReviewText+finalStockText);}catch{/* Rincian untuk owner hanya pelengkap. */}
+ try{
+  const check=finalBalanceCheck,gap=check?BigInt(check.difference):0n,gapAbs=gap<0n?-gap:gap;
+  const balanceLine=check?(check.status==='MATCH'?'PAS ✅ '+formatTelegramRupiah(BigInt(check.actualBalance)):(check.status==='SHORT'?'⚠️ KURANG ':'⚠️ LEBIH ')+formatTelegramRupiah(gapAbs)+' (seharusnya '+formatTelegramRupiah(BigInt(check.expectedBalance))+', dihitung karyawan '+formatTelegramRupiah(BigInt(check.actualBalance))+')'):'belum direkonsiliasi';
+  const stockLine=closingStockDifferences.length?'⚠️ ada selisih\n'+closingStockDifferences.map(item=>'• '+item.name+': seharusnya '+item.expectedQty+', stok sebenarnya '+item.actualQty).join('\n'):'sesuai ✅';
+  await notifyOwnersText('📋 REKAP SHIFT DISIMPAN'+(data.shiftLabel?' · '+data.shiftLabel:'')+'\nKaryawan: '+actor.displayName+(summary?'\n\n'+summary:'')+'\n\nAdmin: '+formatTelegramRupiah(BigInt(recapTotals(data).service_fee))+' · Pengeluaran: '+formatTelegramRupiah(BigInt(recapTotals(data).expense))+'\n💰 Saldo: '+balanceLine+'\n📦 Stok akhir: '+stockLine+'\n\nSaldo sistem sudah mengikuti hitungan karyawan. Penyebab selisih (jika ada) silakan diperiksa manual.\nID laporan: '+reportIdResult);
+ }catch{/* Rincian untuk owner hanya pelengkap. */}
  await sendLongTelegramMessage(chatId,'✅ REKAP DISIMPAN'+(data.shiftLabel?' · Shift '+data.shiftLabel:'')+(summary?'\n\n'+summary:'')+'\n\n💰 Saldo: '+(finalBalanceCheck?.status==='MATCH'?'cocok ✅':'ada selisih ⚠️ (sudah dilaporkan ke Owner)')+'\n📦 Stok akhir: '+(closingStockDifferences.length?'ada selisih ⚠️ (dicatat untuk Owner)':'sesuai ✅')+'\n\nSalah catat? Tulis saja, contoh: axis 13gb tadi harusnya 5.\nAda yang terlewat? Tulis: susulan <barang atau uang>.');
 }
 async function handleLateEntry(m:TelegramMessage,actor:TelegramActor,content:string,updateId:bigint){
