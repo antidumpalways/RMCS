@@ -4,7 +4,7 @@ import { isImplicitCatalogQuestion, lateEntryText, looksLikeCatalogQuestion, rem
 import { answerTelegramCallback, tryAnswerTelegramCallback } from './client';
 import { inventoryCallback, normalizeStockUnit, parseInventoryCallback, parseStockCountLines, resolveInventoryProduct } from './inventory';
 import { planLateEntry } from './late-entry-plan';
-import { applyExtraction, deterministicExtraction, emptyRecap, parseIndonesianRupiah, recapIssues } from './recap';
+import { applyExtraction, cleanItemLabel, inputDuplicateKey, deterministicExtraction, emptyRecap, parseIndonesianRupiah, recapIssues } from './recap';
 
 test('catatan penjualan bukan pertanyaan katalog, pertanyaan harga/stok tetap ke asisten', () => {
   assert.equal(looksLikeCatalogQuestion('Axis 13 gb 7 hari: 2 pcs\nTelkomsel 7gb 5 hari : 2 pcs'), false);
@@ -205,4 +205,14 @@ test('"rekap voucher telkomsel 7gb 5 hari laku 5 pcs" membuka rekap dan terbaca 
   assert.equal(resolveInventoryProduct('rekap voucher telkomsel 7gb 5 hari laku', catalog).productId, 1);
   assert.equal(splitRecapStart('rekap nanti jam 5 ya'), null);
   assert.equal(splitRecapStart('lapor pak saya sudah sampai'), null);
+});
+
+test('pesan rekap yang sama persis terdeteksi walau beda spasi dan tanda baca', () => {
+  assert.equal(inputDuplicateKey('Voucher Telkomsel 7GB 5 hari: 5 pcs'), inputDuplicateKey('  voucher telkomsel 7gb 5 hari  5 PCS '));
+  assert.notEqual(inputDuplicateKey('Axis 2 pcs'), inputDuplicateKey('Axis 3 pcs'));
+});
+
+test('label dari AI dibersihkan dari kata rekap dan laku', () => {
+  assert.equal(cleanItemLabel('rekap voucher telkomsel 7gb 5 hari laku'), 'voucher telkomsel 7gb 5 hari');
+  assert.equal(cleanItemLabel('Axis 13gb'), 'Axis 13gb');
 });

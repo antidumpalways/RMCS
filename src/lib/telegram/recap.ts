@@ -3,7 +3,7 @@ export type RecapEntry = { category: RecapCategory; label: string; amount: strin
 export type RecapInventoryLine = { id:string; sourceText:string; label:string; quantity:number; unit:string; productId:number|null; candidateProductIds:number[]; mappingStatus:'UNMATCHED'|'MATCHED'|'AMBIGUOUS'|'OWNER_REVIEW'; coverage:'UNDECIDED'|'INCLUDES_APP_SALES'|'UNRECORDED_ONLY'|'OWNER_REVIEW'; recordedWebQty?:number; appliedQty?:number };
 export type RecapInventoryExtraction = { sourceText:string; label:string; quantity:number|string|null; unit:string|null; operation:'add'|'correct'|'set'|null; ambiguity?:string|null };
 export type RecapBalanceCheck={openingBalance:string;expectedBalance:string;actualBalance:string;movementDelta:string;difference:string;status:'MATCH'|'SHORT'|'EXCESS';sourceConflicts:string[];itemSales?:string};
-export type RecapDraft = { shiftLabel: string | null; entries: RecapEntry[]; inventoryLines?:RecapInventoryLine[]; unresolved: string[]; messages: string[]; processedUpdateIds?: string[]; photoReviews?:RecapPhotoReview[]; correctionPhotoId?:string|null; balanceCheck?:RecapBalanceCheck; closingStockAwaiting?:boolean; closingStockCounts?:Array<{productId:number;actualQty:number}>; draftMessageId?:number; choiceMessageId?:number };
+export type RecapDraft = { shiftLabel: string | null; entries: RecapEntry[]; inventoryLines?:RecapInventoryLine[]; unresolved: string[]; messages: string[]; processedUpdateIds?: string[]; photoReviews?:RecapPhotoReview[]; correctionPhotoId?:string|null; balanceCheck?:RecapBalanceCheck; closingStockAwaiting?:boolean; closingStockCounts?:Array<{productId:number;actualQty:number}>; draftMessageId?:number; choiceMessageId?:number; recentInputs?:Array<{key:string;at:number}>; pendingDuplicate?:{text:string;at:number} };
 export type RecapExtraction = { shiftLabel?: string | null; entries: RecapEntry[]; inventoryLines?:RecapInventoryExtraction[]; unresolved: string[]; resolved?: string[] };
 export type RecapVisionLine={lineNumber:number;sourceText:string;lineType:'entry'|'subtotal'|'note'|'unreadable';category:RecapCategory|null;label:string|null;amount:string|null;quantity:string|null;unit:string|null;accountName:string|null;note:string|null;correctionTarget:string|null;operation:'add'|'correct'|'set'|null;ambiguity:string|null};
 export type RecapPhotoReview={id:string;fileId:string;fileUniqueId:string;sha256:string;mimeType:string;caption:string|null;quality?:'clear'|'mixed'|'unreadable';sourceLines:RecapVisionLine[];entries:RecapEntry[];inventoryLines?:RecapInventoryExtraction[];unresolved:string[];status:'PROCESSING'|'PENDING_REVIEW'|'CORRECTING'|'MERGED'|'IGNORED'|'FAILED';metrics?:{latencyMs:number;promptTokens:number;completionTokens:number;approximateInputTokens:number;failureCode?:string};createdAt:string;correctionMessages?:string[]};
@@ -28,7 +28,7 @@ export function normalizeExtraction(v:unknown):RecapExtraction {
    const item = raw as Record<string, unknown>;
    if (typeof item.sourceText !== 'string' || typeof item.label !== 'string') return [];
    const operation = item.operation === 'add' || item.operation === 'correct' || item.operation === 'set' ? item.operation : null;
-   return [{ sourceText: item.sourceText.slice(0, 500), label: item.label.slice(0, 120),
+   return [{ sourceText: item.sourceText.slice(0, 500), label: cleanItemLabel(item.label).slice(0, 120),
     quantity: typeof item.quantity === 'string' || typeof item.quantity === 'number' ? item.quantity : null,
     unit: typeof item.unit === 'string' ? item.unit.slice(0, 30) : null, operation,
     ambiguity: typeof item.ambiguity === 'string' ? item.ambiguity.slice(0, 180) : null }];
@@ -56,6 +56,10 @@ function staleWordWarning(q:string,message:string,x:RecapExtraction){
  const token=match[1].toLowerCase();
  return message.toLowerCase().includes(token)||(['total','saldo','akhir'].includes(token)&&x.entries.some(entry=>entry.category==='total_balance'));
 }
+// Kunci pembanding pesan: huruf kecil, tanpa tanda baca dan spasi ganda, agar pesan yang sama persis (walau beda spasi) terdeteksi.
+export function inputDuplicateKey(text:string){return text.toLocaleLowerCase('id-ID').replace(/[^\p{L}\p{N}]+/gu,' ').trim();}
+// Label barang dari AI/pembaca teks dibersihkan dari kata penyerta seperti "rekap ... laku".
+export function cleanItemLabel(label:string){return label.trim().replace(/^(?:rekap|laporan|lapor)\s+/i,'').replace(/\s+(?:terjual|jual|laku|keluar|habis|kejual)$/i,'').trim();}
 export function applyExtraction(d:RecapDraft,x:RecapExtraction,message:string,updateId?:string):RecapDraft {
  if(updateId&&d.processedUpdateIds?.includes(updateId))return d;
  const entries=[...d.entries];

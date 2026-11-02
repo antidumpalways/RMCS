@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { MAX_UPDATE_ATTEMPTS, allowedTelegramGroup, authorizedTelegramGroupSender, callbackBelongsToActor, duplicateUpdateDisposition, formatTelegramRupiah, parseTelegramCallback, parseTelegramCommand, telegramId } from './core';
 import { classifyShiftIntent, matchCorrectionPosting, worthClassifying, type ShiftIntent } from './shift-intent';
 import { answerTelegramCallback, deleteTelegramMessage, sendTelegramMessage, tryAnswerTelegramCallback, type InlineKeyboard } from './client';
-import { applyExtraction, buildAggregateReport, canFinalizeRecap, emptyRecap, extractRecapMessage, parseIndonesianRupiah, recapIssues, recapTotals, type RecapDraft } from './recap';
+import { applyExtraction, buildAggregateReport, inputDuplicateKey, canFinalizeRecap, emptyRecap, extractRecapMessage, parseIndonesianRupiah, recapIssues, recapTotals, type RecapDraft } from './recap';
 import { correctTelegramPhotoFromText, handleTelegramPhoto, handleTelegramVisionCallback, sendLatestPhotoReview, visionCallbackFromData } from './photo-flow';
 import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, inventoryCallback, parseInventoryCallback, parseStockCountLines, type InventoryCallbackAction } from './inventory';
 import { prepareInventoryReview, postTelegramInventory, inventoryPreview, TelegramInventoryError } from '@/lib/services/telegram-inventory';
@@ -518,7 +518,22 @@ async function handleClosingStockCountCallback(c:TelegramCallback,actor:Telegram
  if(match[1]==='stocklist')return sendLongTelegramMessage(chatId,closingStockCountPrompt(opening.payload,expected));
  return sendTelegramMessage(chatId,'⚠️ SELISIH STOK AKHIR\nTulis barang yang stoknya beda dari sistem, satu per baris, diikuti jumlah stok sebenarnya. Contoh:\nAxis 13GB 3\nSurya 12 28\n\nBarang lain dianggap cocok.',{inline_keyboard:[[{text:'📋 Lihat daftar barang',callback_data:'rcms:stocklist:'+row.id+':'+revision}]]});
 }
-async function recordReportMessage(rawMessage:TelegramMessage,actor:TelegramActor,updateId:bigint){
+async function handleDuplicateCallback(c:TelegramCallback,actor:TelegramActor,chatId:bigint){
+ const match=/^rcms:dup:([A-Za-z0-9_-]{10,40}):(\d{1,10}):(y|n)$/.exec(c.data??'');if(!match)return false;
+ const session=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId,telegramIdentityId:actor.identityId}}});
+ if(!session||session.draftId!==match[1]||session.revision!==Number(match[2])){await answerTelegramCallback(c.id,'Pertanyaan ini sudah lama.');return true;}
+ const row=await prisma.telegramDraft.findUnique({where:{id:match[1]}});
+ const draft=row?.status==='PENDING'?row.payload as unknown as RecapDraft:null,pending=draft?.pendingDuplicate;
+ if(!row||!draft||!pending){await answerTelegramCallback(c.id,'Sudah diproses.');return true;}
+ const revision=await saveInventoryDraft(session.id,row.id,session.revision,{...draft,pendingDuplicate:undefined});
+ if(revision===null){await answerTelegramCallback(c.id,'Rekap baru saja berubah. Tekan tombol Rekap untuk melihat yang terbaru.');return true;}
+ if(c.message){try{await deleteTelegramMessage(chatId,c.message.message_id);}catch{/* Pesan pertanyaan boleh tertinggal. */}}
+ if(match[3]==='n'){await answerTelegramCallback(c.id,'Tidak dicatat dobel.');return true;}
+ await answerTelegramCallback(c.id,'Dicatat lagi.');
+ await recordReportMessage({message_id:0,chat:c.message?.chat??{id:Number(chatId),type:'supergroup'},from:c.from,text:pending.text},actor,BigInt(Date.now()),true);
+ return true;
+}
+async function recordReportMessage(rawMessage:TelegramMessage,actor:TelegramActor,updateId:bigint,force=false){
  const message=rawMessage.text?{...rawMessage,text:stripRecapHeader(stripBotMention(rawMessage.text))}:rawMessage;
  const chatId=telegramId(message.chat.id);if(chatId===null||!message.text)return;
  const session=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId,telegramIdentityId:actor.identityId}}});
@@ -538,6 +553,14 @@ async function recordReportMessage(rawMessage:TelegramMessage,actor:TelegramActo
   return sendReportDraft(chatId,actor,session.id,stored.id);
  }
  if(prior.processedUpdateIds?.includes(updateId.toString())){await sendReportDraft(chatId,actor,session.id,stored.id);return;}
+ // Pesan rekap yang sama persis dalam 1 menit kemungkinan terkirim dobel: tanya dulu, jangan langsung dijumlahkan.
+ const duplicateKeyValue=inputDuplicateKey(message.text),nowMs=Date.now(),recentInputs=(prior.recentInputs??[]).filter(item=>nowMs-item.at<=60_000);
+ if(!force&&duplicateKeyValue&&recentInputs.some(item=>item.key===duplicateKeyValue)){
+  const asked:RecapDraft={...prior,pendingDuplicate:{text:message.text.slice(0,1000),at:nowMs}};
+  const askedRevision=await saveInventoryDraft(session.id,stored.id,session.revision,asked);
+  if(askedRevision===null)return sendTelegramMessage(chatId,'Rekap baru saja berubah. Tekan tombol Rekap untuk melihat yang terbaru.');
+  return sendTelegramMessage(chatId,'Pesan ini sama persis dengan yang baru saja Anda kirim. Catat lagi? (jumlahnya akan bertambah dobel)',{inline_keyboard:[[{text:'✅ Ya, catat lagi',callback_data:'rcms:dup:'+stored.id+':'+askedRevision+':y'},{text:'❌ Tidak',callback_data:'rcms:dup:'+stored.id+':'+askedRevision+':n'}]]});
+ }
  const extraction=await extractRecapMessage(message.text,prior);
  let saved:RecapDraft|null=null;let savedRevision:number|null=null;
  for(let attempt=0;attempt<3&&!saved;attempt++){
@@ -547,7 +570,7 @@ async function recordReportMessage(rawMessage:TelegramMessage,actor:TelegramActo
   if(!currentDraft||currentDraft.status!=='PENDING')return;
   const base=currentDraft.payload as unknown as RecapDraft;
   if(base.processedUpdateIds?.includes(updateId.toString())){saved=base;savedRevision=current.revision;break;}
-  const merged=applyExtraction(base,extraction,message.text,updateId.toString());
+  const merged={...applyExtraction(base,extraction,message.text,updateId.toString()),recentInputs:[...recentInputs,{key:duplicateKeyValue,at:nowMs}].slice(-5)};
   try{
    const count=await prisma.$transaction(async tx=>{
     const guard=await tx.telegramSession.updateMany({where:{id:current.id,revision:current.revision,state:'REPORTING'},data:{revision:{increment:1},expiresAt:new Date(Date.now()+SESSION_TTL)}});
@@ -691,6 +714,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
   return handleCommand(m,actor,menu[1]==='cancel'?'batal':menu[1],'');
  }
  if(await handleShiftOpeningCallback(c,actor,BigInt(c.message?.chat.id??0)))return;
+ if(await handleDuplicateCallback(c,actor,BigInt(c.message?.chat.id??0)))return;
  const preMessageChat=c.message&&telegramId(c.message.chat.id);if(c.message&&preMessageChat!==null&&preMessageChat!==undefined&&groupAllowed(c.message.chat)&&await handleClosingStockCountCallback(c,actor,preMessageChat))return;
  const m=c.message,chatId=m&&telegramId(m.chat.id);
  if(!m||chatId===null||chatId===undefined||!groupAllowed(m.chat)){await answerTelegramCallback(c.id,'Grup tidak diizinkan.');return;}
