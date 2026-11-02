@@ -1590,7 +1590,7 @@ function groupProductLine(product: CatalogProduct) {
 }
 
 /** Read-only group assistant; catalog changes and financial reports remain owner-only. */
-export async function handleGroupAssistantMessage(input: { chatId: bigint; identityId: string; text: string; updateId: string }) {
+export async function handleGroupAssistantMessage(input: { chatId: bigint; identityId: string; text: string; updateId: string; implicit?: boolean }) {
   const id = groupAssistantId(input.chatId, input.identityId), now = new Date();
   const initial: GroupAssistantState = { version: 1, history: [], processedUpdateIds: [] };
   let existing = await prisma.telegramDraft.findUnique({ where: { id } });
@@ -1620,6 +1620,11 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
   try {
     const turn = await interpretOwnerTurn({ text: input.text, history: state.history, currentActions: [],
       apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL });
+    // Pertanyaan tanpa tag bot: bila ternyata bukan soal harga/stok barang, diam saja agar obrolan grup tidak terganggu.
+    if (input.implicit && (!turn.actions.length || turn.actions.some(action => !isGroupReadAction(action)))) {
+      await prisma.telegramDraft.update({ where: { id }, data: { status: 'PENDING' } });
+      return;
+    }
     let reply = '';
     if (turn.actions.some(action => !isGroupReadAction(action))) {
       reply = 'Di grup saya hanya bisa membantu cek informasi barang. Untuk menambah atau mengubah katalog, harga, dan stok, minta owner melakukannya lewat chat pribadi. Untuk mencatat penjualan atau rekap shift, kirim /rekap lalu tulis barangnya.';
@@ -1661,7 +1666,7 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
   } catch (error) {
     await prisma.telegramDraft.updateMany({ where: { id, kind: 'GROUP_ASSISTANT', status: 'PROCESSING' },
       data: { status: 'PENDING', expiresAt: new Date(Date.now() + GROUP_ASSISTANT_TTL) } });
-    if (error instanceof OwnerAgentUnavailable) return sendTelegramMessage(input.chatId, 'Maaf, saya belum berhasil memahami pertanyaan itu. Coba sebutkan nama barang dan apakah ingin cek harga atau stok.');
+    if (error instanceof OwnerAgentUnavailable) return input.implicit ? undefined : sendTelegramMessage(input.chatId, 'Maaf, saya belum berhasil memahami pertanyaan itu. Coba sebutkan nama barang dan apakah ingin cek harga atau stok.');
     throw error;
   }
 }

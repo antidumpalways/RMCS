@@ -53,3 +53,16 @@ export function lateEntryText(text: string): string | null {
   // Frasa tanpa angka ("lupa rekap tadi, maaf ya") hanya obrolan, bukan susulan.
   return content && !/\d/.test(content) ? null : content;
 }
+
+// Pertanyaan harga/ketersediaan yang ditulis langsung di grup tanpa menyebut bot ("harga axis 13gb berapa?", "ada charger type c?").
+// Sengaja ketat agar catatan rekap dan obrolan biasa tidak ikut tertangkap.
+export function isImplicitCatalogQuestion(text: string): boolean {
+  const value = text.trim();
+  if (value.length < 6 || value.length > 140 || value.startsWith('/') || /\n/.test(value)) return false;
+  const hasMoney = /\d+\s*(?:rb|ribu|k|jt|juta)\b|\d{4,}/i.test(value);
+  const hasQuantityUnit = /\d+\s*(?:pcs?|unit|units?|biji|buah|lembar|batang|pack|pak|box|bungkus)\b/i.test(value);
+  const asksPrice = /\b(?:harga(?:nya)?|berapa(?:an)?|brp)\b/i.test(value);
+  const asksAvailability = /\?\s*$/.test(value) && /\b(?:ada|ready|stok|stock|kosong|sisa|punya)\b/i.test(value);
+  if (asksPrice) return !hasMoney && !hasQuantityUnit;
+  return asksAvailability && !hasMoney && !hasQuantityUnit;
+}

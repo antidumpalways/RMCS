@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
+import { isImplicitCatalogQuestion, lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
 import { answerTelegramCallback, tryAnswerTelegramCallback } from './client';
 import { inventoryCallback, normalizeStockUnit, parseInventoryCallback, parseStockCountLines, resolveInventoryProduct } from './inventory';
 import { planLateEntry } from './late-entry-plan';
@@ -181,4 +181,13 @@ test('susulan: stok dipotong dan uang dihitung dari harga katalog, stok kurang d
   assert.equal(planLateEntry([], -20000n, products).status === 'OK' ? 'OK' : 'REFUSED', 'OK');
   assert.equal(planLateEntry([], 5_000_000n, products).status, 'REFUSED');
   assert.equal(planLateEntry([], -1_000_001n, products).status, 'REFUSED');
+});
+
+test('pertanyaan harga/stok tanpa tag bot ditangkap, catatan rekap dan obrolan tidak', () => {
+  for (const text of ['harga axis 13gb berapa?', 'Axis 13gb 7 hari harganya berapa', 'berapaan charger type c', 'ada kabel data type c?', 'stok axis 13gb ada?', 'ready voucher telkomsel?']) {
+    assert.equal(isImplicitCatalogQuestion(text), true, text);
+  }
+  for (const text of ['Axis 13 gb 7 hari: 2 pcs', 'Admin harga 45rb', 'saldo akhir 25.000.000', 'ada tf 500rb?', 'ada selisih admin 5rb', 'oke siap', 'harga axis\naxis 2 pcs', 'ada 2 pcs axis?', '/rekap']) {
+    assert.equal(isImplicitCatalogQuestion(text.replace('\n', String.fromCharCode(10))), false, text);
+  }
 });
