@@ -507,12 +507,14 @@ export async function planOwnerOperations(action: OwnerAgentAction, product: Cat
     if (!action.quantity || action.quantity < 1) return { operations: [], labels: [], clarification: `Berapa unit ${product.name} yang masuk?` };
     const pricing = planStockInPricing(action), sell = pricing.sellPrice, margin = parseOwnerRupiah(action.margin);
     if (pricing.clarification) return { operations: [], labels: [], clarification: `${pricing.clarification} Tolong pastikan angkanya.` };
-    const cost = pricing.unitCost;
-    if (cost === null || cost <= 0n) return { operations: [], labels: [], clarification: `Sebutkan modal per unit ${product.name}, atau harga jual dan margin per unit agar saya hitung modalnya.` };
+    // Modal tidak disebut: pakai modal yang sudah tercatat pada barang itu; hanya tanya bila barangnya belum punya modal.
+    const reusedCost = pricing.unitCost === null && product.costPrice > 0n;
+    const cost = pricing.unitCost ?? (product.costPrice > 0n ? product.costPrice : null);
+    if (cost === null || cost <= 0n) return { operations: [], labels: [], clarification: `${product.name} belum punya modal tercatat. Sebutkan modal per unit, atau harga jual dan margin per unit agar saya hitung modalnya.` };
     if (product.stock + action.quantity > 1_000_000) return { operations: [], labels: [], clarification: `Stok ${product.name} melewati batas sistem. Periksa jumlahnya.` };
     const operations = [makeOwnerOperation(ownerId, 'STOCK_IN', product,
       { quantity: action.quantity, unitCost: cost.toString(), supplier: action.supplier })];
-    const labels = [`Barang masuk ${action.quantity} unit; stok ${product.stock} → ${product.stock + action.quantity}; modal/unit ${formatIdr(product.costPrice)} → ${formatIdr(cost)}${pricing.derived ? ` (diturunkan dari jual ${formatIdr(sell!)} − margin ${formatIdr(margin!)})` : ''}`];
+    const labels = [`Barang masuk ${action.quantity} unit; stok ${product.stock} → ${product.stock + action.quantity}; ${reusedCost ? `modal/unit tetap ${formatIdr(cost)} (sama seperti sebelumnya)` : `modal/unit ${formatIdr(product.costPrice)} → ${formatIdr(cost)}`}${pricing.derived ? ` (diturunkan dari jual ${formatIdr(sell!)} − margin ${formatIdr(margin!)})` : ''}`];
     if (sell !== null && sell !== product.sellPrice) {
       operations.push(makeOwnerOperation(ownerId, 'PRICE_UPDATE', product, { field: 'sellPrice', amount: sell.toString() }));
       labels.push(`Harga jual ${formatIdr(product.sellPrice)} → ${formatIdr(sell)}${margin !== null ? `; margin/unit ${formatIdr(margin)} dipertahankan` : ''}`);
