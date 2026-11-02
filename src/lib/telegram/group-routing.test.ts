@@ -191,3 +191,18 @@ test('pertanyaan harga/stok tanpa tag bot ditangkap, catatan rekap dan obrolan t
     assert.equal(isImplicitCatalogQuestion(text.replace('\n', String.fromCharCode(10))), false, text);
   }
 });
+
+test('"rekap voucher telkomsel 7gb 5 hari laku 5 pcs" membuka rekap dan terbaca sebagai satu barang', () => {
+  const started = splitRecapStart('rekap voucher telkomsel 7gb 5 hari laku 5 pcs');
+  assert.equal(started?.rest, 'voucher telkomsel 7gb 5 hari laku 5 pcs');
+  assert.equal(stripRecapHeader('rekap voucher telkomsel 7gb 5 hari laku 5 pcs'), 'voucher telkomsel 7gb 5 hari laku 5 pcs');
+  const x = deterministicExtraction(started!.rest);
+  assert.deepEqual(x.inventoryLines?.map(line => [line.label, line.quantity]), [['voucher telkomsel 7gb 5 hari', '5']]);
+  const catalog = [
+    { id: 1, name: 'Voucher Telkomsel 7GB/5 Hari', sku: null, provider: 'Telkomsel', validity: '5 hari', categoryName: 'Voucher', stock: 18, locationId: null },
+    { id: 2, name: 'Telkomsel 5GB 3 Hari', sku: null, provider: 'Telkomsel', validity: '3 hari', categoryName: 'Voucher', stock: 60, locationId: null },
+  ];
+  assert.equal(resolveInventoryProduct('rekap voucher telkomsel 7gb 5 hari laku', catalog).productId, 1);
+  assert.equal(splitRecapStart('rekap nanti jam 5 ya'), null);
+  assert.equal(splitRecapStart('lapor pak saya sudah sampai'), null);
+});

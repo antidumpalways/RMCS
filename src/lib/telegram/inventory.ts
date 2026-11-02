@@ -25,6 +25,9 @@ export function normalizeStockUnit(value: string): 'pcs' | null {
   return null;
 }
 
+// Kata penyerta yang bukan bagian nama barang ("rekap ... laku") tidak boleh menggagalkan pencocokan.
+const NOISE_TERMS = new Set(['rekap', 'laporan', 'lapor', 'laku', 'terjual', 'jual', 'kejual', 'keluar', 'habis', 'tadi', 'ya', 'dong', 'nih', 'tolong', 'pcs', 'unit']);
+
 export function resolveInventoryProduct(
   label: string,
   products: InventoryCatalogProduct[],
@@ -44,7 +47,8 @@ export function resolveInventoryProduct(
   if (exact.length === 1) return { status: 'MATCHED', productId: exact[0].id, candidateProductIds: [exact[0].id] };
   if (exact.length > 1) return { status: 'AMBIGUOUS', productId: null, candidateProductIds: exact.slice(0, 8).map(x => x.id) };
 
-  const terms = catalogSearchTerms(label);
+  const terms = catalogSearchTerms(label).filter(term => !NOISE_TERMS.has(term));
+  if (!terms.length) return { status: 'UNMATCHED', productId: null, candidateProductIds: [] };
   const ranked = rankCatalogProducts(products, terms).slice(0, 8);
   if (!ranked.length) return { status: 'UNMATCHED', productId: null, candidateProductIds: [] };
   const best = ranked[0];

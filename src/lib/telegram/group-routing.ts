@@ -18,6 +18,8 @@ const RECAP_HEADER = /^(?:rekap|laporan|lapor|barang\s+terjual|terjual|penjualan
 
 // Membuang baris judul seperti "Rekap" atau "Barang terjual" bila masih ada isi di bawahnya.
 export function stripRecapHeader(text: string): string {
+  const inline = INLINE_START.exec(text.trim());
+  if (inline && !/\n/.test(text.trim()) && ITEM_LIKE.test(inline[2])) return inline[2].trim();
   const lines = text.split(/\r?\n/);
   if (lines.length > 1 && RECAP_HEADER.test(lines[0].trim())) {
     const rest = lines.slice(1).join('\n').trim();
@@ -29,11 +31,19 @@ export function stripRecapHeader(text: string): string {
 const START_PATTERN = /^(?:(?:halo|hai)\s+)?(?:(?:aku|saya|kami)\s+)?(?:(?:mau|ingin|boleh|tolong)\s+)?(?:(?:mulai|buka|buat|lanjut)\s+)?(?:rekap|laporan|lapor)(?:\s+(?:shift|hari\s+ini|penjualan|jualan))?(?:\s+(pagi|siang|malam))?[.!?:]*$/i;
 
 // Pesan yang diawali "rekap"/"lapor" pada baris pertama, dengan isi rekap (jika ada) di baris berikutnya.
+const ITEM_LIKE = /\d+\s*(?:pcs?|unit|units?|biji|buah|lembar|bungkus|pack|pak)\b|\d+\s*(?:rb|ribu|k|jt|juta)\b|\b(?:saldo|admin|pengeluaran)\b/i;
+const INLINE_START = /^(?:rekap|laporan|lapor)\s+(?:shift\s+)?(?:(pagi|siang|malam)\s+)?(.+)$/is;
+
 export function splitRecapStart(text: string): { shiftLabel: string | null; rest: string } | null {
   const lines = text.trim().replace(/^@\w+\s*/, '').split(/\r?\n/);
   const match = START_PATTERN.exec(lines[0].trim());
-  if (!match) return null;
-  return { shiftLabel: match[1]?.toLocaleLowerCase('id-ID') ?? null, rest: lines.slice(1).join('\n').trim() };
+  if (match) return { shiftLabel: match[1]?.toLocaleLowerCase('id-ID') ?? null, rest: lines.slice(1).join('\n').trim() };
+  // "rekap voucher telkomsel 7gb 5 hari laku 5 pcs": judul dan isi dalam satu baris.
+  const inline = INLINE_START.exec(lines[0].trim());
+  if (inline && ITEM_LIKE.test(inline[2])) {
+    return { shiftLabel: inline[1]?.toLocaleLowerCase('id-ID') ?? null, rest: [inline[2], ...lines.slice(1)].join('\n').trim() };
+  }
+  return null;
 }
 
 // Membuang @mention bot tanpa meratakan baris baru: rekap multi-baris harus tetap satu barang per baris.
