@@ -189,3 +189,11 @@ test('non-2xx, network timeout, and missing configuration are differentiated', a
   assert.deepEqual(failures.map(error => error.diagnostics.category), ['provider_http_error', 'timeout', 'missing_configuration']);
   assert.equal(failures[0].diagnostics.status, 503);
 });
+
+test('asisten owner menerima tambah dan ubah nama lokasi', () => {
+  const turn = validateOwnerAgentTurn({ reply: 'Oke', actions: [{ kind: 'propose_business_action', action: 'location_create', data: { name: 'Rak 5' } }], clarification: null });
+  assert.equal(turn.actions[0].kind, 'propose_business_action');
+  assert.equal(turn.actions[0].kind === 'propose_business_action' ? turn.actions[0].action : '', 'location_create');
+  const rename = validateOwnerAgentTurn({ reply: 'Oke', actions: [{ kind: 'propose_business_action', action: 'location_rename', data: { name: 'Rak 5', newName: 'Rak Atas' } }], clarification: null });
+  assert.equal(rename.actions.length, 1);
+});

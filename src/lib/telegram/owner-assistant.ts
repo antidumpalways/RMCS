@@ -546,7 +546,7 @@ export async function planOwnerOperations(action: OwnerAgentAction, product: Cat
     const matches = await prisma.location.findMany({ where: { name: { contains: action.location, mode: 'insensitive' } }, orderBy: { name: 'asc' }, take: 6 });
     if (matches.length !== 1) return { operations: [], labels: [], clarification: matches.length
       ? `Saya menemukan beberapa lokasi untuk ${product.name}: ${matches.map(item => item.name).join(', ')}. Pilih satu nama lokasi.`
-      : `Lokasi “${action.location}” tidak ditemukan. Saya tidak membuat lokasi baru.` };
+      : `Lokasi “${action.location}” belum ada. Bilang “buat lokasi ${action.location}” kalau mau saya buatkan dulu, lalu ulangi pemindahannya.` };
     const location = matches[0];
     if (location.id === product.locationId) return { operations: [], labels: [`${product.name} sudah berada di ${location.name}.`] };
     return { operations: [makeOwnerOperation(ownerId, 'LOCATION_MOVE', product,
@@ -753,6 +753,17 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     if (kind === 'subcategory_delete') return build('subcategory.delete', 'Draf hapus subkategori', [{ label: 'Kategori', value: category.name }, { label: 'Subkategori', value: sub.name, emphasis: true }], { subcategoryId: sub.id });
     const newName = text('newName', 60); if (!newName) return { clarification: 'Sebutkan nama subkategori yang baru.' };
     return build('subcategory.rename', 'Draf ubah nama subkategori', [{ label: 'Kategori', value: category.name }, { label: 'Subkategori', value: sub.name }, { label: 'Nama baru', value: newName, emphasis: true }], { subcategoryId: sub.id, name: newName });
+  }
+  if (kind === 'location_create' || kind === 'location_rename') {
+    const name = text('name', 60); if (!name) return { clarification: 'Sebutkan nama lokasinya.' };
+    const existing = await prisma.location.findFirst({ where: { name: { equals: name, mode: 'insensitive' } } });
+    if (kind === 'location_create') {
+      if (existing) return { clarification: `Lokasi ${existing.name} sudah ada.` };
+      return build('location.create', 'Draf tambah lokasi', [{ label: 'Lokasi baru', value: name, emphasis: true }], { name });
+    }
+    if (!existing) return { clarification: `Lokasi ${name} tidak ditemukan.` };
+    const newName = text('newName', 60); if (!newName) return { clarification: 'Sebutkan nama lokasi yang baru.' };
+    return build('location.rename', 'Draf ubah nama lokasi', [{ label: 'Lokasi', value: existing.name }, { label: 'Nama baru', value: newName, emphasis: true }], { locationId: existing.id, name: newName });
   }
   if (kind === 'price_bulk') {
     const scope = data.scope === 'category' || data.scope === 'subcategory' ? data.scope : data.scope === 'all' ? 'all' : null;

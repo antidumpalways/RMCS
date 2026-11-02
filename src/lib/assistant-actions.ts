@@ -250,6 +250,30 @@ async function categoryRename(payload: Record<string, unknown>) {
   return { ok: true as const, message: `Kategori “${category.name}” diubah menjadi “${name}”.` };
 }
 
+async function locationCreate(payload: Record<string, unknown>) {
+  const name = optionalText(payload.name, 60);
+  if (!name) throw new Error('Nama lokasi wajib diisi.');
+  if (await prisma.location.findFirst({ where: { name: { equals: name, mode: 'insensitive' } }, select: { id: true } })) {
+    throw new Error(`Lokasi “${name}” sudah ada.`);
+  }
+  const last = await prisma.location.aggregate({ _max: { sortOrder: true } });
+  await prisma.location.create({ data: { name, sortOrder: (last._max.sortOrder ?? 0) + 1 } });
+  return { ok: true as const, message: `Lokasi “${name}” ditambahkan.` };
+}
+
+async function locationRename(payload: Record<string, unknown>) {
+  const id = positiveId(payload.locationId);
+  const name = optionalText(payload.name, 60);
+  if (!name) throw new Error('Nama lokasi baru wajib diisi.');
+  const location = await prisma.location.findUnique({ where: { id }, select: { name: true } });
+  if (!location) throw new Error('Lokasi tidak ditemukan.');
+  if (await prisma.location.findFirst({ where: { name: { equals: name, mode: 'insensitive' }, id: { not: id } }, select: { id: true } })) {
+    throw new Error(`Lokasi “${name}” sudah ada.`);
+  }
+  await prisma.location.update({ where: { id }, data: { name } });
+  return { ok: true as const, message: `Lokasi “${location.name}” diubah menjadi “${name}”.` };
+}
+
 async function categoryDelete(payload: Record<string, unknown>) {
   const id = positiveId(payload.categoryId);
   const category = await prisma.category.findUnique({ where: { id }, select: { name: true } });
@@ -340,6 +364,8 @@ export async function applyAssistantDraft(input: { action?: unknown; payload?: u
       case 'subcategory.create': return subcategoryCreate(payload);
       case 'subcategory.rename': return subcategoryRename(payload);
       case 'subcategory.delete': return subcategoryDelete(payload);
+      case 'location.create': return locationCreate(payload);
+      case 'location.rename': return locationRename(payload);
       case 'sale.create': {
         const result = await recordCartSale(payload.items as { productId: number; qty: number }[], payload.expectedPrices as { productId: number; sellPrice: string }[]);
         if ('error' in result) throw new Error(result.error);
