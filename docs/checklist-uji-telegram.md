@@ -40,7 +40,11 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] `ganti axis 6gb jadi 8gb` → nama produk yang sama berubah.
 - [ ] `buat lokasi Rak 5` → lokasi dibuat.
 - [ ] `hapus <barang>` → **tetap** meminta konfirmasi.
-- [ ] Tombol **↩️ Batalkan** pada pesan hasil → perubahan dikembalikan (lihat bagian F bila fitur sudah aktif).
+- [ ] Tombol **↩️ Batalkan** pada pesan hasil (tambah stok, ubah harga/nama/lokasi, tambah produk) → nilai lama kembali; produk baru dihapus.
+- [ ] Tulis `batalkan yang tadi` → hasilnya sama dengan menekan tombol. Batas waktu 60 menit.
+- [ ] Setelah dibatalkan, tekan Batalkan lagi → bot bilang sudah dibatalkan sebelumnya.
+- [ ] Ubah harga lewat asisten, lalu karyawan menjual barang itu, lalu Batalkan → bagian yang sudah berubah lagi dilewati dengan keterangan.
+- [ ] Ubah saldo lewat asisten → **meminta konfirmasi** (tidak langsung jalan).
 
 ## F. Pemeriksaan data setelah uji
 - [ ] Stok dan saldo akhir = stok/saldo awal ± perubahan yang memang dilakukan.

@@ -15,6 +15,7 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
+import { applyUndo, formatUndoResult, latestUndoId, recordUndo, snapshotProducts } from '@/lib/services/owner-undo';
 import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerBusinessKind, type OwnerChatMessage } from './owner-agent';
 
 type OwnerMessage = { chat: { id: number; type: string }; from?: { id: number; first_name?: string; last_name?: string }; text?: string };
@@ -887,18 +888,47 @@ const ownerAutoApply = () => process.env.OWNER_AUTO_APPLY !== '0';
 const OWNER_CONFIRM_REQUIRED = new Set<string>(['catalog.delete', 'category.delete', 'subcategory.delete', 'debt.delete', 'opname.delete', 'price.bulk', 'catalog.cleanup',
   // Menimpa saldo atau mengubah/membatalkan catatan penjualan dan opname: salah tafsir langsung berdampak ke uang, jadi tetap satu ketukan.
   'balance.update', 'sale.return', 'sale.edit', 'shift.close', 'opname.apply']);
+// Produk apa saja yang disentuh draf ini (untuk jejak batal). null = jenis perubahan yang tidak bisa dibatalkan otomatis.
+async function undoPlanFor(draftId: string): Promise<{ ids: number[]; created: Array<{ name: string; categoryId: number }> } | null> {
+  const row = await prisma.telegramDraft.findUnique({ where: { id: draftId }, select: { kind: true, payload: true } });
+  if (!row) return null;
+  if (row.kind === 'OWNER_OPERATION') {
+    const batch = validateBatch(row.payload);
+    if (!batch) return null;
+    return { ids: batch.operations.filter((operation): operation is OwnerOperation => !isProductCreate(operation)).map(operation => operation.productId),
+      created: batch.operations.filter(isProductCreate).map(operation => ({ name: operation.name, categoryId: operation.categoryId })) };
+  }
+  if (row.kind === 'OWNER_ASSISTANT_ACTION') {
+    const saved = row.payload as { action?: string; payload?: { productId?: unknown } };
+    if (saved?.action === 'catalog.update' && typeof saved.payload?.productId === 'number') return { ids: [saved.payload.productId], created: [] };
+  }
+  return null;
+}
 async function autoApplyDraft(chatId: bigint, ownerId: number, draftId: string, successText: string) {
+  const plan = await undoPlanFor(draftId).catch(() => null);
+  const startedAt = new Date();
+  const before = plan ? await snapshotProducts(plan.ids).catch(() => []) : [];
   let failure: unknown = null;
   try {
     await confirmOperation({ id: '', from: { id: ownerId }, message: { chat: { id: Number(chatId), type: 'private' } }, quiet: true }, ownerId, draftId);
   } catch (error) { failure = error; }
   const row = await prisma.telegramDraft.findUnique({ where: { id: draftId }, select: { status: true, kind: true } });
   // Bila perubahan sudah tersimpan, jangan pernah melempar galat: pemilik bisa mengira belum jalan lalu mengirim ulang (penerapan ganda).
-  if (row?.status === 'CONFIRMED') { try { await sendTelegramMessage(chatId, successText); } catch { /* Perubahan sudah tersimpan; pesan hasil hanya pelengkap. */ } return; }
+  if (row?.status === 'CONFIRMED') {
+    let undoId: string | null = null;
+    if (plan) { try { undoId = await recordUndo({ chatId, ownerId, label: successText.split('\n')[0].slice(0, 120), startedAt, before, created: plan.created }); } catch { undoId = null; } }
+    try { await sendTelegramMessage(chatId, successText, undoId ? keyboard([[{ text: '↩️ Batalkan', callback_data: 'rcms:owner:undo:' + undoId }]]) : undefined); } catch { /* Perubahan sudah tersimpan; pesan hasil hanya pelengkap. */ }
+    return;
+  }
   if (failure) throw failure;
   if (row && row.kind === 'OWNER_OPERATION' && ['FAILED', 'PENDING', 'PROCESSING'].includes(row.status)) {
     return sendTelegramMessage(chatId, 'Perubahan belum diterapkan karena datanya berubah atau tidak valid. Tidak ada yang diubah; kirim ulang permintaannya.');
   }
+}
+async function undoLastChange(chatId: bigint, ownerId: number, undoId?: string) {
+  const id = undoId ?? await latestUndoId(chatId);
+  if (!id) return sendTelegramMessage(chatId, 'Tidak ada perubahan terakhir yang bisa dibatalkan (batasnya 60 menit setelah perubahan).');
+  return sendTelegramMessage(chatId, formatUndoResult(await applyUndo(chatId, ownerId, id)));
 }
 async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string, state: OwnerChatState,
   reply: string, priorActions: OwnerAgentAction[]) {
@@ -1542,6 +1572,8 @@ export async function handleOwnerCallback(callback: OwnerCallback, ownerId: numb
     await answerTelegramCallback(callback.id, 'Alur dibatalkan.');
     return showOwnerMenu(BigInt(chat.id));
   }
+  const undo = /^rcms:owner:undo:([A-Za-z0-9_-]{10,40})$/.exec(data);
+  if (undo) { await answerTelegramCallback(callback.id, 'Membatalkan…'); return undoLastChange(BigInt(chat.id), ownerId, undo[1]); }
   const reviewTask = /^rcms:owner:reviewtask:([A-Za-z0-9_-]{10,40})$/.exec(data);
   if (reviewTask) return showReviewTask(callback, ownerId, reviewTask[1]);
   const completeTask = /^rcms:owner:reviewtaskdone:([A-Za-z0-9_-]{10,40})$/.exec(data);
@@ -1611,6 +1643,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
   }
   const startedAt = Date.now();
   try {
+    if (/^(?:(?:tolong\s+)?batal(?:kan)?\s+(?:yang\s+)?(?:tadi|terakhir|barusan)|undo|kembalikan\s+(?:yang\s+)?(?:tadi|terakhir|barusan))\s*[.!]*$/i.test(text)) return undoLastChange(chatId, ownerId);
     if (isCombinedBalanceQuestion(text)) return sendTelegramMessage(chatId, await showCombinedBalance());
     const { rowId, state } = await getOwnerChatState(chatId, ownerId);
     const claimed = await prisma.telegramDraft.updateMany({ where: { id: rowId, kind: 'OWNER_CONVERSATION', status: 'PENDING', expiresAt: { gt: new Date() } }, data: { status: 'PROCESSING' } });
