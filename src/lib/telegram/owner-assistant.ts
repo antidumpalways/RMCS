@@ -556,6 +556,24 @@ export async function planOwnerOperations(action: OwnerAgentAction, product: Cat
   return { operations: [], labels: [] };
 }
 
+// "Buat produk X" padahal X sudah ada di katalog: perlakukan sebagai ubah/timpa harga dan stok, bukan membuat duplikat.
+function numericTermsMatch(query: string, product: CatalogProduct): boolean {
+  const tokens = new Set(catalogSearchTerms([product.name, product.provider, product.validity].filter(Boolean).join(' ')));
+  const hasDayToken = [...tokens].some(token => /hari$/.test(token));
+  return catalogSearchTerms(query).filter(term => /\d/.test(term)).every(term => (/hari$/.test(term) && !hasDayToken) || tokens.has(term));
+}
+async function existingProductForCreate(action: Extract<OwnerAgentAction, { kind: 'propose_product_create' }>, catalog: CatalogProduct[], latestOwnerText: string) {
+  if (!action.name || !catalog.length || /\b(?:produk|barang)\s+baru\b/i.test(latestOwnerText)) return null;
+  const matches = (await findProductCandidates(action.name, catalog)).filter(product => numericTermsMatch(action.name!, product));
+  if (!matches.length) return null;
+  if (matches.length > 1) return { status: 'AMBIGUOUS' as const, names: matches.map(product => product.name) };
+  const product = matches[0], query = product.name, actions: OwnerAgentAction[] = [];
+  if (action.unitCost) actions.push({ kind: 'propose_price_update', query, field: 'costPrice', amount: action.unitCost });
+  if (action.sellPrice) actions.push({ kind: 'propose_price_update', query, field: 'sellPrice', amount: action.sellPrice });
+  if (action.quantity !== null) actions.push({ kind: 'propose_stock_adjustment', query, targetStock: action.quantity, reason: 'Disesuaikan pemilik lewat asisten' });
+  return { status: 'EXISTING' as const, product, actions };
+}
+
 async function planProductCreate(action: Extract<OwnerAgentAction, { kind: 'propose_product_create' }>, ownerId: number) {
   const name = action.name?.trim();
   if (!name) return { clarification: 'Nama produk yang akan dibuat belum jelas. Sebutkan nama barangnya.' };
@@ -868,7 +886,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     return sendTelegramMessage(chatId, `${reply}\n\n${state.preview}`, ownerActionKeyboard(previousDraftId!));
   }
   state.proposalDraftId = null; state.preview = null; state.pendingMatches = [];
-  const catalog = state.actions.some(action => 'query' in action || action.kind === 'get_low_stock') ? await getCatalog() : [];
+  const catalog = state.actions.some(action => 'query' in action || action.kind === 'get_low_stock' || action.kind === 'propose_product_create') ? await getCatalog() : [];
   if (catalog.length > 3000) {
     state.proposalDraftId = null;
     await saveOwnerChatState(rowId, chatId, state);
@@ -901,6 +919,18 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       continue;
     }
     if (action.kind === 'propose_product_create') {
+      const latestOwnerText = [...state.history].reverse().find(message => message.role === 'user')?.content ?? '';
+      const existing = await existingProductForCreate(action, catalog, latestOwnerText);
+      if (existing?.status === 'AMBIGUOUS') { clarification ??= `Ada beberapa produk yang mirip “${action.name}”: ${existing.names.slice(0, 5).join(' | ')}. Sebutkan yang mana, atau bilang “produk baru” kalau memang barang baru.`; continue; }
+      if (existing?.status === 'EXISTING') {
+        for (const synthetic of existing.actions) {
+          const proposal = await planOwnerOperations(synthetic, existing.product, ownerId);
+          if (proposal.operations.length) { operations.push(...proposal.operations); labels.push(...proposal.labels); }
+          else responses.push(...proposal.labels);
+          clarification ??= proposal.clarification ?? null;
+        }
+        continue;
+      }
       const planned = await planProductCreate(action, ownerId);
       if (planned.clarification) clarification ??= planned.clarification;
       else if (planned.operation && planned.label) { operations.push(planned.operation); labels.push(planned.label); }
@@ -933,9 +963,6 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     }
   }
   if (!clarification && businessDraft && operations.length) clarification = 'Pisahkan perubahan ini menjadi pesan terpisah agar satu konfirmasi hanya mengubah satu jenis data.';
-  if (!clarification && operations.length > 1 && operations.some(isProductCreate)) {
-    clarification = 'Pembuatan produk baru sebaiknya ditinjau terpisah dari perubahan barang lain. Kirim permintaan produk baru saja terlebih dahulu.';
-  }
   if (!clarification && operations.length > 1) {
     const seen = new Set<string>();
     for (const operation of operations.filter((item): item is OwnerOperation => !isProductCreate(item))) {
