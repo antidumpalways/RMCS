@@ -806,7 +806,12 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     const replaceFrom = typeof replaceSpec?.from === 'string' ? replaceSpec.from.trim().slice(0, 80) : '', replaceTo = typeof replaceSpec?.to === 'string' ? replaceSpec.to.trim().slice(0, 80) : '';
     if (replaceFrom && replaceTo) {
       const swapped = applySpecReplacement({ name: p.name, validity: p.validity }, replaceFrom, replaceTo);
-      if (!swapped.nameChanged && !swapped.validityChanged) return { clarification: `Bagian “${replaceFrom}” tidak ditemukan pada nama atau masa aktif ${p.name}. Sebutkan bagian yang mau diganti sesuai nama di katalog.` };
+      const looksLikeFullName = replaceTo.split(/[^\p{L}]+/u).filter(word => word.length >= 3).length >= 2;
+      if (!swapped.nameChanged && !swapped.validityChanged) {
+        // Bagian lama tidak persis ada di nama katalog: bila tujuan jelas berupa nama lengkap, pakai itu sebagai nama baru produk yang sama.
+        if (!looksLikeFullName) return { clarification: `Bagian “${replaceFrom}” tidak ditemukan pada nama atau masa aktif ${p.name}. Sebutkan nama baru lengkapnya, atau bagian yang mau diganti sesuai nama di katalog.` };
+        payload.name = replaceTo; changes.push({ label: 'Nama', value: `${p.name} → ${replaceTo}` });
+      }
       if (swapped.nameChanged) { payload.name = swapped.name; changes.push({ label: 'Nama', value: `${p.name} → ${swapped.name}` }); }
       if (swapped.validityChanged) { payload.validity = swapped.validity; changes.push({ label: 'Masa aktif', value: `${p.validity ?? '—'} → ${swapped.validity ?? 'dihapus'}` }); }
     }
@@ -906,12 +911,14 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
   const operations: OwnerBatchOperation[] = [], labels: string[] = [], responses: string[] = [];
   let clarification: string | null = null;
   let businessDraft: AssistantDraft | null = null;
+  const extraBusinessDrafts: AssistantDraft[] = [];
   for (let index = 0; index < state.actions.length; index++) {
     const action = state.actions[index];
     if (action.kind === 'propose_business_action') {
-      if (operations.length || businessDraft) { clarification ??= 'Tinjau satu tindakan penting per pesan agar perubahan tetap jelas dan aman.'; continue; }
+      if (operations.length) { clarification ??= 'Tinjau satu tindakan penting per pesan agar perubahan tetap jelas dan aman.'; continue; }
       const planned = await planOwnerBusinessAction(action.action, action.data, ownerId);
-      businessDraft = planned.draft ?? null; clarification ??= planned.clarification ?? null; continue;
+      if (planned.draft) { if (businessDraft) extraBusinessDrafts.push(planned.draft); else businessDraft = planned.draft; }
+      clarification ??= planned.clarification ?? null; continue;
     }
     if (action.kind === 'request_clarification') { clarification ??= action.question; continue; }
     if (action.kind === 'get_business_report') { responses.push(await showBusinessReport(action.date, action.shift)); continue; }
@@ -972,6 +979,9 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       clarification ??= proposal.clarification ?? null;
     }
   }
+  if (!clarification && extraBusinessDrafts.length && businessDraft && (!ownerAutoApply() || [businessDraft, ...extraBusinessDrafts].some(draft => OWNER_CONFIRM_REQUIRED.has(draft.action)))) {
+    clarification = 'Tinjau satu tindakan penting per pesan agar perubahan tetap jelas dan aman.';
+  }
   if (!clarification && businessDraft && operations.length) clarification = 'Pisahkan perubahan ini menjadi pesan terpisah agar satu konfirmasi hanya mengubah satu jenis data.';
   if (!clarification && operations.length > 1) {
     const seen = new Set<string>();
@@ -1014,6 +1024,23 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     await saveOwnerChatState(rowId, chatId, state);
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     return sendTelegramMessage(chatId, clarificationResponse);
+  }
+  if (businessDraft && extraBusinessDrafts.length) {
+    // Beberapa perubahan katalog dalam satu pesan: dijalankan berurutan, hasilnya satu ringkasan.
+    const results: string[] = [];
+    for (const draft of [businessDraft, ...extraBusinessDrafts]) {
+      const saved = await createAssistantActionDraft(chatId, ownerId, draft);
+      await confirmOperation({ id: '', from: { id: ownerId }, message: { chat: { id: Number(chatId), type: 'private' } }, quiet: true }, ownerId, saved.draftId);
+      const row = await prisma.telegramDraft.findUnique({ where: { id: saved.draftId }, select: { status: true } });
+      const summary = draft.lines.map(line => `${line.label}: ${line.value}`).join('; ');
+      results.push(row?.status === 'CONFIRMED' ? `✅ ${summary}` : `⚠️ Gagal: ${summary}`);
+    }
+    const summaryText = results.join('\n');
+    rememberOwnerReply(state, summaryText);
+    state.actions = []; state.selected = []; state.pendingMatches = []; state.menuFlow = null; state.proposalDraftId = null; state.preview = null;
+    await saveOwnerChatState(rowId, chatId, state);
+    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+    return sendTelegramMessage(chatId, summaryText);
   }
   if (businessDraft) {
     const saved = await createAssistantActionDraft(chatId, ownerId, businessDraft);
