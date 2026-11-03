@@ -13,6 +13,7 @@ import { answerTelegramCallback, sendTelegramMessage, type InlineKeyboard } from
 import { parseOwnerRupiah, telegramOwnerAuthorized, validateOwnerIntent, type OwnerIntent } from './owner-intent';
 import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumRecapReports } from './shift-summary';
 import { setCombinedBalance } from '@/lib/services/combined-balance';
+import { applySpecReplacement } from './spec-swap';
 import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerBusinessKind, type OwnerChatMessage } from './owner-agent';
 
 type OwnerMessage = { chat: { id: number; type: string }; from?: { id: number; first_name?: string; last_name?: string }; text?: string };
@@ -800,6 +801,15 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     const resolved = await chooseProduct(productName); if (!resolved.product) return { clarification: resolved.issue };
     const p = resolved.product, payload: Record<string, unknown> = { productId: p.id }, changes: AssistantDraft['lines'] = [];
     const newName = text('name', 180); if (newName) { payload.name = newName; changes.push({ label: 'Nama', value: `${p.name} → ${newName}` }); }
+    // "Ganti 10GB/3 hari jadi 8GB/3 hari": tukar bagian spesifikasi pada nama (dan masa aktif) produk yang sama.
+    const replaceSpec = data.replace && typeof data.replace === 'object' && !Array.isArray(data.replace) ? data.replace as Record<string, unknown> : null;
+    const replaceFrom = typeof replaceSpec?.from === 'string' ? replaceSpec.from.trim().slice(0, 80) : '', replaceTo = typeof replaceSpec?.to === 'string' ? replaceSpec.to.trim().slice(0, 80) : '';
+    if (replaceFrom && replaceTo) {
+      const swapped = applySpecReplacement({ name: p.name, validity: p.validity }, replaceFrom, replaceTo);
+      if (!swapped.nameChanged && !swapped.validityChanged) return { clarification: `Bagian “${replaceFrom}” tidak ditemukan pada nama atau masa aktif ${p.name}. Sebutkan bagian yang mau diganti sesuai nama di katalog.` };
+      if (swapped.nameChanged) { payload.name = swapped.name; changes.push({ label: 'Nama', value: `${p.name} → ${swapped.name}` }); }
+      if (swapped.validityChanged) { payload.validity = swapped.validity; changes.push({ label: 'Masa aktif', value: `${p.validity ?? '—'} → ${swapped.validity ?? 'dihapus'}` }); }
+    }
     if (typeof data.categoryName === 'string') {
       const category = await prisma.category.findFirst({ where: { name: { equals: data.categoryName.trim(), mode: 'insensitive' } } });
       if (!category) return { clarification: `Kategori ${data.categoryName} tidak ditemukan.` };

@@ -4,6 +4,7 @@ import { isImplicitCatalogQuestion, lateEntryText, looksLikeCatalogQuestion, rem
 import { answerTelegramCallback, tryAnswerTelegramCallback } from './client';
 import { inventoryCallback, normalizeStockUnit, parseInventoryCallback, parseStockCountLines, resolveInventoryProduct } from './inventory';
 import { planLateEntry } from './late-entry-plan';
+import { applySpecReplacement, specPairs, swapSpec } from './spec-swap';
 import { applyExtraction, cleanItemLabel, inputDuplicateKey, deterministicExtraction, emptyRecap, parseIndonesianRupiah, recapIssues } from './recap';
 
 test('catatan penjualan bukan pertanyaan katalog, pertanyaan harga/stok tetap ke asisten', () => {
@@ -215,4 +216,19 @@ test('pesan rekap yang sama persis terdeteksi walau beda spasi dan tanda baca', 
 test('label dari AI dibersihkan dari kata rekap dan laku', () => {
   assert.equal(cleanItemLabel('rekap voucher telkomsel 7gb 5 hari laku'), 'voucher telkomsel 7gb 5 hari');
   assert.equal(cleanItemLabel('Axis 13gb'), 'Axis 13gb');
+});
+
+test('pergantian spesifikasi: 10GB/3 hari jadi 8GB/3 hari mengubah produk yang sama', () => {
+  assert.deepEqual(specPairs('10gb/3 hari', '8gb/3 hari'), [['10gb', '8gb']]);
+  assert.equal(swapSpec('Paket Data 10GB Axis', '10gb', '8gb'), 'Paket Data 8gb Axis');
+  assert.equal(swapSpec('Paket Data 10 GB Axis', '10gb', '8GB'), 'Paket Data 8GB Axis');
+  assert.equal(swapSpec('Paket Data 13GB Axis', '3gb', '8gb'), null);
+  const swapped = applySpecReplacement({ name: 'Paket Data 10GB Axis', validity: '3 hari' }, '10gb/3 hari', '8GB/3 hari');
+  assert.equal(swapped.name, 'Paket Data 8GB Axis');
+  assert.equal(swapped.nameChanged, true);
+  assert.equal(swapped.validityChanged, false);
+  const days = applySpecReplacement({ name: 'Voucher Telkomsel 5GB 3 Hari', validity: '3 hari' }, '3 hari', '5 hari');
+  assert.equal(days.name, 'Voucher Telkomsel 5GB 5 Hari');
+  assert.equal(days.validity, '5 hari');
+  assert.equal(applySpecReplacement({ name: 'Axis 13GB', validity: null }, '99gb', '1gb').nameChanged, false);
 });
