@@ -113,6 +113,7 @@ export function deterministicExtraction(text:string):RecapExtraction{
  ['service_fee','admin tarik tunai',/\b(?:admin|fee)\b\s*(?:tarik(?:\s*tunai)?)\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
  ['expense','pengeluaran',/\b(?:pengeluaran|biaya)\b\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
  ['service_volume','pulsa',/\bpulsa\b\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
+ ['sale','penjualan',/\b(?:penjualan|jualan|omzet)\b\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
  ['sale','rokok',/\brokok\b\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
  ['sale','voucher telkomsel',/(?:vc|voucher)\s+telkomsel\s*[:=]?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],
  ['service_volume','transfer keluar',/\b(?:tf|transfer)\b\s*(?:keluar)?\s*(\d[\d.,]*\s*(?:jt|juta|m|rb|ribu|k)?)/i,'add'],

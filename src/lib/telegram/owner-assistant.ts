@@ -14,6 +14,7 @@ import { parseOwnerRupiah, telegramOwnerAuthorized, validateOwnerIntent, type Ow
 import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumRecapReports } from './shift-summary';
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
+import { strictProductMatch } from './product-match';
 import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerBusinessKind, type OwnerChatMessage } from './owner-agent';
 
 type OwnerMessage = { chat: { id: number; type: string }; from?: { id: number; first_name?: string; last_name?: string }; text?: string };
@@ -565,7 +566,7 @@ function numericTermsMatch(query: string, product: CatalogProduct): boolean {
 }
 async function existingProductForCreate(action: Extract<OwnerAgentAction, { kind: 'propose_product_create' }>, catalog: CatalogProduct[], latestOwnerText: string) {
   if (!action.name || !catalog.length || /\b(?:produk|barang)\s+baru\b/i.test(latestOwnerText)) return null;
-  const matches = (await findProductCandidates(action.name, catalog)).filter(product => numericTermsMatch(action.name!, product));
+  const matches = (await findProductCandidates(action.name, catalog)).filter(product => strictProductMatch(action.name!, product));
   if (!matches.length) return null;
   if (matches.length > 1) return { status: 'AMBIGUOUS' as const, names: matches.map(product => product.name) };
   const product = matches[0], query = product.name, actions: OwnerAgentAction[] = [];
@@ -883,11 +884,18 @@ function queryForAction(action: OwnerAgentAction): string | null {
 // Perubahan yang dianggap aman langsung dijalankan tanpa tombol; hanya penghapusan dan perubahan massal tetap minta satu konfirmasi.
 // OWNER_AUTO_APPLY=0 mematikan eksekusi otomatis (dipakai tes agar jalur draf + konfirmasi tetap teruji).
 const ownerAutoApply = () => process.env.OWNER_AUTO_APPLY !== '0';
-const OWNER_CONFIRM_REQUIRED = new Set<string>(['catalog.delete', 'category.delete', 'subcategory.delete', 'debt.delete', 'opname.delete', 'price.bulk', 'catalog.cleanup']);
+const OWNER_CONFIRM_REQUIRED = new Set<string>(['catalog.delete', 'category.delete', 'subcategory.delete', 'debt.delete', 'opname.delete', 'price.bulk', 'catalog.cleanup',
+  // Menimpa saldo atau mengubah/membatalkan catatan penjualan dan opname: salah tafsir langsung berdampak ke uang, jadi tetap satu ketukan.
+  'balance.update', 'sale.return', 'sale.edit', 'shift.close', 'opname.apply']);
 async function autoApplyDraft(chatId: bigint, ownerId: number, draftId: string, successText: string) {
-  await confirmOperation({ id: '', from: { id: ownerId }, message: { chat: { id: Number(chatId), type: 'private' } }, quiet: true }, ownerId, draftId);
+  let failure: unknown = null;
+  try {
+    await confirmOperation({ id: '', from: { id: ownerId }, message: { chat: { id: Number(chatId), type: 'private' } }, quiet: true }, ownerId, draftId);
+  } catch (error) { failure = error; }
   const row = await prisma.telegramDraft.findUnique({ where: { id: draftId }, select: { status: true, kind: true } });
-  if (row?.status === 'CONFIRMED') return sendTelegramMessage(chatId, successText);
+  // Bila perubahan sudah tersimpan, jangan pernah melempar galat: pemilik bisa mengira belum jalan lalu mengirim ulang (penerapan ganda).
+  if (row?.status === 'CONFIRMED') { try { await sendTelegramMessage(chatId, successText); } catch { /* Perubahan sudah tersimpan; pesan hasil hanya pelengkap. */ } return; }
+  if (failure) throw failure;
   if (row && row.kind === 'OWNER_OPERATION' && ['FAILED', 'PENDING', 'PROCESSING'].includes(row.status)) {
     return sendTelegramMessage(chatId, 'Perubahan belum diterapkan karena datanya berubah atau tidak valid. Tidak ada yang diubah; kirim ulang permintaannya.');
   }
@@ -911,6 +919,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
   const operations: OwnerBatchOperation[] = [], labels: string[] = [], responses: string[] = [];
   let clarification: string | null = null;
   let businessDraft: AssistantDraft | null = null;
+  let weakMatch = false;
   const extraBusinessDrafts: AssistantDraft[] = [];
   for (let index = 0; index < state.actions.length; index++) {
     const action = state.actions[index];
@@ -973,6 +982,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     } else if (action.kind === 'get_product_details' || action.kind === 'get_inventory') {
       responses.push(productDescription(products[0]));
     } else if (action.kind.startsWith('propose_')) {
+      if (!selectedId && !strictProductMatch(query, products[0])) weakMatch = true;
       const proposal = await planOwnerOperations(action, products[0], ownerId);
       if (proposal.operations.length) { operations.push(...proposal.operations); labels.push(...proposal.labels); }
       else responses.push(...proposal.labels);
@@ -1063,7 +1073,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       throw error;
     }
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
-    if (ownerAutoApply()) return autoApplyDraft(chatId, ownerId, batch.draftId, '✅ Sudah diterapkan:\n' + operations.map((operation, index) => `• ${isProductCreate(operation) ? operation.name : operation.productName} — ${labels[index]}`).join('\n'));
+    if (ownerAutoApply() && !weakMatch) return autoApplyDraft(chatId, ownerId, batch.draftId, '✅ Sudah diterapkan:\n' + operations.map((operation, index) => `• ${isProductCreate(operation) ? operation.name : operation.productName} — ${labels[index]}`).join('\n'));
     return sendTelegramMessage(chatId, [content, batch.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(batch.draftId));
   }
   // A completed read-only request should not be replayed as the next turn's proposal.
@@ -1648,7 +1658,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
       state.selected = state.selected.filter(item => queryForAction(state.actions[item.actionIndex]) === item.query);
       const reply = uniqueMessages([turn.reply, turn.clarification]);
       const hasBalanceAction = state.actions.some(action => action.kind === 'propose_business_action' && action.action === 'balance_update');
-      const historyReply = state.actions.length && !hasBalanceAction ? 'Saya sudah meninjau permintaan. Rencana perubahan hanya akan diterapkan setelah tombol konfirmasi ditekan.' : reply;
+      const historyReply = state.actions.length && !hasBalanceAction ? (ownerAutoApply() ? 'Saya sudah meninjau permintaan. Perubahan yang aman langsung diterapkan; hapus, ubah massal, dan perubahan saldo/penjualan menunggu tombol konfirmasi.' : 'Saya sudah meninjau permintaan. Rencana perubahan hanya akan diterapkan setelah tombol konfirmasi ditekan.') : reply;
       state.history = [...state.history, { role: 'user' as const, content: text }, { role: 'assistant' as const, content: historyReply }].slice(-12);
       return await renderOwnerActions(chatId, ownerId, rowId, state, reply, priorActions);
     } catch (error) {

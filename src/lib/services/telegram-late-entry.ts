@@ -16,6 +16,10 @@ export async function applyLateEntry(input: {
   reportId: string; chatId: bigint; identityId: string; linkedUserId: number | null; displayName: string; content: string; updateId: string;
 }): Promise<LateEntryResult> {
   const extraction = await extractRecapMessage(input.content, emptyRecap());
+  // Susulan hanya menambah. Kalimat koreksi ("salah, harusnya ...") bukan susulan dan harus lewat koreksi rekap.
+  if (extraction.entries.some(entry => entry.operation !== 'add') || (extraction.inventoryLines ?? []).some(line => line.operation && line.operation !== 'add')) {
+    return { status: 'NEEDS_OWNER', reason: 'ini koreksi, bukan susulan; tulis misalnya “axis tadi harusnya 5”' };
+  }
   const draft = applyExtraction(emptyRecap(), extraction, input.content, 'late-' + input.updateId);
   if (draft.unresolved.length) return { status: 'NEEDS_OWNER', reason: draft.unresolved[0] };
   if (!draft.entries.length && !(draft.inventoryLines?.length)) return { status: 'NEEDS_OWNER', reason: 'isi susulan tidak terbaca' };
@@ -53,7 +57,7 @@ export async function applyLateEntry(input: {
         balanceAfter = result.newBalance;
       }
       // Catatan audit; kunci unik ini juga mencegah susulan yang sama diterapkan dua kali bila Telegram mengulang pesan.
-      await tx.telegramOwnerReviewTask.create({ data: { operationKey: 'late-entry:' + input.updateId, kind: 'LATE_ENTRY', status: 'REVIEWED', chatId: input.chatId,
+      await tx.telegramOwnerReviewTask.create({ data: { operationKey: 'late-entry-applied:' + input.updateId, kind: 'LATE_ENTRY', status: 'REVIEWED', chatId: input.chatId,
         telegramIdentityId: input.identityId, reportId: input.reportId, reviewedAt: new Date(),
         payload: { summary: 'Karyawan: ' + input.displayName + '\nSusulan otomatis: ' + input.content.slice(0, 300), applied: applied.map(item => `${item.name} -${item.qty}`), balanceDelta: plan.balanceDelta.toString() } } });
       return { status: 'APPLIED' as const, lines: applied, itemMoney: plan.itemMoney, balanceDelta: plan.balanceDelta, balanceAfter };

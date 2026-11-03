@@ -4,6 +4,7 @@ import { isImplicitCatalogQuestion, lateEntryText, looksLikeCatalogQuestion, rem
 import { answerTelegramCallback, tryAnswerTelegramCallback } from './client';
 import { inventoryCallback, normalizeStockUnit, parseInventoryCallback, parseStockCountLines, resolveInventoryProduct } from './inventory';
 import { planLateEntry } from './late-entry-plan';
+import { strictProductMatch } from './product-match';
 import { applySpecReplacement, specPairs, swapSpec } from './spec-swap';
 import { applyExtraction, cleanItemLabel, inputDuplicateKey, deterministicExtraction, emptyRecap, parseIndonesianRupiah, recapIssues } from './recap';
 
@@ -164,7 +165,7 @@ test('peringatan "Kategori total" hilang setelah saldo ditulis dengan benar', ()
   assert.equal(recapIssues(fixed).some(item => item.includes('saldo akhir')), false);
 });
 
-test('susulan: stok dipotong dan uang dihitung dari harga katalog, stok kurang ditolak', () => {
+test('susulan: stok dipotong, saldo hanya dari uang yang ditulis, stok kurang ditolak', () => {
   const line = (id: string, productId: number, quantity: number) => ({ id, sourceText: 'x', label: 'axis', quantity, unit: 'pcs', productId, candidateProductIds: [productId],
     mappingStatus: 'MATCHED' as const, coverage: 'UNRECORDED_ONLY' as const });
   const products = [{ id: 7, name: 'Voucher Telkomsel 7GB/5 Hari', stock: 13, sellPrice: 25000n }];
@@ -172,7 +173,7 @@ test('susulan: stok dipotong dan uang dihitung dari harga katalog, stok kurang d
   assert.equal(ok.status, 'OK');
   if (ok.status === 'OK') {
     assert.equal(ok.itemMoney, 50000n);
-    assert.equal(ok.balanceDelta, 55000n);
+    assert.equal(ok.balanceDelta, 5000n);
     assert.equal(ok.groups[0].qty, 2);
   }
   const merged = planLateEntry([line('a', 7, 2), line('b', 7, 3)], 0n, products);
@@ -231,4 +232,30 @@ test('pergantian spesifikasi: 10GB/3 hari jadi 8GB/3 hari mengubah produk yang s
   assert.equal(days.name, 'Voucher Telkomsel 5GB 5 Hari');
   assert.equal(days.validity, '5 hari');
   assert.equal(applySpecReplacement({ name: 'Axis 13GB', validity: null }, '99gb', '1gb').nameChanged, false);
+});
+
+test('susulan barang saja tidak mengubah saldo; yang tidak mengubah apa pun ditolak', () => {
+  const products = [{ id: 7, name: 'Voucher Telkomsel 7GB/5 Hari', stock: 13, sellPrice: 25000n }];
+  const line = { id: 'a', sourceText: 'x', label: 'axis', quantity: 1, unit: 'pcs', productId: 7, candidateProductIds: [7], mappingStatus: 'MATCHED' as const, coverage: 'UNRECORDED_ONLY' as const };
+  const plan = planLateEntry([line], 0n, products);
+  assert.equal(plan.status === 'OK' ? plan.balanceDelta : -1n, 0n);
+  assert.equal(plan.status === 'OK' ? plan.itemMoney : -1n, 25000n);
+  assert.equal(planLateEntry([], 0n, products).status, 'REFUSED');
+});
+
+test('"penjualan 45rb" terbaca sebagai uang penjualan tanpa AI', () => {
+  const x = deterministicExtraction('penjualan 45rb');
+  assert.equal(x.entries[0]?.category, 'sale');
+  assert.equal(x.unresolved.length, 0);
+});
+
+test('pencocokan ketat: merek/varian berbeda tidak boleh dianggap produk yang sama', () => {
+  const axis5 = { name: 'Paket Data 5GB Axis', provider: 'Axis', validity: '3 hari', sku: null };
+  assert.equal(strictProductMatch('Paket Data AXIS 5GB/3 Hari', axis5), true);
+  assert.equal(strictProductMatch('Tri 5GB 3 hari', axis5), false);
+  assert.equal(strictProductMatch('axis 8gb', axis5), false);
+  const noDay = { name: 'Paket Data 13GB Axis', provider: 'Axis', validity: null, sku: null };
+  assert.equal(strictProductMatch('Paket Data AXIS 13GB/7 hari', noDay), true);
+  assert.equal(strictProductMatch('Kabel Data Type C', { name: 'Kabel Data Micro', provider: null, validity: null, sku: null }), false);
+  assert.equal(strictProductMatch('AG-VY12', { name: 'Anti Gores', provider: null, validity: null, sku: 'ag-vy12' }), true);
 });

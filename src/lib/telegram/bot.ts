@@ -145,7 +145,20 @@ async function activeShiftOpening(chatId:bigint,identityId:string){
  }
  return null;
 }
+async function releaseExpiredOpening(chatId:bigint){
+ const register=await prisma.telegramShiftRegister.findUnique({where:{chatId}});
+ if(!register?.activeShiftId)return;
+ const row=await prisma.telegramDraft.findUnique({where:{id:register.activeShiftId}});
+ if(row?.kind==='SHIFT_OPENING'&&row.status==='PENDING'&&row.expiresAt<=new Date()){
+  await prisma.$transaction(async tx=>{
+   await tx.telegramDraft.updateMany({where:{id:row.id,status:'PENDING'},data:{status:'EXPIRED'}});
+   await tx.telegramSession.deleteMany({where:{chatId,draftId:row.id,state:'OPENING'}});
+   await tx.telegramShiftRegister.updateMany({where:{chatId,activeShiftId:row.id},data:{activeShiftId:null,recapIdentityId:null}});
+  });
+ }
+}
 async function autoOpenShift(chatId:bigint,actor:TelegramActor,shiftLabel:string|null){
+ await releaseExpiredOpening(chatId);
  // Shift dibuka tanpa hitung stok: stok awal diambil dari sistem dan dianggap sesuai.
  const opening=await captureShiftOpeningBalance(),products=await relevantShiftOpeningProducts(),now=new Date();
  const payload:ShiftOpeningPayload={version:1,stage:'REVIEW',shiftStart:opening.start.toISOString(),shiftLabel,openingBalance:opening.balance.toString(),openedByIdentityId:actor.identityId,reviewStatus:'CLEAR',startedAt:now.toISOString(),lines:products.map(product=>({productId:product.id,name:product.name,provider:product.provider,sku:product.sku,expectedQty:product.stock,actualQty:product.stock}))};
@@ -165,6 +178,8 @@ async function closeStaleShift(chatId:bigint,actor:TelegramActor,opening:{row:{i
  const sameOpener=opening.payload.openedByIdentityId===actor.identityId;
  if(!(ageHours>24||(!sameOpener&&ageHours>14)))return false;
  const shiftId=opening.payload.shiftId??opening.row.id;
+ const activeRecap=await prisma.telegramSession.findFirst({where:{chatId,state:'REPORTING',expiresAt:{gt:new Date()}},select:{id:true}});
+ if(activeRecap)return false;
  const closed=await prisma.$transaction(async tx=>{
   const marked=await tx.telegramDraft.updateMany({where:{id:opening.row.id,status:'CONFIRMED'},data:{payload:{...opening.payload,shiftId,closedAt:new Date().toISOString(),closedByIdentityId:actor.identityId,autoClosed:true} as object}});
   if(marked.count!==1)return false;
@@ -461,7 +476,7 @@ async function claimGroupShiftRecap(chatId:bigint,shiftId:string,identityId:stri
  current=await prisma.telegramShiftRegister.findUnique({where:{chatId}});return current?.activeShiftId===shiftId&&current.recapIdentityId===identityId;
 }async function openReport(chatId:bigint,actor:TelegramActor,shiftLabel:string|null=null,initialMessage?:TelegramMessage,initialUpdateId?:bigint){
  const chatSession=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId,telegramIdentityId:actor.identityId}}});
- if(chatSession?.state==='OPENING'&&chatSession.draftId){const openingDraft=await prisma.telegramDraft.findUnique({where:{id:chatSession.draftId}});if(openingDraft?.kind==='SHIFT_OPENING'&&openingDraft.status==='PENDING')return sendTelegramMessage(chatId,'Cek stok awal masih menunggu di pesan sebelumnya. Selesaikan dulu, lalu kirim /rekap.');}
+ if(chatSession?.state==='OPENING'&&chatSession.draftId){const openingDraft=await prisma.telegramDraft.findUnique({where:{id:chatSession.draftId}});if(openingDraft?.kind==='SHIFT_OPENING'&&openingDraft.status==='PENDING'&&openingDraft.expiresAt>new Date())return sendTelegramMessage(chatId,'Cek stok awal masih menunggu di pesan sebelumnya. Selesaikan dulu, lalu kirim /rekap.');}
  let opening=await activeShiftOpening(chatId,actor.identityId);
  if(opening&&await closeStaleShift(chatId,actor,opening))opening=null;
  if(!opening){
@@ -596,12 +611,13 @@ async function requestReportCorrection(chatId:bigint,actor:TelegramActor,args:st
 async function tryAutoApplyCorrection(chatId:bigint,actor:TelegramActor,correctionId:string){
  // Koreksi kecil diterapkan langsung; yang besar/tidak jelas tetap menunggu owner.
  try{return await prisma.$transaction(tx=>approveCorrectionTx(tx,correctionId,chatId,{userId:actor.linkedUserId,identityId:actor.identityId},'approve',CORRECTION_AUTO_LIMIT),{isolationLevel:'Serializable',timeout:15000});}
- catch(error){const message=(error as Error).message;if(['CORRECTION_LIMIT','CORRECTION_STALE','CORRECTION_STOCK_INSUFFICIENT','CORRECTION_COVERAGE_REVIEW'].includes(message)||(error as {code?:string}).code==='P2034')return null;throw error;}
+ catch(error){const message=(error as Error).message;if(['CORRECTION_LIMIT','CORRECTION_STALE','CORRECTION_STOCK_INSUFFICIENT','CORRECTION_COVERAGE_REVIEW','CORRECTION_WRONG_CHAT','CORRECTION_NOT_FOUND'].includes(message)||(error as {code?:string}).code==='P2034')return null;throw error;}
 }
 async function submitReportCorrection(chatId:bigint,actor:TelegramActor,report:{id:string},posting:{id:string;productLabel:string;reportedQty:number},quantity:number,reason:string,viaChat=false){
  const approved=await prisma.telegramReportCorrection.aggregate({where:{postingId:posting.id,status:'APPROVED'},_sum:{deltaQty:true}});
  const currentQty=posting.reportedQty+(approved._sum.deltaQty??0);if(currentQty===quantity)return sendTelegramMessage(chatId,'Jumlah tersebut sudah sesuai. Tidak ada koreksi yang dibuat.');
- const operationKey=createHash('sha256').update([report.id,posting.id,actor.telegramUserId,quantity,reason.toLocaleLowerCase('id-ID')].join('|')).digest('hex');
+ const correctionCount=await prisma.telegramReportCorrection.count({where:{postingId:posting.id}});
+ const operationKey=createHash('sha256').update([report.id,posting.id,actor.telegramUserId,quantity,reason.toLocaleLowerCase('id-ID'),currentQty,correctionCount].join('|')).digest('hex');
  const prior=await prisma.telegramReportCorrection.findUnique({where:{operationKey}});if(prior)return sendTelegramMessage(chatId,prior.status==='PENDING'?'Permintaan koreksi yang sama masih menunggu owner.':'Permintaan koreksi yang sama sudah diproses.');
  const correction=await prisma.telegramReportCorrection.create({data:{operationKey,reportId:report.id,postingId:posting.id,requestedById:actor.linkedUserId,requestedByTelegramIdentityId:actor.identityId,reason:reason.slice(0,500),previousQty:currentQty,requestedQty:quantity,deltaQty:quantity-currentQty}});
  const auto=await tryAutoApplyCorrection(chatId,actor,correction.id);
@@ -816,7 +832,7 @@ async function handleLateEntry(m:TelegramMessage,actor:TelegramActor,content:str
  if(applied.status==='APPLIED'){
   const rupiah=(value:bigint)=>formatTelegramRupiah(value<0n?-value:value);
   const itemText=applied.lines.map(line=>'• '+line.name+' — '+line.qty+' pcs (stok jadi '+line.stockAfter+')').join('\n');
-  const balanceText=applied.balanceDelta===0n?'':'\n💰 Saldo '+(applied.balanceDelta>0n?'bertambah ':'berkurang ')+rupiah(applied.balanceDelta)+(applied.balanceAfter!==null?' (sekarang '+formatTelegramRupiah(applied.balanceAfter)+')':'');
+  const balanceText=applied.balanceDelta===0n?(applied.lines.length?'\n💰 Saldo tidak diubah (uang barang dianggap sudah terhitung di saldo akhir). Kalau belum, tulis: susulan penjualan <nominal>.':''):'\n💰 Saldo '+(applied.balanceDelta>0n?'bertambah ':'berkurang ')+rupiah(applied.balanceDelta)+(applied.balanceAfter!==null?' (sekarang '+formatTelegramRupiah(applied.balanceAfter)+')':'');
   try{await notifyOwnersText('➕ SUSULAN DICATAT\nKaryawan: '+actor.displayName+'\nRekap: '+report.id+(itemText?'\n'+itemText:'')+balanceText+'\nTulisan karyawan: '+content.slice(0,200));}catch{/* Info untuk owner hanya pelengkap. */}
   return sendTelegramMessage(chatId,'✅ Susulan dicatat'+(itemText?'\n'+itemText:'')+balanceText+'\nOwner sudah diberi tahu.');
  }

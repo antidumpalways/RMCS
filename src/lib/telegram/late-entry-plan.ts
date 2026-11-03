@@ -30,7 +30,10 @@ export function planLateEntry(lines: RecapInventoryLine[], moneyDelta: bigint, p
     itemMoney += product.sellPrice * BigInt(group.qty);
     groups.push({ product, qty: group.qty, labels: group.labels, sources: group.sources });
   }
-  const balanceDelta = moneyDelta + itemMoney;
-  if ((balanceDelta < 0n ? -balanceDelta : balanceDelta) > limit) return { status: 'REFUSED', reason: 'nilainya besar (di atas Rp 1.000.000), perlu persetujuan owner' };
+  // Saldo hanya berubah oleh uang yang ditulis karyawan. Harga katalog barang TIDAK ditambahkan ke saldo: uangnya bisa saja
+  // sudah ikut terhitung di saldo akhir rekap, dan menambahkannya lagi membuat saldo sistem terlalu tinggi.
+  const balanceDelta = moneyDelta;
+  if (!groups.length && balanceDelta === 0n) return { status: 'REFUSED', reason: 'tidak ada barang atau uang yang bisa dicatat dari pesan ini' };
+  if ((balanceDelta < 0n ? -balanceDelta : balanceDelta) > limit || itemMoney > limit) return { status: 'REFUSED', reason: 'nilainya besar (di atas Rp 1.000.000), perlu persetujuan owner' };
   return { status: 'OK', groups, itemMoney, balanceDelta };
 }
