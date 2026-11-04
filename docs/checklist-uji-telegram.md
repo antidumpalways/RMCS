@@ -45,6 +45,18 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Setelah dibatalkan, tekan Batalkan lagi → bot bilang sudah dibatalkan sebelumnya.
 - [ ] Ubah harga lewat asisten, lalu karyawan menjual barang itu, lalu Batalkan → bagian yang sudah berubah lagi dilewati dengan keterangan.
 - [ ] Ubah saldo lewat asisten → **meminta konfirmasi** (tidak langsung jalan).
+- [ ] **Daftar paket per provider**: kirim
+  ```
+  axis
+  3 hari 10gb 15rb
+  5 hari 6gb 15rb
+  7 hari 13gb 25rb
+  ```
+  → paket yang sudah ada diperbarui harganya; tidak ada produk ganda.
+- [ ] Besoknya kirim daftar yang kuotanya berubah (`3 hari 8gb 15rb`) → **produk slot 3 hari yang sama diganti jadi 8GB** (bukan dibuat baru); modal lama tetap.
+- [ ] Tambahkan masa aktif baru (`30 hari 20gb 50rb stok 1`) → produk baru dibuat dengan gaya nama katalog; modal diperkirakan dari margin biasa dan ditandai.
+- [ ] Daftar yang membuat dua produk berebut satu slot → asisten **bertanya**, tidak menebak.
+- [ ] Tombol **↩️ Batalkan** setelah daftar paket → nama/harga kembali, produk baru dihapus.
 
 ## F. Pemeriksaan data setelah uji
 - [ ] Stok dan saldo akhir = stok/saldo awal ± perubahan yang memang dilakukan.

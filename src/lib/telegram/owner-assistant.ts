@@ -15,6 +15,7 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
+import { formatPackagePlan, planProviderPackages, type PackageInput } from './provider-packages';
 import { applyUndo, formatUndoResult, latestUndoId, recordUndo, snapshotProducts } from '@/lib/services/owner-undo';
 import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerBusinessKind, type OwnerChatMessage } from './owner-agent';
 
@@ -775,6 +776,43 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     const newName = text('newName', 60); if (!newName) return { clarification: 'Sebutkan nama subkategori yang baru.' };
     return build('subcategory.rename', 'Draf ubah nama subkategori', [{ label: 'Kategori', value: category.name }, { label: 'Subkategori', value: sub.name }, { label: 'Nama baru', value: newName, emphasis: true }], { subcategoryId: sub.id, name: newName });
   }
+  if (kind === 'provider_sync') {
+    const provider = text('provider', 60); if (!provider) return { clarification: 'Sebutkan provider-nya (mis. Axis, Telkomsel).' };
+    const rawPackages = Array.isArray(data.packages) ? data.packages.slice(0, 40) : [];
+    if (!rawPackages.length) return { clarification: 'Sebutkan daftar paketnya: kuota, masa aktif, dan harga jual tiap paket.' };
+    const packages: PackageInput[] = [];
+    for (const raw of rawPackages) {
+      const entry = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+      const quota = typeof entry.quota === 'string' ? entry.quota.trim() : typeof entry.quota === 'number' ? `${entry.quota}GB` : '';
+      const asText = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' ? String(value) : null;
+      const sellPrice = parseOwnerRupiah(asText(entry.sellPrice)), costPrice = parseOwnerRupiah(asText(entry.costPrice));
+      if (!quota || sellPrice === null || sellPrice <= 0n) return { clarification: `Paket “${quota || '?'}” belum lengkap: sebutkan kuota dan harga jualnya.` };
+      packages.push({ quota, validity: asText(entry.validity), sellPrice, costPrice: costPrice !== null && costPrice > 0n ? costPrice : null,
+        stock: typeof entry.stock === 'number' && Number.isSafeInteger(entry.stock) && entry.stock >= 0 && entry.stock <= 1_000_000 ? entry.stock : null });
+    }
+    const products = await prisma.product.findMany({ select: { id: true, name: true, provider: true, validity: true, stock: true, costPrice: true, sellPrice: true, categoryId: true, subcategoryId: true } });
+    const plan = planProviderPackages(provider, products, packages);
+    if (plan.invalid.length) return { clarification: `Ada paket yang belum terbaca: ${plan.invalid.join('; ')}.` };
+    if (plan.ambiguous.length) return { clarification: `Masa aktif yang sama punya beberapa produk di ${plan.provider}: ${plan.ambiguous.map(item => `${item.label} → ${item.names.join(' | ')}`).join('; ')}. Sebutkan produk mana yang dimaksud.` };
+    if (!plan.updates.length && !plan.creates.length) return { clarification: `Tidak ada paket yang bisa diproses untuk ${provider}.` };
+    let fallbackCategoryId: number | null = null;
+    if (plan.creates.some(made => made.categoryId === null)) {
+      const categoryName = text('category', 60);
+      const category = categoryName ? await prisma.category.findFirst({ where: { name: { equals: categoryName, mode: 'insensitive' } }, select: { id: true } }) : null;
+      if (!category) return { clarification: `Belum ada produk ${provider} di katalog, jadi kategori paket barunya belum jelas. Sebutkan kategorinya (mis. Voucher).` };
+      fallbackCategoryId = category.id;
+    }
+    const zeroIds = data.missing === 'zero' ? plan.missing.filter(item => item.stock > 0).map(item => item.id) : [];
+    const lines: Array<{ label: string; value: string; emphasis?: boolean }> = formatPackagePlan(plan, formatIdr).map(value => ({ label: '', value }));
+    if (plan.missing.length) lines.push({ label: zeroIds.length ? 'Tidak ada di daftar (stok dinolkan)' : 'Tidak ada di daftar (dibiarkan)', value: plan.missing.map(item => item.name).join(', ') });
+    return build('provider.sync', `Draf daftar paket ${plan.provider}`, lines, {
+      provider: plan.provider,
+      updates: plan.updates.filter(update => update.kind !== 'SAME').map(update => ({ id: update.id, name: update.to.name, validity: update.to.validity, sellPrice: update.to.sellPrice.toString(), costPrice: update.to.costPrice.toString() })),
+      creates: plan.creates.map(made => ({ name: made.name, validity: made.validity, sellPrice: made.sellPrice.toString(), costPrice: made.costPrice.toString(), stock: made.stock,
+        categoryId: made.categoryId ?? fallbackCategoryId, subcategoryId: made.subcategoryId, provider: made.provider })),
+      zeroIds,
+    });
+  }
   if (kind === 'location_create' || kind === 'location_rename') {
     const name = text('name', 60); if (!name) return { clarification: 'Sebutkan nama lokasinya.' };
     const existing = await prisma.location.findFirst({ where: { name: { equals: name, mode: 'insensitive' } } });
@@ -901,6 +939,12 @@ async function undoPlanFor(draftId: string): Promise<{ ids: number[]; created: A
   if (row.kind === 'OWNER_ASSISTANT_ACTION') {
     const saved = row.payload as { action?: string; payload?: { productId?: unknown } };
     if (saved?.action === 'catalog.update' && typeof saved.payload?.productId === 'number') return { ids: [saved.payload.productId], created: [] };
+    if (saved?.action === 'provider.sync') {
+      const sync = saved.payload as { updates?: Array<{ id?: unknown }>; zeroIds?: unknown[]; creates?: Array<{ name?: unknown; categoryId?: unknown }> } | undefined;
+      const ids = [...(sync?.updates ?? []).map(item => item.id), ...(sync?.zeroIds ?? [])].filter((id): id is number => Number.isSafeInteger(id));
+      const created = (sync?.creates ?? []).flatMap(item => typeof item.name === 'string' && typeof item.categoryId === 'number' ? [{ name: item.name, categoryId: item.categoryId }] : []);
+      return { ids, created };
+    }
   }
   return null;
 }
@@ -1072,7 +1116,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       const saved = await createAssistantActionDraft(chatId, ownerId, draft);
       await confirmOperation({ id: '', from: { id: ownerId }, message: { chat: { id: Number(chatId), type: 'private' } }, quiet: true }, ownerId, saved.draftId);
       const row = await prisma.telegramDraft.findUnique({ where: { id: saved.draftId }, select: { status: true } });
-      const summary = draft.lines.map(line => `${line.label}: ${line.value}`).join('; ');
+      const summary = draft.lines.map(line => (line.label ? `${line.label}: ${line.value}` : line.value)).join('; ');
       results.push(row?.status === 'CONFIRMED' ? `✅ ${summary}` : `⚠️ Gagal: ${summary}`);
     }
     const summaryText = results.join('\n');
@@ -1089,7 +1133,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     await saveOwnerChatState(rowId, chatId, state);
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     if (ownerAutoApply() && !OWNER_CONFIRM_REQUIRED.has(businessDraft.action)) {
-      return autoApplyDraft(chatId, ownerId, saved.draftId, '✅ ' + businessDraft.title.replace(/^Draf @@BS@@s*/i, '') + ' sudah diterapkan.\n' + businessDraft.lines.map(line => `${line.label}: ${line.value}`).join('\n'));
+      return autoApplyDraft(chatId, ownerId, saved.draftId, '✅ ' + businessDraft.title.replace(/^Draf @@BS@@s*/i, '') + ' sudah diterapkan.\n' + businessDraft.lines.map(line => (line.label ? `${line.label}: ${line.value}` : line.value)).join('\n'));
     }
     return sendTelegramMessage(chatId, [content, saved.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(saved.draftId));
   }
@@ -1276,7 +1320,7 @@ async function confirmBatchOperation(callback: OwnerCallback, ownerId: number, d
 }
 
 function assistantDraftPreview(draft: AssistantDraft) {
-  return `${draft.title}\n${draft.lines.map(line => `${line.label}: ${line.value}`).join('\n')}\n\nBelum ada perubahan. Konfirmasi hanya jika rinciannya benar.`;
+  return `${draft.title}\n${draft.lines.map(line => (line.label ? `${line.label}: ${line.value}` : line.value)).join('\n')}\n\nBelum ada perubahan. Konfirmasi hanya jika rinciannya benar.`;
 }
 
 async function createAssistantActionDraft(chatId: bigint, ownerId: number, draft: AssistantDraft) {

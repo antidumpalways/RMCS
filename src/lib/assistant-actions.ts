@@ -274,6 +274,51 @@ async function locationRename(payload: Record<string, unknown>) {
   return { ok: true as const, message: `Lokasi “${location.name}” diubah menjadi “${name}”.` };
 }
 
+// Daftar paket harian per provider: ubah/ganti banyak paket dan buat paket baru sekaligus, atomik (semua atau tidak sama sekali).
+async function providerSync(payload: Record<string, unknown>) {
+  const updates = Array.isArray(payload.updates) ? payload.updates as Array<Record<string, unknown>> : [];
+  const creates = Array.isArray(payload.creates) ? payload.creates as Array<Record<string, unknown>> : [];
+  const zeroIds = Array.isArray(payload.zeroIds) ? (payload.zeroIds as unknown[]).filter((id): id is number => Number.isSafeInteger(id)) : [];
+  if (updates.length + creates.length + zeroIds.length > 60) throw new Error('Daftar terlalu panjang (maksimal 60 paket sekali jalan).');
+  const money = (value: unknown) => {
+    if (typeof value !== 'string' || !/^\d{1,13}$/.test(value)) throw new Error('Nominal paket tidak valid.');
+    return BigInt(value);
+  };
+  await prisma.$transaction(async tx => {
+    for (const item of updates) {
+      const id = positiveId(item.id);
+      const current = await tx.product.findUnique({ where: { id }, select: { id: true, categoryId: true } });
+      if (!current) throw new Error('Salah satu paket tidak ditemukan di katalog.');
+      const name = optionalText(item.name, 180);
+      if (!name) throw new Error('Nama paket tidak valid.');
+      if (await tx.product.findFirst({ where: { id: { not: id }, categoryId: current.categoryId, name: { equals: name, mode: 'insensitive' } }, select: { id: true } })) {
+        throw new Error(`Barang “${name}” sudah ada di kategori tersebut.`);
+      }
+      await tx.product.update({ where: { id }, data: { name, validity: optionalText(item.validity, 80) ?? null, sellPrice: money(item.sellPrice), costPrice: money(item.costPrice) } });
+    }
+    for (const item of creates) {
+      const categoryId = positiveId(item.categoryId);
+      if (!await tx.category.findUnique({ where: { id: categoryId }, select: { id: true } })) throw new Error('Kategori paket baru tidak ditemukan.');
+      const name = optionalText(item.name, 180);
+      if (!name) throw new Error('Nama paket baru tidak valid.');
+      if (await tx.product.findFirst({ where: { categoryId, name: { equals: name, mode: 'insensitive' } }, select: { id: true } })) throw new Error(`Barang “${name}” sudah ada di kategori tersebut.`);
+      const stock = Number.isSafeInteger(item.stock) && (item.stock as number) >= 0 && (item.stock as number) <= 1_000_000 ? item.stock as number : 0;
+      const subcategoryId = item.subcategoryId === null || item.subcategoryId === undefined ? null : positiveId(item.subcategoryId);
+      const costPrice = money(item.costPrice), sellPrice = money(item.sellPrice);
+      const product = await tx.product.create({ data: { name, categoryId, subcategoryId, provider: optionalText(item.provider, 80) ?? null, validity: optionalText(item.validity, 80) ?? null,
+        costPrice, sellPrice, stock, minStock: 3 } });
+      if (stock > 0) await tx.inventoryMovement.create({ data: { productId: product.id, type: 'IN', qty: stock, costAtTime: costPrice, note: 'Stok awal daftar paket harian', userId: null } });
+    }
+    for (const id of zeroIds) {
+      const product = await tx.product.findUnique({ where: { id }, select: { id: true, stock: true, costPrice: true } });
+      if (!product || product.stock <= 0) continue;
+      await tx.product.update({ where: { id }, data: { stock: 0 } });
+      await tx.inventoryMovement.create({ data: { productId: id, type: 'OWNER_PROVIDER_SYNC', qty: -product.stock, costAtTime: product.costPrice, note: 'Tidak ada di daftar paket harian', userId: null } });
+    }
+  }, { isolationLevel: 'Serializable', timeout: 20_000 });
+  return { ok: true as const, message: `${updates.length} paket diperbarui, ${creates.length} paket baru.` };
+}
+
 async function categoryDelete(payload: Record<string, unknown>) {
   const id = positiveId(payload.categoryId);
   const category = await prisma.category.findUnique({ where: { id }, select: { name: true } });
@@ -366,6 +411,7 @@ export async function applyAssistantDraft(input: { action?: unknown; payload?: u
       case 'subcategory.delete': return subcategoryDelete(payload);
       case 'location.create': return locationCreate(payload);
       case 'location.rename': return locationRename(payload);
+      case 'provider.sync': return providerSync(payload);
       case 'sale.create': {
         const result = await recordCartSale(payload.items as { productId: number; qty: number }[], payload.expectedPrices as { productId: number; sellPrice: string }[]);
         if ('error' in result) throw new Error(result.error);
