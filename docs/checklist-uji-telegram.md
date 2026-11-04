@@ -55,6 +55,8 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
   → produk bernama **Axis 3 Hari / Axis 5 Hari / Axis 7 Hari**; yang lama otomatis dirapikan namanya (harga/stok terbawa).
 - [ ] Kuota berubah (`axis 3 hari 8gb 15rb`) → **tidak ada yang berubah** selain harga bila beda; tidak perlu mengubah produk.
 - [ ] `rapikan axis jadi per hari` → semua voucher Axis yang punya masa aktif diganti namanya jadi per hari; harga/stok tidak berubah.
+- [ ] Sebut kuota di daftar (`axis 3 hari 10gb 15rb`) → kuota tersimpan sebagai keterangan; `harga axis 10gb` (karyawan, tanpa tag) menjawab **Axis 3 Hari · kuota 10GB · harga**.
+- [ ] `axis 3 hari sekarang 8gb` (tanpa harga) → hanya kuota yang berubah; nama dan harga tetap.
 - [ ] Hari baru (`30 hari 50rb stok 1`) → produk **Axis 30 Hari** dibuat; modal perkiraan dari margin biasa ditandai.
 - [ ] Dua produk lama di hari yang sama → asisten **bertanya**, tidak menebak.
 - [ ] Karyawan menulis `axis 3 hari 2 pcs` (atau `axis 10gb 3 hari 2 pcs`) → cocok ke Axis 3 Hari tanpa pertanyaan.

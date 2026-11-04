@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/prisma';
+import { saveQuotas } from '@/lib/services/product-quota';
 import { getCurrentUser } from '@/lib/auth';
 import { isAssistantAction, formatIDR, isMemoryKind, MEMORY_KIND_LABELS } from '@/lib/assistant-draft';
 import { applyCatalogDraft, recordCartSale, recordShiftStockCheck, replaceSaleFromChat } from '@/lib/actions';
@@ -276,6 +277,7 @@ async function locationRename(payload: Record<string, unknown>) {
 
 // Daftar paket harian per provider: ubah/ganti banyak paket dan buat paket baru sekaligus, atomik (semua atau tidak sama sekali).
 async function providerSync(payload: Record<string, unknown>) {
+  const quotaEntries: Array<{ productId: number; quota: string }> = [];
   const updates = Array.isArray(payload.updates) ? payload.updates as Array<Record<string, unknown>> : [];
   const creates = Array.isArray(payload.creates) ? payload.creates as Array<Record<string, unknown>> : [];
   const zeroIds = Array.isArray(payload.zeroIds) ? (payload.zeroIds as unknown[]).filter((id): id is number => Number.isSafeInteger(id)) : [];
@@ -295,6 +297,8 @@ async function providerSync(payload: Record<string, unknown>) {
         throw new Error(`Barang “${name}” sudah ada di kategori tersebut.`);
       }
       await tx.product.update({ where: { id }, data: { name, validity: optionalText(item.validity, 80) ?? null, sellPrice: money(item.sellPrice), costPrice: money(item.costPrice) } });
+      const quota = optionalText(item.quota, 40);
+      if (quota) quotaEntries.push({ productId: id, quota });
     }
     for (const item of creates) {
       const categoryId = positiveId(item.categoryId);
@@ -308,6 +312,8 @@ async function providerSync(payload: Record<string, unknown>) {
       const product = await tx.product.create({ data: { name, categoryId, subcategoryId, provider: optionalText(item.provider, 80) ?? null, validity: optionalText(item.validity, 80) ?? null,
         costPrice, sellPrice, stock, minStock: 3 } });
       if (stock > 0) await tx.inventoryMovement.create({ data: { productId: product.id, type: 'IN', qty: stock, costAtTime: costPrice, note: 'Stok awal daftar paket harian', userId: null } });
+      const quota = optionalText(item.quota, 40);
+      if (quota) quotaEntries.push({ productId: product.id, quota });
     }
     for (const id of zeroIds) {
       const product = await tx.product.findUnique({ where: { id }, select: { id: true, stock: true, costPrice: true } });
@@ -316,6 +322,8 @@ async function providerSync(payload: Record<string, unknown>) {
       await tx.inventoryMovement.create({ data: { productId: id, type: 'OWNER_PROVIDER_SYNC', qty: -product.stock, costAtTime: product.costPrice, note: 'Tidak ada di daftar paket harian', userId: null } });
     }
   }, { isolationLevel: 'Serializable', timeout: 20_000 });
+  // Kuota hanya keterangan: disimpan setelah perubahan utama berhasil, dan tidak boleh menggagalkannya.
+  await saveQuotas(quotaEntries);
   return { ok: true as const, message: `${updates.length} paket diperbarui, ${creates.length} paket baru.` };
 }
 

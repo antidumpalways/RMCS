@@ -563,3 +563,10 @@ model TelegramReportCorrection {
   @@index([status, createdAt])
 }
 
+// Kuota voucher hari ini (keterangan yang bisa berubah). Sengaja tabel terpisah dan tanpa relasi:
+// produk voucher dikenali dari provider + hari, sehingga kuota berubah tidak mengubah produk.
+model ProductQuota {
+  productId Int      @id
+  quota     String
+  updatedAt DateTime @updatedAt
+}

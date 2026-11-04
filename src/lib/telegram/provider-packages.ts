@@ -2,19 +2,20 @@
 // Produk = provider + masa aktif, contoh "Axis 3 Hari". Kuota (GB) BUKAN bagian produk: bila kuota berubah tidak ada yang perlu diubah.
 // Daftar harian cukup berisi hari + harga; kuota boleh disebut tetapi diabaikan (hanya dipakai bila satu hari punya beberapa produk lama).
 
-export type PackageInput = { validity: string | null; sellPrice: bigint; costPrice: bigint | null; stock: number | null; quota?: string | null };
+// sellPrice null = harga tidak disebut (hanya boleh untuk paket yang sudah ada: mis. hanya memperbarui kuota).
+export type PackageInput = { validity: string | null; sellPrice: bigint | null; costPrice: bigint | null; stock: number | null; quota?: string | null };
 export type CatalogRow = {
   id: number; name: string; provider: string | null; validity: string | null; stock: number;
   costPrice: bigint; sellPrice: bigint; categoryId: number; subcategoryId: number | null;
 };
 export type PackageUpdate = {
-  id: number; kind: 'PRICE' | 'RENAME' | 'SAME';
+  id: number; kind: 'PRICE' | 'RENAME' | 'SAME' | 'QUOTA'; quota: string | null;
   from: { name: string; validity: string | null; sellPrice: bigint; costPrice: bigint };
   to: { name: string; validity: string | null; sellPrice: bigint; costPrice: bigint };
 };
 export type PackageCreate = {
   name: string; validity: string | null; sellPrice: bigint; costPrice: bigint; costEstimated: boolean;
-  stock: number; categoryId: number | null; subcategoryId: number | null; provider: string;
+  stock: number; categoryId: number | null; subcategoryId: number | null; provider: string; quota: string | null;
 };
 export type PackagePlan = {
   provider: string; updates: PackageUpdate[]; creates: PackageCreate[];
@@ -75,6 +76,13 @@ function quotaOfName(name: string): string | null {
   return normalizeQuota(name);
 }
 
+// Kuota yang disimpan sebagai keterangan: dinormalkan bila terbaca (10gb -> 10GB), selain itu teks apa adanya (mis. "Unlimited").
+export function quotaLabel(value: string | null | undefined): string | null {
+  const text = (value ?? '').trim();
+  if (!text) return null;
+  return normalizeQuota(text) ?? text.slice(0, 40);
+}
+
 function ownedBy(products: CatalogRow[], provider: string) {
   const owned = products.filter(product => belongsToProvider(product, provider));
   const label = owned.find(product => product.provider)?.provider ?? titleCase(provider);
@@ -120,19 +128,21 @@ export function planProviderPackages(provider: string, products: CatalogRow[], p
       used.add(match.id);
       const name = slotName(plan.provider, validity);
       const costPrice = item.costPrice ?? match.costPrice;
+      const quota = quotaLabel(item.quota);
       const from = { name: match.name, validity: match.validity, sellPrice: match.sellPrice, costPrice: match.costPrice };
-      const to = { name, validity, sellPrice: item.sellPrice, costPrice };
+      const to = { name, validity, sellPrice: item.sellPrice ?? match.sellPrice, costPrice };
       const renamed = name !== match.name || normalizeValidity(match.validity) !== validity;
-      const changed = renamed || to.sellPrice !== from.sellPrice || to.costPrice !== from.costPrice;
-      plan.updates.push({ id: match.id, kind: renamed ? 'RENAME' : changed ? 'PRICE' : 'SAME', from, to });
+      const priceChanged = to.sellPrice !== from.sellPrice || to.costPrice !== from.costPrice;
+      plan.updates.push({ id: match.id, quota, kind: renamed ? 'RENAME' : priceChanged ? 'PRICE' : quota ? 'QUOTA' : 'SAME', from, to });
       continue;
     }
 
+    if (item.sellPrice === null) { plan.invalid.push(`harga ${validity} belum disebut (paket baru perlu harga)`); continue; }
     const given = item.costPrice;
     const estimated = given === null && usualMargin !== null && item.sellPrice > usualMargin;
     plan.creates.push({ name: slotName(plan.provider, validity), validity, sellPrice: item.sellPrice,
       costPrice: given ?? (estimated ? item.sellPrice - usualMargin! : 0n), costEstimated: given === null, stock: item.stock ?? 0,
-      categoryId: commonCategory, subcategoryId: commonSub, provider: plan.provider });
+      categoryId: commonCategory, subcategoryId: commonSub, provider: plan.provider, quota: quotaLabel(item.quota) });
   }
 
   plan.missing = owned.filter(product => !used.has(product.id) && !plan.ambiguous.some(entry => entry.names.includes(product.name)))
@@ -157,7 +167,7 @@ export function planProviderNormalize(provider: string, products: CatalogRow[]):
     const validity = normalizeValidity(product.validity);
     const renamed = name !== product.name || validity !== product.validity;
     const point = { name: product.name, validity: product.validity, sellPrice: product.sellPrice, costPrice: product.costPrice };
-    plan.updates.push({ id: product.id, kind: renamed ? 'RENAME' : 'SAME', from: point, to: { ...point, name, validity } });
+    plan.updates.push({ id: product.id, quota: null, kind: renamed ? 'RENAME' : 'SAME', from: point, to: { ...point, name, validity } });
   }
   return plan;
 }
@@ -169,12 +179,13 @@ export function formatPackagePlan(plan: PackagePlan, formatMoney: (value: bigint
     const parts: string[] = [];
     if (update.to.name !== update.from.name) parts.push(`${update.from.name} → ${update.to.name}`);
     else parts.push(update.to.name);
+    if (update.quota) parts.push(`kuota ${update.quota}`);
     if (update.to.sellPrice !== update.from.sellPrice) parts.push(`harga ${formatMoney(update.from.sellPrice)} → ${formatMoney(update.to.sellPrice)}`);
     if (update.to.costPrice !== update.from.costPrice) parts.push(`modal ${formatMoney(update.from.costPrice)} → ${formatMoney(update.to.costPrice)}`);
     lines.push('• ' + parts.join('; '));
   }
   for (const made of plan.creates) {
-    lines.push(`• BARU ${made.name}: harga ${formatMoney(made.sellPrice)}; modal ${formatMoney(made.costPrice)}${made.costEstimated ? (made.costPrice > 0n ? ' (perkiraan dari margin biasa)' : ' (belum diisi)') : ''}; stok ${made.stock}`);
+    lines.push(`• BARU ${made.name}${made.quota ? ' (' + made.quota + ')' : ''}: harga ${formatMoney(made.sellPrice)}; modal ${formatMoney(made.costPrice)}${made.costEstimated ? (made.costPrice > 0n ? ' (perkiraan dari margin biasa)' : ' (belum diisi)') : ''}; stok ${made.stock}`);
   }
   return lines;
 }

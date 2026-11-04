@@ -30,10 +30,11 @@ test('daftar harian cukup hari + harga; katalog lama otomatis jadi per hari tanp
   assert.equal(plan.updates[0].to.costPrice, 14000n);
 });
 
-test('kuota berubah: TIDAK ada yang perlu diubah, yang diketik tetap hari dan harga', () => {
+test('kuota berubah: produk tidak diganti nama; kuota hanya keterangan', () => {
   const current = [row(1, 'Axis 3 Hari', '3 hari', 15000n, 13000n), row(2, 'Axis 5 Hari', '5 hari', 15000n, 13500n)];
   const same = planProviderPackages('axis', current, [pkg('3 hari', 15000n, null, null, '8GB'), pkg('5 hari', 15000n)]);
-  assert.deepEqual(same.updates.map(update => update.kind), ['SAME', 'SAME']);
+  assert.deepEqual(same.updates.map(update => update.kind), ['QUOTA', 'SAME']);
+  assert.ok(same.updates.every(update => update.to.name === update.from.name));
   assert.equal(same.creates.length, 0);
   const priceOnly = planProviderPackages('axis', current, [pkg('3 hari', 16000n)]);
   assert.equal(priceOnly.updates[0].kind, 'PRICE');
@@ -78,4 +79,24 @@ test('rapikan katalog lama: ganti nama jadi per hari tanpa menyentuh harga dan s
   assert.deepEqual(plan.updates.map(update => update.to.name), ['Axis 3 Hari', 'Axis 5 Hari', 'Axis 7 Hari']);
   assert.ok(plan.updates.every(update => update.to.sellPrice === update.from.sellPrice && update.to.costPrice === update.from.costPrice));
   assert.deepEqual(plan.missing.map(item => item.id), [7]);
+});
+
+test('kuota saja berubah: hanya kuota yang disimpan, harga tidak disebut dan tidak berubah', () => {
+  const current = [row(1, 'Axis 3 Hari', '3 hari', 15000n, 13000n)];
+  const plan = planProviderPackages('axis', current, [{ validity: '3 hari', sellPrice: null, costPrice: null, stock: null, quota: '8gb' }]);
+  assert.equal(plan.updates[0].kind, 'QUOTA');
+  assert.equal(plan.updates[0].quota, '8GB');
+  assert.equal(plan.updates[0].to.sellPrice, 15000n);
+  assert.equal(plan.invalid.length, 0);
+});
+
+test('paket baru tanpa harga ditolak; kuota ikut tersimpan pada paket baru', () => {
+  const current = [row(1, 'Axis 3 Hari', '3 hari', 15000n, 13000n)];
+  const noPrice = planProviderPackages('axis', current, [{ validity: '30 hari', sellPrice: null, costPrice: null, stock: null, quota: '20gb' }]);
+  assert.equal(noPrice.invalid.length, 1);
+  assert.equal(noPrice.creates.length, 0);
+  const withPrice = planProviderPackages('axis', current, [{ validity: '30 hari', sellPrice: 50000n, costPrice: null, stock: null, quota: '20gb' }]);
+  assert.equal(withPrice.creates[0].quota, '20GB');
+  const withQuota = planProviderPackages('axis', current, [{ validity: '3 hari', sellPrice: 15000n, costPrice: null, stock: null, quota: '10gb' }]);
+  assert.equal(withQuota.updates[0].kind, 'QUOTA');
 });

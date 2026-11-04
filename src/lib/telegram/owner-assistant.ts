@@ -16,6 +16,7 @@ import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
 import { formatPackagePlan, planProviderNormalize, planProviderPackages, type PackageInput } from './provider-packages';
+import { loadQuotas } from '@/lib/services/product-quota';
 import { applyUndo, formatUndoResult, latestUndoId, recordUndo, snapshotProducts } from '@/lib/services/owner-undo';
 import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerBusinessKind, type OwnerChatMessage } from './owner-agent';
 
@@ -25,6 +26,7 @@ export type CatalogProduct = {
   id: number; name: string; sku: string | null; provider: string | null; validity: string | null;
   stock: number; minStock: number; costPrice: bigint; sellPrice: bigint; locationId: number | null;
   updatedAt: Date; category: { name: string }; location: { name: string } | null;
+  quota?: string | null; // kuota voucher hari ini (keterangan), dari tabel terpisah
 };
 type ExpectedProduct = { stock: number; costPrice: string; sellPrice: string; locationId: number | null; locationName: string | null; updatedAt: string };
 type OwnerOperation = {
@@ -171,11 +173,13 @@ function agentCandidateKeyboard(ownerId: number, actionIndex: number, products: 
 export async function getCatalog(): Promise<CatalogProduct[]> {
   const startedAt = Date.now();
   try {
-    return await prisma.product.findMany({
+    const rows = await prisma.product.findMany({
       take: 3001, orderBy: { name: 'asc' },
       select: { id: true, name: true, sku: true, provider: true, validity: true, stock: true, minStock: true, updatedAt: true,
         costPrice: true, sellPrice: true, locationId: true, category: { select: { name: true } }, location: { select: { name: true } } },
     });
+    const quotas = await loadQuotas();
+    return rows.map(row => ({ ...row, quota: quotas.get(row.id) ?? null }));
   } catch {
     logOwnerDiagnostic('product_catalog_lookup', 'database_error', startedAt);
     throw new OwnerAssistantDatabaseError('product_catalog_lookup');
@@ -189,7 +193,8 @@ export async function findProductCandidates(query: string, catalog: CatalogProdu
     (normalizedSkuQuery.length >= 3 && product.sku?.toLocaleLowerCase('id-ID').includes(normalizedSkuQuery)));
   if (skuMatches.length) return skuMatches.slice(0, 5);
   const terms = catalogSearchTerms(query);
-  const ranked = rankCatalogProducts(catalog.map(product => ({ ...product, categoryName: product.category.name })), terms);
+  const withQuota = (product: CatalogProduct) => [product.validity, product.quota].filter(Boolean).join(' ') || null;
+  const ranked = rankCatalogProducts(catalog.map(product => ({ ...product, categoryName: product.category.name, validity: withQuota(product) })), terms);
   if (ranked.length) {
     const best = ranked[0];
     const threshold = Math.max(0.65, best.score * 0.72);
@@ -215,7 +220,7 @@ function productDescription(product: CatalogProduct): string {
     ((Number(margin) / Number(product.costPrice)) * 100).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + '%';
   return [
     '📦 ' + product.name + (product.sku ? ' · SKU ' + product.sku : ''),
-    'Kategori: ' + product.category.name + (product.provider ? ' · ' + product.provider : '') + (product.validity ? ' · ' + product.validity : ''),
+    'Kategori: ' + product.category.name + (product.provider ? ' · ' + product.provider : '') + (product.validity ? ' · ' + product.validity : '') + (product.quota ? ' · kuota ' + product.quota : ''),
     'Stok: ' + product.stock + ' unit' + (product.location?.name ? ' · Lokasi: ' + product.location.name : ''),
     'Harga jual: ' + formatIdr(product.sellPrice),
     'Harga modal: ' + formatIdr(product.costPrice),
@@ -787,7 +792,7 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
       const asText = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' ? String(value) : null;
       const validity = asText(entry.validity), quota = asText(entry.quota);
       const sellPrice = parseOwnerRupiah(asText(entry.sellPrice)), costPrice = parseOwnerRupiah(asText(entry.costPrice));
-      if (!validity || sellPrice === null || sellPrice <= 0n) return { clarification: `Paket “${validity || quota || '?'}” belum lengkap: sebutkan masa aktif (hari) dan harga jualnya.` };
+      if (!validity || (sellPrice !== null && sellPrice <= 0n) || (sellPrice === null && !quota)) return { clarification: `Paket “${validity || quota || '?'}” belum lengkap: sebutkan masa aktif (hari) dan harga jual, atau kuotanya saja bila hanya kuota yang berubah.` };
       packages.push({ validity, quota, sellPrice, costPrice: costPrice !== null && costPrice > 0n ? costPrice : null,
         stock: typeof entry.stock === 'number' && Number.isSafeInteger(entry.stock) && entry.stock >= 0 && entry.stock <= 1_000_000 ? entry.stock : null });
     }
@@ -808,8 +813,8 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     if (plan.missing.length) lines.push({ label: zeroIds.length ? 'Tidak ada di daftar (stok dinolkan)' : 'Tidak ada di daftar (dibiarkan)', value: plan.missing.map(item => item.name).join(', ') });
     return build('provider.sync', `Draf daftar paket ${plan.provider}`, lines, {
       provider: plan.provider,
-      updates: plan.updates.filter(update => update.kind !== 'SAME').map(update => ({ id: update.id, name: update.to.name, validity: update.to.validity, sellPrice: update.to.sellPrice.toString(), costPrice: update.to.costPrice.toString() })),
-      creates: plan.creates.map(made => ({ name: made.name, validity: made.validity, sellPrice: made.sellPrice.toString(), costPrice: made.costPrice.toString(), stock: made.stock,
+      updates: plan.updates.filter(update => update.kind !== 'SAME').map(update => ({ id: update.id, quota: update.quota, name: update.to.name, validity: update.to.validity, sellPrice: update.to.sellPrice.toString(), costPrice: update.to.costPrice.toString() })),
+      creates: plan.creates.map(made => ({ quota: made.quota, name: made.name, validity: made.validity, sellPrice: made.sellPrice.toString(), costPrice: made.costPrice.toString(), stock: made.stock,
         categoryId: made.categoryId ?? fallbackCategoryId, subcategoryId: made.subcategoryId, provider: made.provider })),
       zeroIds,
     });
@@ -1053,7 +1058,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       continue;
     }
     if (action.kind === 'search_products') {
-      responses.push(`Hasil katalog untuk “${query}”:\n${products.slice(0, 5).map(product => `• ${product.name} · stok ${product.stock} · ${formatIdr(product.sellPrice)}`).join('\n')}`);
+      responses.push(`Hasil katalog untuk “${query}”:\n${products.slice(0, 5).map(product => `• ${product.name}${product.quota ? ` (${product.quota})` : ''} · stok ${product.stock} · ${formatIdr(product.sellPrice)}`).join('\n')}`);
     } else if (action.kind === 'get_product_details' || action.kind === 'get_inventory') {
       responses.push(productDescription(products[0]));
     } else if (action.kind.startsWith('propose_')) {
@@ -1769,7 +1774,7 @@ function isGroupReadAction(action: OwnerAgentAction): action is GroupReadAction 
 const GROUP_ASSISTANT_TTL = 7 * 24 * 60 * 60_000;
 function groupAssistantId(chatId: bigint, identityId: string) { return `group-assistant-${chatId}-${identityId}`; }
 function groupProductLine(product: CatalogProduct) {
-  return `• ${product.name}${product.sku ? ` · SKU ${product.sku}` : ''} · ${product.category.name}${product.provider ? ` · ${product.provider}` : ''}${product.validity ? ` · ${product.validity}` : ''} · stok ${product.stock} unit · harga jual ${formatIdr(product.sellPrice)}${product.location?.name ? ` · ${product.location.name}` : ''}`;
+  return `• ${product.name}${product.sku ? ` · SKU ${product.sku}` : ''} · ${product.category.name}${product.provider ? ` · ${product.provider}` : ''}${product.validity ? ` · ${product.validity}` : ''}${product.quota ? ` · kuota ${product.quota}` : ''} · stok ${product.stock} unit · harga jual ${formatIdr(product.sellPrice)}${product.location?.name ? ` · ${product.location.name}` : ''}`;
 }
 
 /** Read-only group assistant; catalog changes and financial reports remain owner-only. */
