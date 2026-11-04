@@ -803,7 +803,9 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     }
     const products = await prisma.product.findMany({ select: { id: true, name: true, provider: true, validity: true, stock: true, costPrice: true, sellPrice: true, categoryId: true, subcategoryId: true } });
     const replaceAll = data.missing === 'retire';
-    const plan = normalizeOnly ? planProviderNormalize(provider, products) : planProviderPackages(provider, products, packages, { replaceAll });
+    const quotaNotes = await loadQuotas();
+    const rows = products.map(product => ({ ...product, quota: quotaNotes.get(product.id) ?? null }));
+    const plan = normalizeOnly ? planProviderNormalize(provider, rows) : planProviderPackages(provider, rows, packages, { replaceAll });
     if (plan.invalid.length) return { clarification: `Ada paket yang belum terbaca: ${plan.invalid.join('; ')}.` };
     if (plan.ambiguous.length) return { clarification: `Masa aktif yang sama punya beberapa produk di ${plan.provider}: ${plan.ambiguous.map(item => `${item.label} → ${item.names.join(' | ')}`).join('; ')}. Bilang “ganti semua” kalau semua yang lama diganti daftar ini (yang lama dihapus atau dinonaktifkan), atau sebutkan produk mana yang dimaksud.` };
     if (!plan.updates.length && !plan.creates.length) return { clarification: `Tidak ada paket yang bisa diproses untuk ${provider}.` };

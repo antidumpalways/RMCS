@@ -306,3 +306,11 @@ test('pesan panjang dipecah di bawah batas Telegram dan tombol hanya di potongan
     globalThis.fetch = original;
   }
 });
+
+test('varian di hari yang sama: "telkomsel 5 hari 7gb" memilih varian yang benar, tanpa kuota ditanyakan', () => {
+  const mk = (id: number, name: string, quota: string) => ({ id, name, sku: null, provider: 'Telkomsel', validity: '5 hari ' + quota, categoryName: 'Voucher', stock: 10, locationId: null });
+  const catalog = [mk(1, 'Telkomsel 5 Hari (5GB)', '5GB'), mk(2, 'Telkomsel 5 Hari (7GB)', '7GB')];
+  assert.equal(resolveInventoryProduct('telkomsel 5 hari 7gb', catalog).productId, 2);
+  assert.equal(resolveInventoryProduct('telkomsel 5 hari 5gb', catalog).productId, 1);
+  assert.equal(resolveInventoryProduct('telkomsel 5 hari', catalog).status, 'AMBIGUOUS');
+});

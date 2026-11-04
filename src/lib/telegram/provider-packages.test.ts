@@ -126,3 +126,31 @@ test('"ganti semua" tidak mengubah apa pun bila ada paket yang tidak terbaca', (
   assert.equal(plan.invalid.length, 1);
   assert.equal(plan.retire.length, 0);
 });
+
+const tsel = (id: number, name: string, validity: string | null, sell: bigint, cost: bigint, stock: number, quota: string | null = null): CatalogRow =>
+  ({ id, name, provider: 'Telkomsel', validity, stock, costPrice: cost, sellPrice: sell, categoryId: 1, subcategoryId: null, quota });
+
+test('dua paket di hari yang sama (Telkomsel 5 hari: 5GB dan 7GB) diterima sebagai varian dengan kuota pembeda', () => {
+  const catalog = [tsel(1, 'Telkomsel 5GB 3 Hari', '3 hari', 16000n, 14000n, 60), tsel(2, 'Voucher Telkomsel 7GB/5 Hari', '5 hari', 21000n, 19000n, 18), tsel(3, 'Telkomsel 8GB 7 Hari', '7 hari', 31000n, 29000n, 4)];
+  const input = [pkg('3 hari', 15000n, 13300n, null, '5gb'), pkg('5 hari', 17000n, 15000n, null, '5gb'), pkg('5 hari', 20000n, 18000n, null, '7gb'), pkg('7 hari', 30000n, 28000n, null, '8gb')];
+  const plan = planProviderPackages('Telkomsel', catalog, input, { replaceAll: true });
+  assert.equal(plan.invalid.length, 0);
+  assert.equal(plan.ambiguous.length, 0);
+  const byId = new Map(plan.updates.map(update => [update.id, update]));
+  assert.equal(byId.get(1)!.to.name, 'Telkomsel 3 Hari');
+  assert.equal(byId.get(2)!.to.name, 'Telkomsel 5 Hari (7GB)');
+  assert.equal(byId.get(2)!.to.sellPrice, 20000n);
+  assert.equal(byId.get(3)!.to.name, 'Telkomsel 7 Hari');
+  assert.deepEqual(plan.creates.map(made => [made.name, made.sellPrice, made.quota]), [['Telkomsel 5 Hari (5GB)', 17000n, '5GB']]);
+  assert.equal(plan.retire.length, 0);
+});
+
+test('varian di hari yang sama tanpa kuota pembeda ditolak; kuota tercatat dipakai untuk memasangkan', () => {
+  const noQuota = planProviderPackages('Telkomsel', [], [pkg('5 hari', 17000n), pkg('5 hari', 20000n)]);
+  assert.equal(noQuota.invalid.length >= 1, true);
+  const catalog = [tsel(1, 'Telkomsel 5 Hari (5GB)', '5 hari', 17000n, 15000n, 3, '5GB'), tsel(2, 'Telkomsel 5 Hari (7GB)', '5 hari', 20000n, 18000n, 3, '7GB')];
+  const plan = planProviderPackages('Telkomsel', catalog, [pkg('5 hari', 18000n, null, null, '7gb'), pkg('5 hari', 17000n, null, null, '5gb')]);
+  assert.equal(plan.updates.find(update => update.id === 2)!.to.sellPrice, 18000n);
+  assert.equal(plan.updates.find(update => update.id === 1)!.kind, 'QUOTA');
+  assert.equal(plan.creates.length, 0);
+});
