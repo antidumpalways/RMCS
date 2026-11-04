@@ -1142,7 +1142,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     if (ownerAutoApply() && !OWNER_CONFIRM_REQUIRED.has(businessDraft.action)) {
       return autoApplyDraft(chatId, ownerId, saved.draftId, '✅ ' + businessDraft.title.replace(/^Draf @@BS@@s*/i, '') + ' sudah diterapkan.\n' + businessDraft.lines.map(line => (line.label ? `${line.label}: ${line.value}` : line.value)).join('\n'));
     }
-    return sendTelegramMessage(chatId, [content, saved.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(saved.draftId));
+    return sendTelegramLongMessage(chatId, [content, saved.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(saved.draftId));
   }
   if (operations.length) {
     const batch = await createBatchDraft(chatId, ownerId, operations, labels);
@@ -1155,7 +1155,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     }
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     if (ownerAutoApply() && !weakMatch) return autoApplyDraft(chatId, ownerId, batch.draftId, '✅ Sudah diterapkan:\n' + operations.map((operation, index) => `• ${isProductCreate(operation) ? operation.name : operation.productName} — ${labels[index]}`).join('\n'));
-    return sendTelegramMessage(chatId, [content, batch.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(batch.draftId));
+    return sendTelegramLongMessage(chatId, [content, batch.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(batch.draftId));
   }
   // A completed read-only request should not be replayed as the next turn's proposal.
   rememberOwnerReply(state, content || 'Saya belum menangkap maksudnya. Coba ceritakan dengan kata-kata sendiri; kalau ada angka yang belum jelas, saya akan tanyakan.');
