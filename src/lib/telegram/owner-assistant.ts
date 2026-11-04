@@ -17,6 +17,7 @@ import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
 import { formatPackagePlan, planProviderNormalize, planProviderPackages, type PackageInput } from './provider-packages';
 import { loadQuotas } from '@/lib/services/product-quota';
+import { sendTelegramLongMessage } from './client';
 import { applyUndo, formatUndoResult, latestUndoId, recordUndo, snapshotProducts } from '@/lib/services/owner-undo';
 import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerBusinessKind, type OwnerChatMessage } from './owner-agent';
 
@@ -967,7 +968,7 @@ async function autoApplyDraft(chatId: bigint, ownerId: number, draftId: string, 
   if (row?.status === 'CONFIRMED') {
     let undoId: string | null = null;
     if (plan) { try { undoId = await recordUndo({ chatId, ownerId, label: successText.split('\n')[0].slice(0, 120), startedAt, before, created: plan.created }); } catch { undoId = null; } }
-    try { await sendTelegramMessage(chatId, successText, undoId ? keyboard([[{ text: '↩️ Batalkan', callback_data: 'rcms:owner:undo:' + undoId }]]) : undefined); } catch { /* Perubahan sudah tersimpan; pesan hasil hanya pelengkap. */ }
+    try { await sendTelegramLongMessage(chatId, successText, undoId ? keyboard([[{ text: '↩️ Batalkan', callback_data: 'rcms:owner:undo:' + undoId }]]) : undefined); } catch { /* Perubahan sudah tersimpan; pesan hasil hanya pelengkap. */ }
     return;
   }
   if (failure) throw failure;
@@ -1130,7 +1131,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     state.actions = []; state.selected = []; state.pendingMatches = []; state.menuFlow = null; state.proposalDraftId = null; state.preview = null;
     await saveOwnerChatState(rowId, chatId, state);
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
-    return sendTelegramMessage(chatId, summaryText);
+    return sendTelegramLongMessage(chatId, summaryText);
   }
   if (businessDraft) {
     const saved = await createAssistantActionDraft(chatId, ownerId, businessDraft);
@@ -1303,7 +1304,7 @@ async function confirmBatchOperation(callback: OwnerCallback, ownerId: number, d
         await tx.telegramDraft.update({ where: { id: ownerConversationId(ownerId) }, data: { payload: conversationState as object } });
       }
       return 'APPLIED';
-    }, { isolationLevel: 'Serializable', timeout: 15_000 });
+    }, { isolationLevel: 'Serializable', timeout: 30_000 });
   } catch (error) {
     const message = (error as Error).message;
     if (message === 'OWNER_DRAFT_INVALID' || message === 'OWNER_LOCATION_STALE' || ['P2002', 'P2034'].includes((error as { code?: string }).code ?? '')) {
@@ -1430,7 +1431,7 @@ async function confirmOperation(callback: OwnerCallback, ownerId: number, draftI
         await tx.telegramDraft.update({ where: { id: ownerConversationId(ownerId) }, data: { payload: conversationState as object } });
       }
       return 'APPLIED';
-    }, { isolationLevel: 'Serializable', timeout: 15_000 });
+    }, { isolationLevel: 'Serializable', timeout: 30_000 });
   } catch (error) {
     const message = (error as Error).message;
     if (message === 'OWNER_DRAFT_INVALID' || message === 'OWNER_LOCATION_STALE') {
@@ -1563,7 +1564,7 @@ async function acceptReviewTaskBalance(callback: OwnerCallback, ownerId: number,
         if (claimed.count !== 1) throw new Error('TASK_ALREADY_REVIEWED');
         return setCombinedBalance(tx, { targetBalance: target.actual, createdById: owner?.id ?? null,
           note: 'Hitungan karyawan diterima owner dari selisih rekap shift (tugas ' + task.id + ').' });
-      }, { isolationLevel: 'Serializable', timeout: 15_000 });
+      }, { isolationLevel: 'Serializable', timeout: 30_000 });
       await answerTelegramCallback(callback.id, 'Saldo diperbarui.');
       return sendTelegramMessage(BigInt(ownerId), 'Saldo RMCS diperbarui dari ' + formatIdr(result.previousBalance) + ' menjadi ' + formatIdr(result.newBalance) +
         ' (selisih ' + formatIdr(result.delta) + ' tercatat di riwayat penyesuaian). Shift berikutnya akan mulai dari angka ini.', ownerMenuKeyboard('home'));

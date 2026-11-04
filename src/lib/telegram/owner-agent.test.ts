@@ -23,7 +23,7 @@ test('AI turn supports informal Indonesian and multiple structured actions', asy
   assert.equal(turn.actions[0].kind, 'propose_stock_in');
   assert.equal((requestBody?.response_format as { type?: string }).type, 'json_object');
   assert.deepEqual(requestBody?.thinking, { type: 'disabled' });
-  assert.equal(requestBody?.max_tokens, 2400);
+  assert.equal(requestBody?.max_tokens, 6000);
   assert.match((requestBody?.messages as Array<{ content: string }>)[0].content, /harga 50rb, margin 20rb” means sellPrice=50rb/);
 });
 
@@ -196,4 +196,11 @@ test('asisten owner menerima tambah dan ubah nama lokasi', () => {
   assert.equal(turn.actions[0].kind === 'propose_business_action' ? turn.actions[0].action : '', 'location_create');
   const rename = validateOwnerAgentTurn({ reply: 'Oke', actions: [{ kind: 'propose_business_action', action: 'location_rename', data: { name: 'Rak 5', newName: 'Rak Atas' } }], clarification: null });
   assert.equal(rename.actions.length, 1);
+});
+
+test('pesan besar: sampai 40 tindakan diterima, 41 ditolak', () => {
+  const action = (index: number) => ({ kind: 'propose_stock_adjustment', query: 'produk ' + index, targetStock: 1, reason: 'uji' });
+  const ok = validateOwnerAgentTurn({ reply: 'Oke', actions: Array.from({ length: 40 }, (_, index) => action(index)), clarification: null });
+  assert.equal(ok.actions.length, 40);
+  assert.throws(() => validateOwnerAgentTurn({ reply: 'Oke', actions: Array.from({ length: 41 }, (_, index) => action(index)), clarification: null }));
 });

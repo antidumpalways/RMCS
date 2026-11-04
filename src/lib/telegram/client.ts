@@ -37,3 +37,23 @@ export async function answerTelegramCallback(callbackQueryId: string, text: stri
 export function deleteTelegramMessage(chatId: number | bigint, messageId: number) {
   return callTelegram('deleteMessage', { chat_id: chatId.toString(), message_id: messageId });
 }
+
+// Telegram menolak pesan di atas 4096 karakter. Pesan panjang dipecah per baris; tombol dipasang di potongan terakhir.
+export async function sendTelegramLongMessage(chatId: number | bigint, text: string, replyMarkup?: TelegramReplyMarkup) {
+  const limit = 3800;
+  if (text.length <= limit) return sendTelegramMessage(chatId, text, replyMarkup);
+  const newline = String.fromCharCode(10);
+  const chunks: string[] = [];
+  let current = '';
+  for (const line of text.split(newline)) {
+    const piece = line.length > limit ? line.slice(0, limit) : line;
+    if (current && (current + newline + piece).length > limit) { chunks.push(current); current = piece; }
+    else current = current ? current + newline + piece : piece;
+  }
+  if (current) chunks.push(current);
+  let last: unknown;
+  for (let index = 0; index < chunks.length; index++) {
+    last = await sendTelegramMessage(chatId, chunks[index], index === chunks.length - 1 ? replyMarkup : undefined);
+  }
+  return last as { message_id?: number };
+}

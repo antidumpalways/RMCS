@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isImplicitCatalogQuestion, lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
-import { answerTelegramCallback, tryAnswerTelegramCallback } from './client';
+import { answerTelegramCallback, sendTelegramLongMessage, tryAnswerTelegramCallback } from './client';
 import { inventoryCallback, normalizeStockUnit, parseInventoryCallback, parseStockCountLines, resolveInventoryProduct } from './inventory';
 import { planLateEntry } from './late-entry-plan';
 import { strictProductMatch } from './product-match';
@@ -283,4 +283,26 @@ test('kuota hari ini ikut dikenali: "axis 10gb 2 pcs" cocok ke Axis 3 Hari; kuot
   assert.equal(strictProductMatch('axis 10gb', product), true);
   assert.equal(strictProductMatch('axis 3 hari', product), true);
   assert.equal(strictProductMatch('axis 99gb', product), false);
+});
+
+test('pesan panjang dipecah di bawah batas Telegram dan tombol hanya di potongan terakhir', async () => {
+  const original = globalThis.fetch;
+  process.env.TELEGRAM_BOT_TOKEN = 'test-token';
+  const sent: Array<{ text: string; reply_markup?: unknown }> = [];
+  globalThis.fetch = async (_input, init) => {
+    sent.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ ok: true, result: { message_id: sent.length } }), { status: 200 });
+  };
+  try {
+    const text = Array.from({ length: 200 }, (_, index) => '• Barang nomor ' + index + ' — stok jadi ' + index + ' (perubahan berhasil dicatat)').join(String.fromCharCode(10));
+    assert.ok(text.length > 4096);
+    await sendTelegramLongMessage(1, text, { inline_keyboard: [[{ text: 'Batalkan', callback_data: 'x' }]] });
+    assert.ok(sent.length >= 2);
+    assert.ok(sent.every(message => message.text.length <= 3800));
+    assert.equal(sent.filter(message => message.reply_markup).length, 1);
+    assert.ok(sent[sent.length - 1].reply_markup);
+    assert.equal(sent.map(message => message.text).join(String.fromCharCode(10)), text);
+  } finally {
+    globalThis.fetch = original;
+  }
 });
