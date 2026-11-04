@@ -271,3 +271,16 @@ test('voucher per hari: karyawan boleh menulis "axis 3 hari" atau menyebut kuota
   assert.equal(strictProductMatch('axis 13gb 7 hari', { name: 'Axis 7 Hari', provider: 'Axis', validity: '7 hari', sku: null }), true);
   assert.equal(strictProductMatch('tri 7 hari', { name: 'Axis 7 Hari', provider: 'Axis', validity: '7 hari', sku: null }), false);
 });
+
+test('kuota hari ini ikut dikenali: "axis 10gb 2 pcs" cocok ke Axis 3 Hari; kuota lama + hari tetap cocok', () => {
+  const mk = (id: number, name: string, validity: string, quota: string) => ({ id, name, sku: null, provider: 'Axis', validity: validity + ' ' + quota, categoryName: 'Voucher', stock: 10, locationId: null });
+  const catalog = [mk(1, 'Axis 3 Hari', '3 hari', '10GB'), mk(2, 'Axis 5 Hari', '5 hari', '6GB'), mk(3, 'Axis 7 Hari', '7 hari', '13GB')];
+  assert.equal(resolveInventoryProduct('axis 10gb', catalog).productId, 1);
+  assert.equal(resolveInventoryProduct('axis 13gb', catalog).productId, 3);
+  assert.equal(resolveInventoryProduct('axis 3 hari', catalog).productId, 1);
+  assert.equal(resolveInventoryProduct('axis 8gb 3 hari', catalog).productId, 1);
+  const product = { name: 'Axis 3 Hari', provider: 'Axis', validity: '3 hari', sku: null, quota: '10GB' };
+  assert.equal(strictProductMatch('axis 10gb', product), true);
+  assert.equal(strictProductMatch('axis 3 hari', product), true);
+  assert.equal(strictProductMatch('axis 99gb', product), false);
+});

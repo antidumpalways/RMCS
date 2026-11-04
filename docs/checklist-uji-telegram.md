@@ -60,6 +60,8 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Hari baru (`30 hari 50rb stok 1`) → produk **Axis 30 Hari** dibuat; modal perkiraan dari margin biasa ditandai.
 - [ ] Dua produk lama di hari yang sama → asisten **bertanya**, tidak menebak.
 - [ ] Karyawan menulis `axis 3 hari 2 pcs` (atau `axis 10gb 3 hari 2 pcs`) → cocok ke Axis 3 Hari tanpa pertanyaan.
+- [ ] Karyawan menulis **kuota saja** `axis 10gb 2 pcs` (kuota hari ini) → cocok ke Axis 3 Hari tanpa pertanyaan.
+- [ ] Owner: `tambah stok axis 3 hari 10 pcs` dan `tambah stok axis 10gb 10 pcs` → keduanya langsung diterapkan ke Axis 3 Hari.
 - [ ] Tombol **↩️ Batalkan** setelah daftar → nama/harga kembali, produk baru dihapus.
 
 ## F. Pemeriksaan data setelah uji

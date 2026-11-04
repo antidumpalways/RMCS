@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { shiftOpening } from '@/lib/automation';
 import { catalogQueryKey } from '@/lib/catalog-search';
 import { semanticCatalogSearch } from '@/lib/semantic-catalog';
+import { loadQuotas } from '@/lib/services/product-quota';
 import type { RecapDraft, RecapInventoryLine } from '@/lib/telegram/recap';
 import { evaluateInventoryDeduction, normalizeStockUnit, resolveInventoryProduct, type InventoryCatalogProduct } from '@/lib/telegram/inventory';
 
@@ -12,7 +13,9 @@ export class TelegramInventoryError extends Error {
 
 async function catalog() {
   const rows = await prisma.product.findMany({ include: { category: true, subcategory: true }, orderBy: { id: 'asc' } });
-  return rows.map(row => ({ id: row.id, name: row.name, sku: row.sku, provider: row.provider, validity: row.validity,
+  const quotas = await loadQuotas();
+  // Kuota hari ini ikut dicari: "axis 10gb 2 pcs" menemukan Axis 3 Hari yang kuotanya 10GB.
+  return rows.map(row => ({ id: row.id, name: row.name, sku: row.sku, provider: row.provider, validity: [row.validity, quotas.get(row.id)].filter(Boolean).join(' ') || null,
     categoryName: [row.category.name, row.subcategory?.name].filter(Boolean).join(' '), stock: row.stock, locationId: row.locationId } satisfies InventoryCatalogProduct));
 }
 
