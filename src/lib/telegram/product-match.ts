@@ -9,6 +9,8 @@ export function strictProductMatch(query: string, product: MatchableProduct): bo
   if (product.sku && product.sku.toLocaleLowerCase('id-ID') === cleaned) return true;
   const tokens = new Set(catalogSearchTerms([product.name, product.provider, product.validity].filter(Boolean).join(' ')));
   const hasDayToken = [...tokens].some(token => /hari$/.test(token));
-  const terms = catalogSearchTerms(query).filter(term => !GENERIC_TERMS.has(term));
+  const rawTerms = catalogSearchTerms(query).filter(term => !GENERIC_TERMS.has(term));
+  // Voucher per hari: kuota (GB/MB) tidak wajib cocok bila ada kata hari.
+  const terms = rawTerms.some(term => /^\d+hari$/.test(term)) ? rawTerms.filter(term => !/^\d+(?:\.\d+)?(?:gb|mb)$/.test(term)) : rawTerms;
   return terms.length > 0 && terms.every(term => tokens.has(term) || (/hari$/.test(term) && !hasDayToken));
 }

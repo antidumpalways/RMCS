@@ -15,7 +15,7 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
-import { formatPackagePlan, planProviderPackages, type PackageInput } from './provider-packages';
+import { formatPackagePlan, planProviderNormalize, planProviderPackages, type PackageInput } from './provider-packages';
 import { applyUndo, formatUndoResult, latestUndoId, recordUndo, snapshotProducts } from '@/lib/services/owner-undo';
 import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerBusinessKind, type OwnerChatMessage } from './owner-agent';
 
@@ -779,19 +779,20 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
   if (kind === 'provider_sync') {
     const provider = text('provider', 60); if (!provider) return { clarification: 'Sebutkan provider-nya (mis. Axis, Telkomsel).' };
     const rawPackages = Array.isArray(data.packages) ? data.packages.slice(0, 40) : [];
-    if (!rawPackages.length) return { clarification: 'Sebutkan daftar paketnya: kuota, masa aktif, dan harga jual tiap paket.' };
+    const normalizeOnly = data.normalize === true && !rawPackages.length;
+    if (!rawPackages.length && !normalizeOnly) return { clarification: `Sebutkan daftar ${provider}: masa aktif (hari) dan harga jual tiap paket, contoh “3 hari 15rb, 5 hari 15rb”. Kuota tidak perlu.` };
     const packages: PackageInput[] = [];
     for (const raw of rawPackages) {
       const entry = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
-      const quota = typeof entry.quota === 'string' ? entry.quota.trim() : typeof entry.quota === 'number' ? `${entry.quota}GB` : '';
       const asText = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' ? String(value) : null;
+      const validity = asText(entry.validity), quota = asText(entry.quota);
       const sellPrice = parseOwnerRupiah(asText(entry.sellPrice)), costPrice = parseOwnerRupiah(asText(entry.costPrice));
-      if (!quota || sellPrice === null || sellPrice <= 0n) return { clarification: `Paket “${quota || '?'}” belum lengkap: sebutkan kuota dan harga jualnya.` };
-      packages.push({ quota, validity: asText(entry.validity), sellPrice, costPrice: costPrice !== null && costPrice > 0n ? costPrice : null,
+      if (!validity || sellPrice === null || sellPrice <= 0n) return { clarification: `Paket “${validity || quota || '?'}” belum lengkap: sebutkan masa aktif (hari) dan harga jualnya.` };
+      packages.push({ validity, quota, sellPrice, costPrice: costPrice !== null && costPrice > 0n ? costPrice : null,
         stock: typeof entry.stock === 'number' && Number.isSafeInteger(entry.stock) && entry.stock >= 0 && entry.stock <= 1_000_000 ? entry.stock : null });
     }
     const products = await prisma.product.findMany({ select: { id: true, name: true, provider: true, validity: true, stock: true, costPrice: true, sellPrice: true, categoryId: true, subcategoryId: true } });
-    const plan = planProviderPackages(provider, products, packages);
+    const plan = normalizeOnly ? planProviderNormalize(provider, products) : planProviderPackages(provider, products, packages);
     if (plan.invalid.length) return { clarification: `Ada paket yang belum terbaca: ${plan.invalid.join('; ')}.` };
     if (plan.ambiguous.length) return { clarification: `Masa aktif yang sama punya beberapa produk di ${plan.provider}: ${plan.ambiguous.map(item => `${item.label} → ${item.names.join(' | ')}`).join('; ')}. Sebutkan produk mana yang dimaksud.` };
     if (!plan.updates.length && !plan.creates.length) return { clarification: `Tidak ada paket yang bisa diproses untuk ${provider}.` };

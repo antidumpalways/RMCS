@@ -45,18 +45,20 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Setelah dibatalkan, tekan Batalkan lagi → bot bilang sudah dibatalkan sebelumnya.
 - [ ] Ubah harga lewat asisten, lalu karyawan menjual barang itu, lalu Batalkan → bagian yang sudah berubah lagi dilewati dengan keterangan.
 - [ ] Ubah saldo lewat asisten → **meminta konfirmasi** (tidak langsung jalan).
-- [ ] **Daftar paket per provider**: kirim
+- [ ] **Voucher per provider per hari** (kuota bukan bagian produk): kirim
   ```
   axis
-  3 hari 10gb 15rb
-  5 hari 6gb 15rb
-  7 hari 13gb 25rb
+  3 hari 15rb
+  5 hari 15rb
+  7 hari 25rb
   ```
-  → paket yang sudah ada diperbarui harganya; tidak ada produk ganda.
-- [ ] Besoknya kirim daftar yang kuotanya berubah (`3 hari 8gb 15rb`) → **produk slot 3 hari yang sama diganti jadi 8GB** (bukan dibuat baru); modal lama tetap.
-- [ ] Tambahkan masa aktif baru (`30 hari 20gb 50rb stok 1`) → produk baru dibuat dengan gaya nama katalog; modal diperkirakan dari margin biasa dan ditandai.
-- [ ] Daftar yang membuat dua produk berebut satu slot → asisten **bertanya**, tidak menebak.
-- [ ] Tombol **↩️ Batalkan** setelah daftar paket → nama/harga kembali, produk baru dihapus.
+  → produk bernama **Axis 3 Hari / Axis 5 Hari / Axis 7 Hari**; yang lama otomatis dirapikan namanya (harga/stok terbawa).
+- [ ] Kuota berubah (`axis 3 hari 8gb 15rb`) → **tidak ada yang berubah** selain harga bila beda; tidak perlu mengubah produk.
+- [ ] `rapikan axis jadi per hari` → semua voucher Axis yang punya masa aktif diganti namanya jadi per hari; harga/stok tidak berubah.
+- [ ] Hari baru (`30 hari 50rb stok 1`) → produk **Axis 30 Hari** dibuat; modal perkiraan dari margin biasa ditandai.
+- [ ] Dua produk lama di hari yang sama → asisten **bertanya**, tidak menebak.
+- [ ] Karyawan menulis `axis 3 hari 2 pcs` (atau `axis 10gb 3 hari 2 pcs`) → cocok ke Axis 3 Hari tanpa pertanyaan.
+- [ ] Tombol **↩️ Batalkan** setelah daftar → nama/harga kembali, produk baru dihapus.
 
 ## F. Pemeriksaan data setelah uji
 - [ ] Stok dan saldo akhir = stok/saldo awal ± perubahan yang memang dilakukan.

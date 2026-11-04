@@ -259,3 +259,15 @@ test('pencocokan ketat: merek/varian berbeda tidak boleh dianggap produk yang sa
   assert.equal(strictProductMatch('Kabel Data Type C', { name: 'Kabel Data Micro', provider: null, validity: null, sku: null }), false);
   assert.equal(strictProductMatch('AG-VY12', { name: 'Anti Gores', provider: null, validity: null, sku: 'ag-vy12' }), true);
 });
+
+test('voucher per hari: karyawan boleh menulis "axis 3 hari" atau menyebut kuota lama, tetap cocok ke "Axis 3 Hari"', () => {
+  const mk = (id: number, name: string, validity: string) => ({ id, name, sku: null, provider: 'Axis', validity, categoryName: 'Voucher', stock: 10, locationId: null });
+  const perDay = [mk(1, 'Axis 3 Hari', '3 hari'), mk(2, 'Axis 5 Hari', '5 hari'), mk(3, 'Axis 7 Hari', '7 hari'),
+    { ...mk(9, 'Telkomsel 3 Hari', '3 hari'), provider: 'Telkomsel' }];
+  assert.equal(resolveInventoryProduct('axis 3 hari', perDay).productId, 1);
+  assert.equal(resolveInventoryProduct('Axis 13 gb 7 hari', perDay).productId, 3);
+  assert.equal(resolveInventoryProduct('axis 10gb 3 hari', perDay).productId, 1);
+  assert.equal(resolveInventoryProduct('telkomsel 3 hari', perDay).productId, 9);
+  assert.equal(strictProductMatch('axis 13gb 7 hari', { name: 'Axis 7 Hari', provider: 'Axis', validity: '7 hari', sku: null }), true);
+  assert.equal(strictProductMatch('tri 7 hari', { name: 'Axis 7 Hari', provider: 'Axis', validity: '7 hari', sku: null }), false);
+});

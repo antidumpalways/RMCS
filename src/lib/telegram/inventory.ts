@@ -47,22 +47,35 @@ export function resolveInventoryProduct(
   if (exact.length === 1) return { status: 'MATCHED', productId: exact[0].id, candidateProductIds: [exact[0].id] };
   if (exact.length > 1) return { status: 'AMBIGUOUS', productId: null, candidateProductIds: exact.slice(0, 8).map(x => x.id) };
 
-  const terms = catalogSearchTerms(label).filter(term => !NOISE_TERMS.has(term));
-  if (!terms.length) return { status: 'UNMATCHED', productId: null, candidateProductIds: [] };
-  const ranked = rankCatalogProducts(products, terms).slice(0, 8);
-  if (!ranked.length) return { status: 'UNMATCHED', productId: null, candidateProductIds: [] };
-  const best = ranked[0];
-  const second = ranked[1];
-  // Pencocokan otomatis hanya bila SEMUA kata yang ditulis karyawan (termasuk angka GB/hari) cocok pada barang itu.
-  const everyTermMatched = best.matched >= Math.min(terms.length, 16);
-  const clearlySpecific = everyTermMatched && terms.length >= 2 && best.matched >= 2 && best.nameSimilarity >= 0.8 &&
-    (!second || best.score >= second.score * 1.6);
-  // Semua kata yang ditulis karyawan cocok pada satu barang, dan barang lain cocok lebih sedikit: itu sudah jelas.
-  const matchesEveryTerm = terms.length >= 2 && best.matched >= Math.min(terms.length, 16) && (!second || second.matched < best.matched);
-  if ((ranked.length === 1 && everyTermMatched) || clearlySpecific || matchesEveryTerm) {
-    return { status: 'MATCHED', productId: best.product.id, candidateProductIds: [best.product.id] };
+  // Voucher per hari ("Axis 3 Hari"): kuota (GB/MB) bukan bagian produk. Coba dulu dengan semua kata; bila belum pasti dan ada kata hari,
+  // coba lagi tanpa kuota dan terima hanya bila hasilnya satu produk yang pasti.
+  const rawTerms = catalogSearchTerms(label).filter(term => !NOISE_TERMS.has(term));
+  const matchTerms = (terms: string[]): ProductResolution => {
+    if (!terms.length) return { status: 'UNMATCHED', productId: null, candidateProductIds: [] };
+    const ranked = rankCatalogProducts(products, terms).slice(0, 8);
+    if (!ranked.length) return { status: 'UNMATCHED', productId: null, candidateProductIds: [] };
+    const best = ranked[0];
+    const second = ranked[1];
+    // Pencocokan otomatis hanya bila SEMUA kata yang ditulis karyawan (termasuk angka GB/hari) cocok pada barang itu.
+    const everyTermMatched = best.matched >= Math.min(terms.length, 16);
+    const clearlySpecific = everyTermMatched && terms.length >= 2 && best.matched >= 2 && best.nameSimilarity >= 0.8 &&
+      (!second || best.score >= second.score * 1.6);
+    // Semua kata yang ditulis karyawan cocok pada satu barang, dan barang lain cocok lebih sedikit: itu sudah jelas.
+    const matchesEveryTerm = terms.length >= 2 && best.matched >= Math.min(terms.length, 16) && (!second || second.matched < best.matched);
+    if ((ranked.length === 1 && everyTermMatched) || clearlySpecific || matchesEveryTerm) {
+      return { status: 'MATCHED', productId: best.product.id, candidateProductIds: [best.product.id] };
+    }
+    return { status: 'AMBIGUOUS', productId: null, candidateProductIds: ranked.slice(0, 5).map(x => x.product.id) };
+  };
+  const full = matchTerms(rawTerms);
+  if (full.status === 'MATCHED') return full;
+  const hasDay = rawTerms.some(term => /^\d+hari$/.test(term));
+  const withoutQuota = rawTerms.filter(term => !/^\d+(?:\.\d+)?(?:gb|mb)$/.test(term));
+  if (hasDay && withoutQuota.length && withoutQuota.length < rawTerms.length) {
+    const relaxed = matchTerms(withoutQuota);
+    if (relaxed.status === 'MATCHED') return relaxed;
   }
-  return { status: 'AMBIGUOUS', productId: null, candidateProductIds: ranked.slice(0, 5).map(x => x.product.id) };
+  return full;
 }
 
 export function calculateUnrecordedQuantity(reportedQty: number, recordedWebQty: number, coverage: 'INCLUDES_APP_SALES' | 'UNRECORDED_ONLY') {
