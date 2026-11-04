@@ -68,6 +68,17 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Owner: `tambah stok axis 3 hari 10 pcs` dan `tambah stok axis 10gb 10 pcs` → keduanya langsung diterapkan ke Axis 3 Hari.
 - [ ] Tombol **↩️ Batalkan** setelah daftar → nama/harga kembali, produk baru dihapus.
 
+- [ ] **Daftar barang apa saja** (bukan voucher): kirim misalnya
+  ```
+  rokok
+  Surya 12 harga 31000
+  Sampoerna A Mild 12 harga 31000 stok 40
+  Gudang Garam Filter 12 harga 28000 stok 10
+  ```
+  → yang sudah ada diperbarui (harga/stok), yang belum ada dibuat (modal perkiraan dari margin kategori, ditandai); satu ringkasan; bisa Batalkan.
+- [ ] `rokok, ganti semua` + daftar → meminta konfirmasi; hanya barang kategori Rokok yang diganti/dinonaktifkan.
+- [ ] Nama yang cocok dengan beberapa barang → asisten **mendaftar semua yang meragukan sekaligus**, bukan satu per satu.
+
 ## F. Pemeriksaan data setelah uji
 - [ ] Stok dan saldo akhir = stok/saldo awal ± perubahan yang memang dilakukan.
 - [ ] Tidak ada produk ganda yang tidak diinginkan.

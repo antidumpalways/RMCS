@@ -15,6 +15,7 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
+import { formatListPlan, planCatalogList, type ListItem } from './catalog-list';
 import { formatPackagePlan, planProviderNormalize, planProviderPackages, type PackageInput } from './provider-packages';
 import { loadQuotas } from '@/lib/services/product-quota';
 import { sendTelegramLongMessage } from './client';
@@ -782,6 +783,54 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     const newName = text('newName', 60); if (!newName) return { clarification: 'Sebutkan nama subkategori yang baru.' };
     return build('subcategory.rename', 'Draf ubah nama subkategori', [{ label: 'Kategori', value: category.name }, { label: 'Subkategori', value: sub.name }, { label: 'Nama baru', value: newName, emphasis: true }], { subcategoryId: sub.id, name: newName });
   }
+  if (kind === 'catalog_sync') {
+    const rawItems = Array.isArray(data.items) ? data.items.slice(0, 80) : [];
+    if (!rawItems.length) return { clarification: 'Sebutkan daftar barangnya: nama barang, dan harga atau stok yang mau diubah.' };
+    const scopeCategory = text('category', 60);
+    const asText = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' ? String(value) : null;
+    const items: ListItem[] = [];
+    for (const raw of rawItems) {
+      const entry = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+      const name = asText(entry.name)?.trim();
+      if (!name) return { clarification: 'Ada baris tanpa nama barang. Periksa daftarnya.' };
+      const sellPrice = parseOwnerRupiah(asText(entry.sellPrice)), costPrice = parseOwnerRupiah(asText(entry.costPrice));
+      if (sellPrice !== null && costPrice !== null && costPrice > 0n) {
+        if (costPrice > sellPrice) return { clarification: `${name}: modal ${formatIdr(costPrice)} lebih besar dari harga jual ${formatIdr(sellPrice)}. Mana yang benar?` };
+        if (costPrice * 5n < sellPrice) return { clarification: `${name}: modal ${formatIdr(costPrice)} jauh di bawah harga jual ${formatIdr(sellPrice)}. Maksudnya modal ${formatIdr(costPrice * 10n)}? Sebutkan nominal yang benar.` };
+      }
+      items.push({ name, sellPrice, costPrice: costPrice !== null && costPrice > 0n ? costPrice : null,
+        stock: typeof entry.stock === 'number' && Number.isSafeInteger(entry.stock) && entry.stock >= 0 && entry.stock <= 1_000_000 ? entry.stock : null,
+        newName: asText(entry.newName)?.trim() || null, provider: asText(entry.provider)?.trim() || null, validity: asText(entry.validity)?.trim() || null,
+        category: asText(entry.category)?.trim() || null });
+    }
+    const products = await prisma.product.findMany({ select: { id: true, name: true, provider: true, validity: true, sku: true, stock: true, costPrice: true, sellPrice: true, categoryId: true, subcategoryId: true, category: { select: { name: true } } } });
+    const rows = products.map(product => ({ id: product.id, name: product.name, provider: product.provider, validity: product.validity, sku: product.sku, stock: product.stock,
+      costPrice: product.costPrice, sellPrice: product.sellPrice, categoryId: product.categoryId, categoryName: product.category.name, subcategoryId: product.subcategoryId }));
+    const replaceAll = data.missing === 'retire';
+    const plan = planCatalogList(rows, items, { defaultCategory: scopeCategory, replaceAll });
+    if (plan.invalid.length) return { clarification: `Ada yang belum jelas: ${plan.invalid.join('; ')}.` };
+    if (plan.ambiguous.length) return { clarification: `Nama ini cocok dengan beberapa barang: ${plan.ambiguous.map(item => `“${item.label}” → ${item.names.slice(0, 5).join(' | ')}`).join('; ')}. Sebutkan yang mana (tulis nama lengkapnya).` };
+    for (const made of plan.creates) {
+      if (made.categoryId !== null) continue;
+      const category = made.category ? await prisma.category.findFirst({ where: { name: { equals: made.category, mode: 'insensitive' } }, select: { id: true } }) : null;
+      if (!category) return { clarification: `Barang baru “${made.name}” butuh kategori yang sudah ada${made.category ? ` (“${made.category}” tidak ditemukan)` : ''}. Sebutkan kategorinya.` };
+      made.categoryId = category.id;
+    }
+    const changedUpdates = plan.updates.filter(update => update.changed);
+    if (!changedUpdates.length && !plan.creates.length && !plan.retire.length) return { clarification: 'Tidak ada yang berubah dari daftar itu; semua barang sudah sesuai.' };
+    const zeroIds = data.missing === 'zero' ? plan.missing.filter(item => item.stock > 0).map(item => item.id) : [];
+    const lines: Array<{ label: string; value: string; emphasis?: boolean }> = formatListPlan(plan, formatIdr).map(value => ({ label: '', value }));
+    if (plan.retire.length) lines.push({ label: 'Diganti daftar ini (dihapus bila belum punya riwayat, kalau punya dinonaktifkan)', value: plan.retire.map(item => item.name).join(', ') });
+    if (plan.missing.length) lines.push({ label: zeroIds.length ? 'Tidak ada di daftar (stok dinolkan)' : 'Tidak ada di daftar (dibiarkan)', value: plan.missing.map(item => item.name).slice(0, 15).join(', ') + (plan.missing.length > 15 ? ` …dan ${plan.missing.length - 15} lainnya` : '') });
+    const validityById = new Map(rows.map(row => [row.id, row.validity]));
+    return build(plan.retire.length ? 'catalog.replace' : 'catalog.sync', 'Draf daftar barang', lines, {
+      provider: '',
+      updates: changedUpdates.map(update => ({ id: update.id, name: update.to.name, validity: validityById.get(update.id) ?? null, sellPrice: update.to.sellPrice.toString(), costPrice: update.to.costPrice.toString(), stock: update.to.stock })),
+      creates: plan.creates.map(made => ({ name: made.name, validity: made.validity, sellPrice: made.sellPrice.toString(), costPrice: made.costPrice.toString(), stock: made.stock,
+        categoryId: made.categoryId, subcategoryId: made.subcategoryId, provider: made.provider })),
+      zeroIds, retireIds: plan.retire.map(item => item.id),
+    });
+  }
   if (kind === 'provider_sync') {
     const provider = text('provider', 60); if (!provider) return { clarification: 'Sebutkan provider-nya (mis. Axis, Telkomsel).' };
     const rawPackages = Array.isArray(data.packages) ? data.packages.slice(0, 40) : [];
@@ -938,7 +987,7 @@ function queryForAction(action: OwnerAgentAction): string | null {
 // Perubahan yang dianggap aman langsung dijalankan tanpa tombol; hanya penghapusan dan perubahan massal tetap minta satu konfirmasi.
 // OWNER_AUTO_APPLY=0 mematikan eksekusi otomatis (dipakai tes agar jalur draf + konfirmasi tetap teruji).
 const ownerAutoApply = () => process.env.OWNER_AUTO_APPLY !== '0';
-const OWNER_CONFIRM_REQUIRED = new Set<string>(['catalog.delete', 'provider.replace', 'category.delete', 'subcategory.delete', 'debt.delete', 'opname.delete', 'price.bulk', 'catalog.cleanup',
+const OWNER_CONFIRM_REQUIRED = new Set<string>(['catalog.delete', 'provider.replace', 'catalog.replace', 'category.delete', 'subcategory.delete', 'debt.delete', 'opname.delete', 'price.bulk', 'catalog.cleanup',
   // Menimpa saldo atau mengubah/membatalkan catatan penjualan dan opname: salah tafsir langsung berdampak ke uang, jadi tetap satu ketukan.
   'balance.update', 'sale.return', 'sale.edit', 'shift.close', 'opname.apply']);
 // Produk apa saja yang disentuh draf ini (untuk jejak batal). null = jenis perubahan yang tidak bisa dibatalkan otomatis.
@@ -954,7 +1003,7 @@ async function undoPlanFor(draftId: string): Promise<{ ids: number[]; created: A
   if (row.kind === 'OWNER_ASSISTANT_ACTION') {
     const saved = row.payload as { action?: string; payload?: { productId?: unknown } };
     if (saved?.action === 'catalog.update' && typeof saved.payload?.productId === 'number') return { ids: [saved.payload.productId], created: [] };
-    if (saved?.action === 'provider.sync') {
+    if (saved?.action === 'provider.sync' || saved?.action === 'catalog.sync') {
       const sync = saved.payload as { updates?: Array<{ id?: unknown }>; zeroIds?: unknown[]; creates?: Array<{ name?: unknown; categoryId?: unknown }> } | undefined;
       const ids = [...(sync?.updates ?? []).map(item => item.id), ...(sync?.zeroIds ?? [])].filter((id): id is number => Number.isSafeInteger(id));
       const created = (sync?.creates ?? []).flatMap(item => typeof item.name === 'string' && typeof item.categoryId === 'number' ? [{ name: item.name, categoryId: item.categoryId }] : []);

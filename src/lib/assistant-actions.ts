@@ -291,8 +291,8 @@ async function providerSync(payload: Record<string, unknown>) {
   await prisma.$transaction(async tx => {
     for (const item of updates) {
       const id = positiveId(item.id);
-      const current = await tx.product.findUnique({ where: { id }, select: { id: true, categoryId: true } });
-      if (!current) throw new Error('Salah satu paket tidak ditemukan di katalog.');
+      const current = await tx.product.findUnique({ where: { id }, select: { id: true, categoryId: true, stock: true, costPrice: true } });
+      if (!current) throw new Error('Salah satu barang tidak ditemukan di katalog.');
       const name = optionalText(item.name, 180);
       if (!name) throw new Error('Nama paket tidak valid.');
       if (await tx.product.findFirst({ where: { id: { not: id }, categoryId: current.categoryId, name: { equals: name, mode: 'insensitive' } }, select: { id: true } })) {
@@ -301,6 +301,11 @@ async function providerSync(payload: Record<string, unknown>) {
       await tx.product.update({ where: { id }, data: { name, validity: optionalText(item.validity, 80) ?? null, sellPrice: money(item.sellPrice), costPrice: money(item.costPrice) } });
       const quota = optionalText(item.quota, 40);
       if (quota) quotaEntries.push({ productId: id, quota });
+      // Daftar katalog umum boleh menimpa stok (jumlah absolut), tercatat sebagai pergerakan stok.
+      if (Number.isSafeInteger(item.stock) && (item.stock as number) >= 0 && (item.stock as number) <= 1_000_000 && item.stock !== current.stock) {
+        await tx.product.update({ where: { id }, data: { stock: item.stock as number } });
+        await tx.inventoryMovement.create({ data: { productId: id, type: 'OWNER_CATALOG_SYNC', qty: (item.stock as number) - current.stock, costAtTime: current.costPrice, note: 'Daftar katalog dari owner', userId: null } });
+      }
     }
     for (const item of creates) {
       const categoryId = positiveId(item.categoryId);
@@ -342,7 +347,7 @@ async function providerSync(payload: Record<string, unknown>) {
   }, { isolationLevel: 'Serializable', timeout: 20_000 });
   // Kuota hanya keterangan: disimpan setelah perubahan utama berhasil, dan tidak boleh menggagalkannya.
   await saveQuotas(quotaEntries);
-  return { ok: true as const, message: `${updates.length} paket diperbarui, ${creates.length} paket baru${removed ? `, ${removed} produk lama dihapus` : ''}${deactivated ? `, ${deactivated} produk lama dinonaktifkan` : ''}.` };
+  return { ok: true as const, message: `${updates.length} barang diperbarui, ${creates.length} barang baru${removed ? `, ${removed} produk lama dihapus` : ''}${deactivated ? `, ${deactivated} produk lama dinonaktifkan` : ''}.` };
 }
 
 async function categoryDelete(payload: Record<string, unknown>) {
@@ -439,6 +444,8 @@ export async function applyAssistantDraft(input: { action?: unknown; payload?: u
       case 'location.rename': return locationRename(payload);
       case 'provider.sync': return providerSync(payload);
       case 'provider.replace': return providerSync(payload);
+      case 'catalog.sync': return providerSync(payload);
+      case 'catalog.replace': return providerSync(payload);
       case 'sale.create': {
         const result = await recordCartSale(payload.items as { productId: number; qty: number }[], payload.expectedPrices as { productId: number; sellPrice: string }[]);
         if ('error' in result) throw new Error(result.error);
