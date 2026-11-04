@@ -281,7 +281,9 @@ async function providerSync(payload: Record<string, unknown>) {
   const updates = Array.isArray(payload.updates) ? payload.updates as Array<Record<string, unknown>> : [];
   const creates = Array.isArray(payload.creates) ? payload.creates as Array<Record<string, unknown>> : [];
   const zeroIds = Array.isArray(payload.zeroIds) ? (payload.zeroIds as unknown[]).filter((id): id is number => Number.isSafeInteger(id)) : [];
-  if (updates.length + creates.length + zeroIds.length > 60) throw new Error('Daftar terlalu panjang (maksimal 60 paket sekali jalan).');
+  const retireIds = Array.isArray(payload.retireIds) ? (payload.retireIds as unknown[]).filter((id): id is number => Number.isSafeInteger(id)) : [];
+  let removed = 0, deactivated = 0;
+  if (updates.length + creates.length + zeroIds.length + retireIds.length > 80) throw new Error('Daftar terlalu panjang (maksimal 60 paket sekali jalan).');
   const money = (value: unknown) => {
     if (typeof value !== 'string' || !/^\d{1,13}$/.test(value)) throw new Error('Nominal paket tidak valid.');
     return BigInt(value);
@@ -315,6 +317,22 @@ async function providerSync(payload: Record<string, unknown>) {
       const quota = optionalText(item.quota, 40);
       if (quota) quotaEntries.push({ productId: product.id, quota });
     }
+    // Produk lama yang digantikan daftar baru: hapus bila tidak punya penjualan/rekap/opname; kalau punya, nonaktifkan (stok 0, nama diberi tanda, lepas dari masa aktif).
+    for (const id of retireIds) {
+      const old = await tx.product.findUnique({ where: { id }, select: { id: true, name: true, stock: true, costPrice: true, categoryId: true,
+        _count: { select: { saleItems: true, telegramInventoryPostings: true, stockOpnames: true } } } });
+      if (!old) continue;
+      if (old._count.saleItems === 0 && old._count.telegramInventoryPostings === 0 && old._count.stockOpnames === 0) {
+        await tx.product.delete({ where: { id } });
+        removed++;
+        continue;
+      }
+      if (old.stock > 0) await tx.inventoryMovement.create({ data: { productId: id, type: 'OWNER_PROVIDER_SYNC', qty: -old.stock, costAtTime: old.costPrice, note: 'Digantikan daftar paket baru', userId: null } });
+      let inactiveName = old.name.endsWith(' (nonaktif)') ? old.name : `${old.name} (nonaktif)`;
+      if (await tx.product.findFirst({ where: { id: { not: id }, categoryId: old.categoryId, name: { equals: inactiveName, mode: 'insensitive' } }, select: { id: true } })) inactiveName = `${inactiveName} #${id}`;
+      await tx.product.update({ where: { id }, data: { stock: 0, validity: null, name: inactiveName.slice(0, 180) } });
+      deactivated++;
+    }
     for (const id of zeroIds) {
       const product = await tx.product.findUnique({ where: { id }, select: { id: true, stock: true, costPrice: true } });
       if (!product || product.stock <= 0) continue;
@@ -324,7 +342,7 @@ async function providerSync(payload: Record<string, unknown>) {
   }, { isolationLevel: 'Serializable', timeout: 20_000 });
   // Kuota hanya keterangan: disimpan setelah perubahan utama berhasil, dan tidak boleh menggagalkannya.
   await saveQuotas(quotaEntries);
-  return { ok: true as const, message: `${updates.length} paket diperbarui, ${creates.length} paket baru.` };
+  return { ok: true as const, message: `${updates.length} paket diperbarui, ${creates.length} paket baru${removed ? `, ${removed} produk lama dihapus` : ''}${deactivated ? `, ${deactivated} produk lama dinonaktifkan` : ''}.` };
 }
 
 async function categoryDelete(payload: Record<string, unknown>) {
@@ -420,6 +438,7 @@ export async function applyAssistantDraft(input: { action?: unknown; payload?: u
       case 'location.create': return locationCreate(payload);
       case 'location.rename': return locationRename(payload);
       case 'provider.sync': return providerSync(payload);
+      case 'provider.replace': return providerSync(payload);
       case 'sale.create': {
         const result = await recordCartSale(payload.items as { productId: number; qty: number }[], payload.expectedPrices as { productId: number; sellPrice: string }[]);
         if ('error' in result) throw new Error(result.error);

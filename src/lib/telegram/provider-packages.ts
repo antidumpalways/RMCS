@@ -20,6 +20,8 @@ export type PackageCreate = {
 export type PackagePlan = {
   provider: string; updates: PackageUpdate[]; creates: PackageCreate[];
   missing: Array<{ id: number; name: string; validity: string | null; stock: number }>;
+  // Mode "ganti semua": produk lama yang tidak dipakai lagi (dihapus bila aman, kalau tidak dinonaktifkan).
+  retire: Array<{ id: number; name: string; validity: string | null; stock: number }>;
   ambiguous: Array<{ label: string; names: string[] }>; invalid: string[];
 };
 
@@ -89,9 +91,9 @@ function ownedBy(products: CatalogRow[], provider: string) {
   return { owned, label };
 }
 
-export function planProviderPackages(provider: string, products: CatalogRow[], packages: PackageInput[]): PackagePlan {
+export function planProviderPackages(provider: string, products: CatalogRow[], packages: PackageInput[], options: { replaceAll?: boolean } = {}): PackagePlan {
   const { owned, label } = ownedBy(products, provider);
-  const plan: PackagePlan = { provider: label, updates: [], creates: [], missing: [], ambiguous: [], invalid: [] };
+  const plan: PackagePlan = { provider: label, updates: [], creates: [], missing: [], retire: [], ambiguous: [], invalid: [] };
   const used = new Set<number>();
 
   const usualMargin = (() => {
@@ -121,6 +123,11 @@ export function planProviderPackages(provider: string, products: CatalogRow[], p
       const quota = item.quota ? normalizeQuota(item.quota) : null;
       const byQuota = quota ? slot.filter(product => quotaOfName(product.name) === quota) : [];
       if (byQuota.length === 1) match = byQuota[0];
+      else if (options.replaceAll) {
+        // "Ganti semua": satu produk (kuota cocok, lalu stok terbanyak, lalu id terkecil) menjadi produk hari itu; sisanya dipensiunkan.
+        match = [...slot].sort((a, b) => b.stock - a.stock || a.id - b.id)[0];
+        for (const other of slot) if (other.id !== match.id) { used.add(other.id); plan.retire.push({ id: other.id, name: other.name, validity: other.validity, stock: other.stock }); }
+      }
       else { plan.ambiguous.push({ label: validity, names: slot.map(product => product.name) }); continue; }
     }
 
@@ -147,13 +154,18 @@ export function planProviderPackages(provider: string, products: CatalogRow[], p
 
   plan.missing = owned.filter(product => !used.has(product.id) && !plan.ambiguous.some(entry => entry.names.includes(product.name)))
     .map(product => ({ id: product.id, name: product.name, validity: product.validity, stock: product.stock }));
+  if (options.replaceAll && !plan.ambiguous.length && !plan.invalid.length) {
+    // Daftar yang diberikan menggantikan seluruh katalog provider: yang tidak disebut ikut dipensiunkan.
+    plan.retire.push(...plan.missing);
+    plan.missing = [];
+  }
   return plan;
 }
 
 // Merapikan katalog lama: ganti nama produk voucher yang punya masa aktif menjadi "Provider N Hari" (harga dan stok tidak disentuh).
 export function planProviderNormalize(provider: string, products: CatalogRow[]): PackagePlan {
   const { owned, label } = ownedBy(products, provider);
-  const plan: PackagePlan = { provider: label, updates: [], creates: [], missing: [], ambiguous: [], invalid: [] };
+  const plan: PackagePlan = { provider: label, updates: [], creates: [], missing: [], retire: [], ambiguous: [], invalid: [] };
   const groups = new Map<string, CatalogRow[]>();
   for (const product of owned) {
     const key = validityKey(product.validity);

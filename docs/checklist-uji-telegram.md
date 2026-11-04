@@ -59,6 +59,8 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] `axis 3 hari sekarang 8gb` (tanpa harga) → hanya kuota yang berubah; nama dan harga tetap.
 - [ ] Hari baru (`30 hari 50rb stok 1`) → produk **Axis 30 Hari** dibuat; modal perkiraan dari margin biasa ditandai.
 - [ ] Dua produk lama di hari yang sama → asisten **bertanya**, tidak menebak.
+- [ ] Setelah ditanya, bilang `ganti semua` (atau tulis daftar dengan "yang lama buang") → **meminta satu ketukan konfirmasi**; satu produk lama dipakai per hari, sisanya dihapus (bila belum punya penjualan/rekap/opname) atau dinonaktifkan (stok 0, nama diberi "(nonaktif)").
+- [ ] Modal yang jelas salah ketik (`modal 2300 harga jual 25000`) → asisten **bertanya** "maksudnya 23.000?" dan tidak menerapkan.
 - [ ] Karyawan menulis `axis 3 hari 2 pcs` (atau `axis 10gb 3 hari 2 pcs`) → cocok ke Axis 3 Hari tanpa pertanyaan.
 - [ ] Karyawan menulis **kuota saja** `axis 10gb 2 pcs` (kuota hari ini) → cocok ke Axis 3 Hari tanpa pertanyaan.
 - [ ] Owner: `tambah stok axis 3 hari 10 pcs` dan `tambah stok axis 10gb 10 pcs` → keduanya langsung diterapkan ke Axis 3 Hari.

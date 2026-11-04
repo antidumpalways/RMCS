@@ -15,6 +15,7 @@ export type AssistantAction =
   | 'location.create'
   | 'location.rename'
   | 'provider.sync'
+  | 'provider.replace'
   | 'sale.create'
   | 'sale.edit'
   | 'sale.return'
@@ -48,7 +49,7 @@ const ASSISTANT_ACTIONS: readonly AssistantAction[] = [
   'catalog.update', 'catalog.delete', 'catalog.cleanup',
   'category.create', 'category.rename', 'category.delete',
   'subcategory.create', 'subcategory.rename', 'subcategory.delete',
-  'location.create', 'location.rename', 'provider.sync',
+  'location.create', 'location.rename', 'provider.sync', 'provider.replace',
   'sale.create', 'sale.edit', 'sale.return', 'price.bulk', 'stock.in', 'stock.adjust',
   'opname.record', 'opname.apply', 'opname.review', 'opname.delete',
   'debt.create', 'debt.pay', 'debt.delete',

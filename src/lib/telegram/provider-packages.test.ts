@@ -100,3 +100,29 @@ test('paket baru tanpa harga ditolak; kuota ikut tersimpan pada paket baru', () 
   const withQuota = planProviderPackages('axis', current, [{ validity: '3 hari', sellPrice: 15000n, costPrice: null, stock: null, quota: '10gb' }]);
   assert.equal(withQuota.updates[0].kind, 'QUOTA');
 });
+
+const xl = (id: number, name: string, validity: string | null, sell: bigint, cost: bigint, stock: number): CatalogRow =>
+  ({ id, name, provider: 'XL', validity, stock, costPrice: cost, sellPrice: sell, categoryId: 1, subcategoryId: null });
+
+test('"ganti semua": dua produk lama di hari yang sama -> satu dipakai (stok terbanyak), sisanya dipensiunkan', () => {
+  const catalog = [xl(1, 'Paket Data 8GB XL', '3 hari', 16000n, 14000n, 20), xl(2, 'Paket Data 9GB XL', '3 hari', 17000n, 15000n, 5), xl(3, 'Paket Data 20GB XL', '30 hari', 50000n, 47000n, 3)];
+  const input = [pkg('3 hari', 15000n, 13000n, null, '6.5gb'), pkg('5 hari', 20000n, 18000n, null, '10gb'), pkg('7 hari', 25000n, 23000n, null, '14gb')];
+  const ask = planProviderPackages('xl', catalog, input);
+  assert.equal(ask.ambiguous.length, 1);
+  const plan = planProviderPackages('xl', catalog, input, { replaceAll: true });
+  assert.equal(plan.ambiguous.length, 0);
+  assert.equal(plan.updates.length, 1);
+  assert.equal(plan.updates[0].id, 1);
+  assert.equal(plan.updates[0].to.name, 'XL 3 Hari');
+  assert.equal(plan.updates[0].quota, '6.5GB');
+  assert.deepEqual(plan.creates.map(made => made.name), ['XL 5 Hari', 'XL 7 Hari']);
+  assert.deepEqual(plan.retire.map(item => item.id).sort(), [2, 3]);
+  assert.equal(plan.missing.length, 0);
+});
+
+test('"ganti semua" tidak mengubah apa pun bila ada paket yang tidak terbaca', () => {
+  const catalog = [xl(1, 'Paket Data 8GB XL', '3 hari', 16000n, 14000n, 20)];
+  const plan = planProviderPackages('xl', catalog, [pkg(null, 15000n), pkg('3 hari', 15000n)], { replaceAll: true });
+  assert.equal(plan.invalid.length, 1);
+  assert.equal(plan.retire.length, 0);
+});
