@@ -652,7 +652,11 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     return { catalog, matches };
   };
   const chooseProduct = async (name: string) => {
-    const { matches } = await product(name);
+    const { catalog, matches: found } = await product(name);
+    // Nama persis sama dengan barang di katalog selalu menang atas pencarian kira-kira.
+    const exactKey = (value: string) => value.toLocaleLowerCase('id-ID').replace(/[^a-z0-9]+/g, '');
+    const exact = catalog.filter(item => exactKey(item.name) === exactKey(name));
+    const matches = exact.length === 1 ? exact : found;
     if (matches.length !== 1) return { issue: matches.length ? `Nama “${name}” cocok ke beberapa barang: ${matches.map(item => item.name).join(', ')}. Sebutkan varian yang tepat.` : `Barang “${name}” belum ditemukan di katalog.` };
     return { product: matches[0] };
   };
@@ -1197,7 +1201,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     if (content) await sendTelegramMessage(chatId, content);
     return;
   }
-  if (clarification) {
+  if (clarification && !(businessDraft && extraBusinessDrafts.length)) {
     const clarificationResponse = clarificationReply(content, clarification);
     rememberOwnerReply(state, clarificationResponse);
     await saveOwnerChatState(rowId, chatId, state);
@@ -1214,6 +1218,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       const summary = draft.lines.map(line => (line.label ? `${line.label}: ${line.value}` : line.value)).join('; ');
       results.push(row?.status === 'CONFIRMED' ? `✅ ${summary}` : `⚠️ Gagal: ${summary}`);
     }
+    if (clarification) results.push(`⚠️ ${clarification}`);
     const summaryText = results.join('\n');
     rememberOwnerReply(state, summaryText);
     state.actions = []; state.selected = []; state.pendingMatches = []; state.menuFlow = null; state.proposalDraftId = null; state.preview = null;
@@ -1228,7 +1233,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     await saveOwnerChatState(rowId, chatId, state);
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
     if (ownerAutoApply() && !OWNER_CONFIRM_REQUIRED.has(businessDraft.action)) {
-      return autoApplyDraft(chatId, ownerId, saved.draftId, '✅ ' + businessDraft.title.replace(/^Draf @@BS@@s*/i, '') + ' sudah diterapkan.\n' + businessDraft.lines.map(line => (line.label ? `${line.label}: ${line.value}` : line.value)).join('\n'));
+      return autoApplyDraft(chatId, ownerId, saved.draftId, '✅ ' + businessDraft.title.replace(/^Draf\s*/i, '') + ' sudah diterapkan.\n' + businessDraft.lines.map(line => (line.label ? `${line.label}: ${line.value}` : line.value)).join('\n'));
     }
     return sendTelegramLongMessage(chatId, [content, saved.preview].filter(Boolean).join('\n\n'), ownerActionKeyboard(saved.draftId));
   }
