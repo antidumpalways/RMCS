@@ -329,10 +329,11 @@ async function notifyOwnerReviewTask(taskId:string,summary:string){
  const message='⚠️ TINJAUAN SHIFT MENUNGGU\n'+summary+'\n\nTugas tersimpan: '+taskId+'\nBuka /menu → Persetujuan di chat pribadi untuk melihat dan menandai setelah diperiksa.';
  for(const ownerId of ownerIds){try{await sendTelegramMessage(BigInt(ownerId),message);}catch{/* The durable queue remains available from the owner menu. */}}
 }
-function keyboard(id:string,revision:number,stockCountComplete:boolean,canConfirm=true,removable:Array<{index:number;label:string}>=[]):InlineKeyboard{
+function keyboard(id:string,revision:number,stockCountComplete:boolean,canConfirm=true,removable:Array<{index:number;label:string}>=[],quick:Array<{id:number;label:string}>=[]):InlineKeyboard{
  const rows:Array<Array<{text:string;callback_data:string}>>=[];
  if(canConfirm)rows.push([{text:'✅ Selesai · Simpan rekap',callback_data:'rcms:ok:'+id+':'+revision}]);
  if(!stockCountComplete)rows.push([{text:'⚠️ Ada selisih stok',callback_data:'rcms:stockend:'+id+':'+revision}]);
+ for(let i=0;i<quick.length;i+=2)rows.push(quick.slice(i,i+2).map(item=>({text:'➕ '+item.label.slice(0,24),callback_data:'rcms:q:'+item.id})));
  for(const item of removable.slice(0,8))rows.push([{text:'🗑 Hapus: '+item.label.slice(0,26),callback_data:inventoryCallback('remove',id,String(item.index),'-',revision)}]);
  rows.push([{text:'Koreksi Rekap',callback_data:'rcms:edit:'+id+':'+revision},{text:'Batal',callback_data:'rcms:cancel:'+id+':'+revision}]);
  return{inline_keyboard:rows};
@@ -376,6 +377,25 @@ async function deliverDraftMessage(chatId:bigint,draftId:string,previousMessageI
  if(previousMessageId&&previousMessageId!==newId){try{await deleteTelegramMessage(chatId,previousMessageId);}catch{/* Pesan lama mungkin sudah terhapus atau terlalu lama. */}}
  if(newId){try{await mergeDraftPayload(draftId,{draftMessageId:newId});}catch{/* Penyimpanan id pesan hanya untuk kerapian. */}}
 }
+// Barang yang paling sering terjual 3 minggu terakhir: jadi tombol "➕" supaya karyawan cukup menekan, tanpa mengetik.
+async function quickSellerButtons():Promise<Array<{id:number;label:string}>>{
+ try{
+  const since=new Date(Date.now()-21*86_400_000);
+  const top=await prisma.telegramInventoryPosting.groupBy({by:['productId'],where:{createdAt:{gte:since}},_sum:{appliedQty:true},orderBy:{_sum:{appliedQty:'desc'}},take:6});
+  if(!top.length)return[];
+  const names=await prisma.product.findMany({where:{id:{in:top.map(item=>item.productId)}},select:{id:true,name:true}});
+  const byName=new Map(names.map(item=>[item.id,item.name]));
+  return top.flatMap(item=>{const label=byName.get(item.productId);return label&&!label.endsWith('(nonaktif)')?[{id:item.productId,label}]:[];});
+ }catch{return[];}
+}
+async function handleQuickSaleCallback(c:TelegramCallback,actor:TelegramActor,chatId:bigint){
+ const match=/^rcms:q:(\d{1,9})$/.exec(c.data??'');if(!match||!c.message)return false;
+ const product=await prisma.product.findUnique({where:{id:Number(match[1])},select:{name:true}});
+ if(!product){await answerTelegramCallback(c.id,'Barang tidak ditemukan.');return true;}
+ await answerTelegramCallback(c.id,'Tercatat: '+product.name.slice(0,30)+' ×1');
+ await recordReportMessage({...c.message,from:c.from,text:product.name+' 1 pcs'},actor,BigInt(Date.now())*1000n+BigInt(Math.floor(Math.random()*1000)),true);
+ return true;
+}
 async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:string,draftId:string){
  let session=await prisma.telegramSession.findUnique({where:{id:sessionId}}),row=await prisma.telegramDraft.findUnique({where:{id:draftId}});
  if(!session||session.draftId!==draftId||!row||row.status!=='PENDING')return;
@@ -413,7 +433,7 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
  const counted=countByProduct.size;
  const soldNow=soldQuantities(draft),closingDiffs=stockCountComplete?opening.payload.lines.flatMap(line=>{const product=byId.get(line.productId),actual=countByProduct.get(line.productId);const expected=product?Math.max(0,product.stock-(soldNow.get(line.productId)??0)):undefined;return product&&actual!==undefined&&expected!==undefined&&actual!==expected?[{line,expected,actual}]:[];}):[];
  const closeCountText='\n\n📋 STOK AKHIR: '+(stockCountComplete?'sudah dicek ✅'+closingDiffs.map(item=>'\n• '+openingLineName(item.line)+': seharusnya '+item.expected+', stok sebenarnya '+item.actual).join(''):'dianggap sesuai. Kalau ada yang beda, tekan “Ada selisih stok”.');
- const allIssues=[...issues,...(stockInsufficient?['Ada barang yang jumlahnya lebih banyak dari stok di sistem. Cek lagi jumlahnya, atau minta owner.']:[])]; const inputGuide=draft.entries.length===0&&(draft.inventoryLines??[]).length===0?'\n\nTulis saja, boleh bertahap. Contoh:\n• Admin 45rb\n• Axis 13GB 7 hari 2 pcs\n• Saldo total akhir 25.168.000':''; const todo=allIssues.length?'\n\nTinggal:\n'+allIssues.map((item,index)=>(index+1)+'. '+item).join('\n'):'\n\nSudah lengkap. Tekan Selesai untuk menyimpan.'; await deliverDraftMessage(chatId,draftId,draft.draftMessageId,formatDraft(draft)+balanceText+stockOpeningText+stockText+closeCountText+todo,keyboard(draftId,session.revision,stockCountComplete,true,(draft.inventoryLines??[]).map((line,index)=>({index,label:(line.productId?byId.get(line.productId)?.name:undefined)??line.label}))));
+ const allIssues=[...issues,...(stockInsufficient?['Ada barang yang jumlahnya lebih banyak dari stok di sistem. Cek lagi jumlahnya, atau minta owner.']:[])]; const inputGuide=draft.entries.length===0&&(draft.inventoryLines??[]).length===0?'\n\nTulis saja, boleh bertahap. Contoh:\n• Admin 45rb\n• Axis 13GB 7 hari 2 pcs\n• Saldo total akhir 25.168.000':''; const todo=allIssues.length?'\n\nTinggal:\n'+allIssues.map((item,index)=>(index+1)+'. '+item).join('\n'):'\n\nSudah lengkap. Tekan Selesai untuk menyimpan.'; await deliverDraftMessage(chatId,draftId,draft.draftMessageId,formatDraft(draft)+balanceText+stockOpeningText+stockText+closeCountText+todo,keyboard(draftId,session.revision,stockCountComplete,true,(draft.inventoryLines??[]).map((line,index)=>({index,label:(line.productId?byId.get(line.productId)?.name:undefined)??line.label})),await quickSellerButtons()));
  const choiceItems=(draft.inventoryLines??[]).map((line,index)=>({line,index})).filter(item=>item.line.mappingStatus==='AMBIGUOUS'||item.line.mappingStatus==='UNMATCHED');
  if(draft.choiceMessageId){try{await deleteTelegramMessage(chatId,draft.choiceMessageId);}catch{/* Pesan pilihan lama mungkin sudah terhapus. */}}
  let choiceMessageId:number|undefined;
@@ -735,6 +755,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
  const m=c.message,chatId=m&&telegramId(m.chat.id);
  if(!m||chatId===null||chatId===undefined||!groupAllowed(m.chat)){await answerTelegramCallback(c.id,'Grup tidak diizinkan.');return;}
  if(visionCallbackFromData(c.data)){await handleTelegramVisionCallback(c,actor.identityId);return;}
+ if(await handleQuickSaleCallback(c,actor,chatId))return;
  if(await handleInventoryCallback(c,actor,chatId))return;
  if(await handleCorrectionCallback(c,actor,chatId))return;
  const parsed=parseTelegramCallback(c.data);if(!parsed){await answerTelegramCallback(c.id,'Tombol tidak valid.');return;}
