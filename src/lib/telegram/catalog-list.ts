@@ -95,7 +95,7 @@ export function planCatalogList(rows: ListRow[], items: ListItem[], options: { d
     const estimated = given === null && margin !== null && sellPrice > margin;
     plan.creates.push({ name: item.newName?.trim() || name, provider: item.provider, validity: item.validity, sellPrice,
       costPrice: given ?? (estimated ? sellPrice - margin! : 0n), costEstimated: given === null, stock: item.stock ?? 0,
-      category, categoryId: sample?.categoryId ?? null, subcategoryId: null, priceMissing });
+      category: sample?.categoryName ?? category, categoryId: sample?.categoryId ?? null, subcategoryId: null, priceMissing });
   }
 
   const leftovers = scoped.filter(row => !used.has(row.id) && !plan.ambiguous.some(entry => entry.names.includes(row.name)));

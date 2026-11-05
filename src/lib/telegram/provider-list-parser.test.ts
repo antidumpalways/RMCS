@@ -44,9 +44,16 @@ test('kalimat bebas yang kebetulan memuat hari dan harga TIDAK ditangkap (disera
 });
 
 test('"X yang kita jual cuma Y" dibaca tanpa AI; kalimat lain tidak ikut tertangkap', () => {
-  assert.deepEqual(parseOnlyStatement('Minyak yg kita jual itu cuma pertalite'), { category: 'Minyak', items: ['Pertalite'] });
-  assert.deepEqual(parseOnlyStatement('oke catat, rokok yang dijual hanya Surya dan Sampoerna aja.'), { category: 'rokok', items: ['Surya', 'Sampoerna'] });
+  assert.deepEqual(parseOnlyStatement('Minyak yg kita jual itu cuma pertalite'), { category: 'Minyak', items: [{ name: 'Pertalite', sellPrice: null, costPrice: null }] });
+  assert.deepEqual(parseOnlyStatement('oke catat, rokok yang dijual hanya Surya dan Sampoerna aja.'), { category: 'rokok', items: [{ name: 'Surya', sellPrice: null, costPrice: null }, { name: 'Sampoerna', sellPrice: null, costPrice: null }] });
   assert.equal(parseOnlyStatement('harga pertalite berapa?'), null);
   assert.equal(parseOnlyStatement('kita jual banyak macam minyak, bukan cuma pertalite'), null);
   assert.equal(parseOnlyStatement('tolong hapus semua yang kita jual cuma yang murah'), null);
+});
+
+test('kalimat owner persis: "hapus semua minyak, ... yg kita jual hanya minyak pertalite modal 11000 harga jual 12000"', () => {
+  assert.deepEqual(parseOnlyStatement('hapus semua minyak, ganti kan yg kita jual hanya minyak pertalite modal 11000 harga jual 12000'),
+    { category: 'minyak', items: [{ name: 'Pertalite', sellPrice: '12000', costPrice: '11000' }] });
+  assert.deepEqual(parseOnlyStatement('Minyak yg kita jual hanya pertalite modal 11000 harga jual 12000')?.items[0], { name: 'Pertalite', sellPrice: '12000', costPrice: '11000' });
+  assert.equal(parseOnlyStatement('hapus semua minyak'), null);
 });

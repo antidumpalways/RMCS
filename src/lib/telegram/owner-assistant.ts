@@ -1119,6 +1119,16 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     }
     const query = queryForAction(action);
     if (!query) { clarification ??= 'Barang yang dimaksud belum jelas. Sebutkan nama, SKU, atau ciri barangnya.'; continue; }
+    if (action.kind === 'search_products' || action.kind === 'get_inventory') {
+      // Nama kategori disebut (mis. "minyak"): tampilkan seluruh isinya, bukan hanya 5 teratas.
+      const categoryKey = (value: string) => value.toLocaleLowerCase('id-ID').replace(/[^a-z0-9]+/g, '');
+      const inCategory = catalog.filter(product => categoryKey(product.category.name) === categoryKey(query));
+      if (inCategory.length) {
+        const shown = inCategory.slice(0, 40).map(product => `• ${product.name}${product.quota ? ` (${product.quota})` : ''} · stok ${product.stock} · ${formatIdr(product.sellPrice)}`);
+        responses.push(`Kategori ${inCategory[0].category.name} berisi ${inCategory.length} barang:\n${shown.join('\n')}${inCategory.length > 40 ? `\n…dan ${inCategory.length - 40} lainnya.` : ''}`);
+        continue;
+      }
+    }
     let products: CatalogProduct[] = [];
     const selectedId = selectedProduct(state, index, query);
     if (selectedId) products = catalog.filter(product => product.id === selectedId);
@@ -1814,7 +1824,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
       const quickOnly = quickLists ? null : parseOnlyStatement(text);
       const turn: Awaited<ReturnType<typeof interpretOwnerTurn>> = quickOnly
         ? { reply: 'Siap, kategori itu saya rapikan.', clarification: null, actions: [{ kind: 'propose_business_action' as const, action: 'catalog_sync' as const,
-            data: { category: quickOnly.category, items: quickOnly.items.map(name => ({ name })), missing: 'retire' } }] }
+            data: { category: quickOnly.category, items: quickOnly.items, missing: 'retire' } }] }
         : quickLists
         ? { reply: 'Siap, langsung saya jalankan.', clarification: null, actions: quickLists.map(list => ({ kind: 'propose_business_action' as const, action: 'provider_sync' as const,
             data: { provider: list.provider, packages: list.packages, ...(list.replaceAll ? { missing: 'retire' } : {}) } })) }
