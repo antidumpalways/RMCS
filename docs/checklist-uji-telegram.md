@@ -79,6 +79,11 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] `rokok, ganti semua` + daftar → meminta konfirmasi; hanya barang kategori Rokok yang diganti/dinonaktifkan.
 - [ ] Nama yang cocok dengan beberapa barang → asisten **mendaftar semua yang meragukan sekaligus**, bukan satu per satu.
 
+- [ ] **Otonom penuh**: kirim daftar Telkomsel (dua paket 5 hari) dengan "ganti semua" → langsung dijalankan **tanpa pertanyaan dan tanpa tombol konfirmasi**; hasil + tombol ↩️ Batalkan.
+- [ ] Nama barang yang mirip beberapa produk → asisten **memilih yang terbaik** dan menulis "Memakai …" di hasil; tidak bertanya.
+- [ ] Modal janggal (`modal 2300 harga jual 25000`) → tetap diterapkan, dengan baris peringatan ⚠️.
+- [ ] Kategori paket/barang baru yang belum ada → dibuat otomatis.
+
 ## F. Pemeriksaan data setelah uji
 - [ ] Stok dan saldo akhir = stok/saldo awal ± perubahan yang memang dilakukan.
 - [ ] Tidak ada produk ganda yang tidak diinginkan.

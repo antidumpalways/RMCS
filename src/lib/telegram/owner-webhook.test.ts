@@ -342,7 +342,7 @@ test('Telegram follow-up correction revises the persistent preview instead of du
   }, [initial, corrected]);
 });
 
-test('ambiguous owner product stays unresolved until a Telegram choice, then receives one confirmation preview', async () => {
+test('ambiguous owner product is resolved autonomously: best match is used and the assumption is stated', async () => {
   const { handleTelegramWebhook } = await modules();
   process.env.TELEGRAM_OWNER_IDS = '700123';
   process.env.DEEPSEEK_API_KEY = 'test-api-key';
@@ -357,19 +357,36 @@ test('ambiguous owner product stays unresolved until a Telegram choice, then rec
   await withTelegramFetch(async sent => {
     const result = await webhook(handleTelegramWebhook, privateUpdate(907, 'ubah harga anti gores jadi 15rb'));
     assert.equal(result.status, 200);
-    const choiceKeyboard = sent[0].reply_markup as { inline_keyboard?: Array<Array<{ callback_data: string }>> };
-    const pickData = choiceKeyboard.inline_keyboard?.[0]?.[0]?.callback_data;
-    assert.match(pickData ?? '', /^rcms:owner:pick:/);
-    assert.equal([...fakeDrafts.values()].filter(row => row.kind === 'OWNER_OPERATION').length, 0);
-    const callbackResult = await webhook(handleTelegramWebhook, { update_id: 908, callback_query: { id: 'callback-908',
-      from: { id: 700123, first_name: 'Owner' }, data: pickData,
-      message: { message_id: 100, chat: { id: 700123, type: 'private' } } } });
-    assert.equal(callbackResult.status, 200);
+    // Otonom: tidak ada pertanyaan pilihan; kecocokan terbaik dipakai dan asumsinya disebut (di pengujian ini tetap pratinjau karena OWNER_AUTO_APPLY=0).
     const preview = sent.find(payload => typeof payload.text === 'string' && String(payload.text).includes('Harga jual Rp'));
     assert.ok(preview);
+    assert.match(String(preview.text), /Memakai “Anti Gores iPhone 1[23]”/);
     assert.match(String(preview.text), /Rp\s5\.000 → Rp\s15\.000/);
-    assert.match(String(preview.text), /Belum ada yang diubah/);
+    assert.equal(sent.some(payload => JSON.stringify(payload.reply_markup ?? {}).includes('rcms:owner:pick:')), false);
     assert.equal(businessWriteCounts.product, 0);
     assert.equal(businessWriteCounts.movement, 0);
   }, deepseek);
+});
+
+test('daftar Telkomsel dari owner (dua paket 5 hari) langsung diproses TANPA AI dan tanpa pertanyaan', async () => {
+  const { handleTelegramWebhook } = await modules();
+  process.env.TELEGRAM_OWNER_IDS = '700123';
+  process.env.DEEPSEEK_API_KEY = 'test-api-key';
+  fakeDrafts.clear(); draftSequence = 0;
+  fakeProducts = []; fakeCategories = [];
+  businessWriteCounts = { product: 0, movement: 0 };
+  const message = ['Telkomsel, ganti semua', '3 hari 5gb modal 13300 harga jual 15000', '5 hari 5gb modal 15000 harga jual 17000',
+    '5 hari 7gb modal 18000 harga jual 20000', '7 hari 8gb modal 28000 harga jual 30000'].join(String.fromCharCode(10));
+  // Tanpa isi DeepSeek: bila bot memanggil AI, panggilan itu gagal (503) dan tes ini gagal.
+  await withTelegramFetch(async sent => {
+    const result = await webhook(handleTelegramWebhook, privateUpdate(950, message));
+    assert.equal(result.status, 200);
+    const text = sent.map(payload => String(payload.text ?? '')).join(String.fromCharCode(10));
+    assert.match(text, /Telkomsel 3 Hari/);
+    assert.match(text, /Telkomsel 5 Hari \(5GB\)/);
+    assert.match(text, /Telkomsel 5 Hari \(7GB\)/);
+    assert.match(text, /Telkomsel 7 Hari/);
+    assert.doesNotMatch(text, /gangguan|Mau digabung|Sebutkan/);
+    assert.equal(businessWriteCounts.product, 0);
+  });
 });

@@ -308,8 +308,16 @@ async function providerSync(payload: Record<string, unknown>) {
       }
     }
     for (const item of creates) {
-      const categoryId = positiveId(item.categoryId);
-      if (!await tx.category.findUnique({ where: { id: categoryId }, select: { id: true } })) throw new Error('Kategori paket baru tidak ditemukan.');
+      let categoryId: number;
+      if (item.categoryId !== null && item.categoryId !== undefined) {
+        categoryId = positiveId(item.categoryId);
+        if (!await tx.category.findUnique({ where: { id: categoryId }, select: { id: true } })) throw new Error('Kategori barang baru tidak ditemukan.');
+      } else {
+        // Otonom: kategori yang belum ada dibuat saja.
+        const categoryName = optionalText(item.categoryName, 60) ?? 'Lainnya';
+        const found = await tx.category.findFirst({ where: { name: { equals: categoryName, mode: 'insensitive' } }, select: { id: true } });
+        categoryId = found ? found.id : (await tx.category.create({ data: { name: categoryName } })).id;
+      }
       const name = optionalText(item.name, 180);
       if (!name) throw new Error('Nama paket baru tidak valid.');
       if (await tx.product.findFirst({ where: { categoryId, name: { equals: name, mode: 'insensitive' } }, select: { id: true } })) throw new Error(`Barang “${name}” sudah ada di kategori tersebut.`);

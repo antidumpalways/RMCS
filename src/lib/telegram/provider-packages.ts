@@ -104,7 +104,7 @@ function priceOrder(a: bigint | null, b: bigint | null): number {
 
 type Entry = { item: PackageInput; validity: string; quota: string | null; index: number };
 
-export function planProviderPackages(provider: string, products: CatalogRow[], packages: PackageInput[], options: { replaceAll?: boolean } = {}): PackagePlan {
+export function planProviderPackages(provider: string, products: CatalogRow[], packages: PackageInput[], options: { replaceAll?: boolean; resolveAmbiguous?: boolean } = {}): PackagePlan {
   const { owned, label } = ownedBy(products, provider);
   const plan: PackagePlan = { provider: label, updates: [], creates: [], missing: [], retire: [], ambiguous: [], invalid: [] };
   const used = new Set<number>();
@@ -148,11 +148,11 @@ export function planProviderPackages(provider: string, products: CatalogRow[], p
       else unpaired.push(entry);
     }
     // 2) sisanya: bila produk lama LEBIH banyak dari masukan dan bukan "ganti semua", tanyakan; selain itu pasangkan per urutan
-    if (unpaired.length && olds.length > unpaired.length && !options.replaceAll) {
+    if (unpaired.length && olds.length > unpaired.length && !options.replaceAll && !options.resolveAmbiguous) {
       plan.ambiguous.push({ label: group[0].validity, names: olds.map(product => product.name) });
       continue;
     }
-    const pool = options.replaceAll && olds.length > unpaired.length
+    const pool = (options.replaceAll || options.resolveAmbiguous) && olds.length > unpaired.length
       ? [...olds].sort((a, b) => b.stock - a.stock || a.id - b.id)
       : [...olds].sort((a, b) => (a.sellPrice < b.sellPrice ? -1 : a.sellPrice > b.sellPrice ? 1 : a.id - b.id));
     for (const entry of unpaired) pairs.push({ entry, match: pool.shift() ?? null });

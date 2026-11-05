@@ -15,6 +15,7 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
+import { parseProviderLists } from './provider-list-parser';
 import { formatListPlan, planCatalogList, type ListItem } from './catalog-list';
 import { formatPackagePlan, planProviderNormalize, planProviderPackages, type PackageInput } from './provider-packages';
 import { loadQuotas } from '@/lib/services/product-quota';
@@ -789,14 +790,15 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     const scopeCategory = text('category', 60);
     const asText = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' ? String(value) : null;
     const items: ListItem[] = [];
+    const listWarnings: string[] = [];
     for (const raw of rawItems) {
       const entry = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
       const name = asText(entry.name)?.trim();
-      if (!name) return { clarification: 'Ada baris tanpa nama barang. Periksa daftarnya.' };
+      if (!name) { listWarnings.push('Ada baris tanpa nama barang (dilewati).'); continue; }
       const sellPrice = parseOwnerRupiah(asText(entry.sellPrice)), costPrice = parseOwnerRupiah(asText(entry.costPrice));
       if (sellPrice !== null && costPrice !== null && costPrice > 0n) {
-        if (costPrice > sellPrice) return { clarification: `${name}: modal ${formatIdr(costPrice)} lebih besar dari harga jual ${formatIdr(sellPrice)}. Mana yang benar?` };
-        if (costPrice * 5n < sellPrice) return { clarification: `${name}: modal ${formatIdr(costPrice)} jauh di bawah harga jual ${formatIdr(sellPrice)}. Maksudnya modal ${formatIdr(costPrice * 10n)}? Sebutkan nominal yang benar.` };
+        if (costPrice > sellPrice) listWarnings.push(`⚠️ ${name}: modal ${formatIdr(costPrice)} lebih besar dari harga jual ${formatIdr(sellPrice)} (diterapkan apa adanya; koreksi bila salah ketik).`);
+        else if (costPrice * 5n < sellPrice) listWarnings.push(`⚠️ ${name}: modal ${formatIdr(costPrice)} tampak terlalu kecil dibanding harga jual ${formatIdr(sellPrice)} (diterapkan apa adanya; koreksi bila salah ketik).`);
       }
       items.push({ name, sellPrice, costPrice: costPrice !== null && costPrice > 0n ? costPrice : null,
         stock: typeof entry.stock === 'number' && Number.isSafeInteger(entry.stock) && entry.stock >= 0 && entry.stock <= 1_000_000 ? entry.stock : null,
@@ -807,27 +809,28 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     const rows = products.map(product => ({ id: product.id, name: product.name, provider: product.provider, validity: product.validity, sku: product.sku, stock: product.stock,
       costPrice: product.costPrice, sellPrice: product.sellPrice, categoryId: product.categoryId, categoryName: product.category.name, subcategoryId: product.subcategoryId }));
     const replaceAll = data.missing === 'retire';
-    const plan = planCatalogList(rows, items, { defaultCategory: scopeCategory, replaceAll });
-    if (plan.invalid.length) return { clarification: `Ada yang belum jelas: ${plan.invalid.join('; ')}.` };
-    if (plan.ambiguous.length) return { clarification: `Nama ini cocok dengan beberapa barang: ${plan.ambiguous.map(item => `“${item.label}” → ${item.names.slice(0, 5).join(' | ')}`).join('; ')}. Sebutkan yang mana (tulis nama lengkapnya).` };
+    const plan = planCatalogList(rows, items, { defaultCategory: scopeCategory, replaceAll, resolveAmbiguous: true });
+    for (const problem of plan.invalid) listWarnings.push(`Dilewati: ${problem}.`);
+    // Kategori barang baru: yang disebut, kalau tidak "Lainnya"; dibuat otomatis bila belum ada.
     for (const made of plan.creates) {
       if (made.categoryId !== null) continue;
       const category = made.category ? await prisma.category.findFirst({ where: { name: { equals: made.category, mode: 'insensitive' } }, select: { id: true } }) : null;
-      if (!category) return { clarification: `Barang baru “${made.name}” butuh kategori yang sudah ada${made.category ? ` (“${made.category}” tidak ditemukan)` : ''}. Sebutkan kategorinya.` };
-      made.categoryId = category.id;
+      made.categoryId = category?.id ?? null;
+      made.category = made.category ?? 'Lainnya';
     }
     const changedUpdates = plan.updates.filter(update => update.changed);
-    if (!changedUpdates.length && !plan.creates.length && !plan.retire.length) return { clarification: 'Tidak ada yang berubah dari daftar itu; semua barang sudah sesuai.' };
+    if (!changedUpdates.length && !plan.creates.length && !plan.retire.length) return { clarification: `Tidak ada yang berubah dari daftar itu. ${listWarnings.join(' ')}`.trim() };
     const zeroIds = data.missing === 'zero' ? plan.missing.filter(item => item.stock > 0).map(item => item.id) : [];
     const lines: Array<{ label: string; value: string; emphasis?: boolean }> = formatListPlan(plan, formatIdr).map(value => ({ label: '', value }));
     if (plan.retire.length) lines.push({ label: 'Diganti daftar ini (dihapus bila belum punya riwayat, kalau punya dinonaktifkan)', value: plan.retire.map(item => item.name).join(', ') });
     if (plan.missing.length) lines.push({ label: zeroIds.length ? 'Tidak ada di daftar (stok dinolkan)' : 'Tidak ada di daftar (dibiarkan)', value: plan.missing.map(item => item.name).slice(0, 15).join(', ') + (plan.missing.length > 15 ? ` …dan ${plan.missing.length - 15} lainnya` : '') });
+    for (const warning of listWarnings) lines.push({ label: '', value: warning });
     const validityById = new Map(rows.map(row => [row.id, row.validity]));
     return build(plan.retire.length ? 'catalog.replace' : 'catalog.sync', 'Draf daftar barang', lines, {
       provider: '',
       updates: changedUpdates.map(update => ({ id: update.id, name: update.to.name, validity: validityById.get(update.id) ?? null, sellPrice: update.to.sellPrice.toString(), costPrice: update.to.costPrice.toString(), stock: update.to.stock })),
       creates: plan.creates.map(made => ({ name: made.name, validity: made.validity, sellPrice: made.sellPrice.toString(), costPrice: made.costPrice.toString(), stock: made.stock,
-        categoryId: made.categoryId, subcategoryId: made.subcategoryId, provider: made.provider })),
+        categoryId: made.categoryId, categoryName: made.category, subcategoryId: made.subcategoryId, provider: made.provider })),
       zeroIds, retireIds: plan.retire.map(item => item.id),
     });
   }
@@ -837,15 +840,16 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     const normalizeOnly = data.normalize === true && !rawPackages.length;
     if (!rawPackages.length && !normalizeOnly) return { clarification: `Sebutkan daftar ${provider}: masa aktif (hari) dan harga jual tiap paket, contoh “3 hari 15rb, 5 hari 15rb”. Kuota tidak perlu.` };
     const packages: PackageInput[] = [];
+    const warnings: string[] = [];
     for (const raw of rawPackages) {
       const entry = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
       const asText = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' ? String(value) : null;
       const validity = asText(entry.validity), quota = asText(entry.quota);
       const sellPrice = parseOwnerRupiah(asText(entry.sellPrice)), costPrice = parseOwnerRupiah(asText(entry.costPrice));
-      if (!validity || (sellPrice !== null && sellPrice <= 0n) || (sellPrice === null && !quota)) return { clarification: `Paket “${validity || quota || '?'}” belum lengkap: sebutkan masa aktif (hari) dan harga jual, atau kuotanya saja bila hanya kuota yang berubah.` };
+      if (!validity || (sellPrice !== null && sellPrice <= 0n) || (sellPrice === null && !quota)) { warnings.push(`Paket “${validity || quota || '?'}” dilewati: belum ada masa aktif atau harga jual.`); continue; }
       if (sellPrice !== null && costPrice !== null && costPrice > 0n) {
-        if (costPrice > sellPrice) return { clarification: `Paket ${validity}: modal ${formatIdr(costPrice)} lebih besar dari harga jual ${formatIdr(sellPrice)}. Mana yang benar?` };
-        if (costPrice * 5n < sellPrice) return { clarification: `Paket ${validity}: modal ${formatIdr(costPrice)} jauh di bawah harga jual ${formatIdr(sellPrice)}. Maksudnya modal ${formatIdr(costPrice * 10n)}? Sebutkan nominal yang benar.` };
+        if (costPrice > sellPrice) warnings.push(`⚠️ Paket ${validity}: modal ${formatIdr(costPrice)} lebih besar dari harga jual ${formatIdr(sellPrice)} (diterapkan apa adanya; koreksi bila salah ketik).`);
+        else if (costPrice * 5n < sellPrice) warnings.push(`⚠️ Paket ${validity}: modal ${formatIdr(costPrice)} tampak terlalu kecil dibanding harga jual ${formatIdr(sellPrice)} (diterapkan apa adanya; koreksi bila salah ketik, mis. ${formatIdr(costPrice * 10n)}).`);
       }
       packages.push({ validity, quota, sellPrice, costPrice: costPrice !== null && costPrice > 0n ? costPrice : null,
         stock: typeof entry.stock === 'number' && Number.isSafeInteger(entry.stock) && entry.stock >= 0 && entry.stock <= 1_000_000 ? entry.stock : null });
@@ -854,26 +858,28 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     const replaceAll = data.missing === 'retire';
     const quotaNotes = await loadQuotas();
     const rows = products.map(product => ({ ...product, quota: quotaNotes.get(product.id) ?? null }));
-    const plan = normalizeOnly ? planProviderNormalize(provider, rows) : planProviderPackages(provider, rows, packages, { replaceAll });
-    if (plan.invalid.length) return { clarification: `Ada paket yang belum terbaca: ${plan.invalid.join('; ')}.` };
+    if (!packages.length && !normalizeOnly) return { clarification: `Tidak ada paket ${provider} yang bisa diproses: ${warnings.join(' ') || 'sebutkan hari dan harga jual.'}` };
+    const plan = normalizeOnly ? planProviderNormalize(provider, rows) : planProviderPackages(provider, rows, packages, { replaceAll, resolveAmbiguous: true });
+    for (const problem of plan.invalid) warnings.push(`Dilewati: ${problem}.`);
     if (plan.ambiguous.length) return { clarification: `Masa aktif yang sama punya beberapa produk di ${plan.provider}: ${plan.ambiguous.map(item => `${item.label} → ${item.names.join(' | ')}`).join('; ')}. Bilang “ganti semua” kalau semua yang lama diganti daftar ini (yang lama dihapus atau dinonaktifkan), atau sebutkan produk mana yang dimaksud.` };
-    if (!plan.updates.length && !plan.creates.length) return { clarification: `Tidak ada paket yang bisa diproses untuk ${provider}.` };
+    if (!plan.updates.length && !plan.creates.length) return { clarification: `Tidak ada paket yang bisa diproses untuk ${provider}. ${warnings.join(' ')}`.trim() };
+    // Kategori paket baru: yang disebut owner, kalau tidak "Voucher"; dibuat otomatis bila belum ada.
     let fallbackCategoryId: number | null = null;
+    const fallbackCategoryName = text('category', 60) ?? 'Voucher';
     if (plan.creates.some(made => made.categoryId === null)) {
-      const categoryName = text('category', 60);
-      const category = categoryName ? await prisma.category.findFirst({ where: { name: { equals: categoryName, mode: 'insensitive' } }, select: { id: true } }) : null;
-      if (!category) return { clarification: `Belum ada produk ${provider} di katalog, jadi kategori paket barunya belum jelas. Sebutkan kategorinya (mis. Voucher).` };
-      fallbackCategoryId = category.id;
+      const category = await prisma.category.findFirst({ where: { name: { equals: fallbackCategoryName, mode: 'insensitive' } }, select: { id: true } });
+      fallbackCategoryId = category?.id ?? null;
     }
     const zeroIds = data.missing === 'zero' ? plan.missing.filter(item => item.stock > 0).map(item => item.id) : [];
     const lines: Array<{ label: string; value: string; emphasis?: boolean }> = formatPackagePlan(plan, formatIdr).map(value => ({ label: '', value }));
     if (plan.retire.length) lines.push({ label: 'Diganti daftar ini (dihapus bila belum punya riwayat, kalau punya dinonaktifkan)', value: plan.retire.map(item => item.name).join(', ') });
     if (plan.missing.length) lines.push({ label: zeroIds.length ? 'Tidak ada di daftar (stok dinolkan)' : 'Tidak ada di daftar (dibiarkan)', value: plan.missing.map(item => item.name).join(', ') });
+    for (const warning of warnings) lines.push({ label: '', value: warning });
     return build(plan.retire.length ? 'provider.replace' : 'provider.sync', `Draf daftar paket ${plan.provider}`, lines, {
       provider: plan.provider,
       updates: plan.updates.filter(update => update.kind !== 'SAME').map(update => ({ id: update.id, quota: update.quota, name: update.to.name, validity: update.to.validity, sellPrice: update.to.sellPrice.toString(), costPrice: update.to.costPrice.toString() })),
       creates: plan.creates.map(made => ({ quota: made.quota, name: made.name, validity: made.validity, sellPrice: made.sellPrice.toString(), costPrice: made.costPrice.toString(), stock: made.stock,
-        categoryId: made.categoryId ?? fallbackCategoryId, subcategoryId: made.subcategoryId, provider: made.provider })),
+        categoryId: made.categoryId ?? fallbackCategoryId, categoryName: fallbackCategoryName, subcategoryId: made.subcategoryId, provider: made.provider })),
       zeroIds, retireIds: plan.retire.map(item => item.id),
     });
   }
@@ -985,11 +991,21 @@ function queryForAction(action: OwnerAgentAction): string | null {
 }
 
 // Perubahan yang dianggap aman langsung dijalankan tanpa tombol; hanya penghapusan dan perubahan massal tetap minta satu konfirmasi.
+// Panggilan AI gagal sesaat (timeout/format) tidak boleh langsung berakhir "gangguan": coba sekali lagi.
+async function interpretWithRetry(input: Parameters<typeof interpretOwnerTurn>[0]) {
+  try { return await interpretOwnerTurn(input); }
+  catch (error) {
+    if (!(error instanceof OwnerAgentUnavailable) || error.diagnostics.category === 'missing_configuration') throw error;
+    return interpretOwnerTurn(input);
+  }
+}
 // OWNER_AUTO_APPLY=0 mematikan eksekusi otomatis (dipakai tes agar jalur draf + konfirmasi tetap teruji).
 const ownerAutoApply = () => process.env.OWNER_AUTO_APPLY !== '0';
-const OWNER_CONFIRM_REQUIRED = new Set<string>(['catalog.delete', 'provider.replace', 'catalog.replace', 'category.delete', 'subcategory.delete', 'debt.delete', 'opname.delete', 'price.bulk', 'catalog.cleanup',
+const OWNER_CONFIRM_LIST: string[] = ['catalog.delete', 'provider.replace', 'catalog.replace', 'category.delete', 'subcategory.delete', 'debt.delete', 'opname.delete', 'price.bulk', 'catalog.cleanup',
   // Menimpa saldo atau mengubah/membatalkan catatan penjualan dan opname: salah tafsir langsung berdampak ke uang, jadi tetap satu ketukan.
-  'balance.update', 'sale.return', 'sale.edit', 'shift.close', 'opname.apply']);
+  'balance.update', 'sale.return', 'sale.edit', 'shift.close', 'opname.apply'];
+// Otonom penuh: tidak ada konfirmasi kecuali OWNER_CONFIRM_DESTRUCTIVE=1 (jaring pengaman opsional).
+const OWNER_CONFIRM_REQUIRED = new Set<string>(process.env.OWNER_CONFIRM_DESTRUCTIVE === '1' ? OWNER_CONFIRM_LIST : []);
 // Produk apa saja yang disentuh draf ini (untuk jejak batal). null = jenis perubahan yang tidak bisa dibatalkan otomatis.
 async function undoPlanFor(draftId: string): Promise<{ ids: number[]; created: Array<{ name: string; categoryId: number }> } | null> {
   const row = await prisma.telegramDraft.findUnique({ where: { id: draftId }, select: { kind: true, payload: true } });
@@ -1111,7 +1127,11 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
       else responses.push(`Saya belum menemukan barang “${query}” di katalog RMCS.`);
       continue;
     }
-    if (products.length > 1 && (action.kind.startsWith('propose_') || action.kind === 'get_product_details' || action.kind === 'get_inventory')) {
+    if (products.length > 1 && action.kind.startsWith('propose_')) {
+      // Otonom: pakai kecocokan terbaik dan sebut asumsinya, jangan bertanya.
+      responses.push(`Memakai “${products[0].name}” untuk “${query}” (yang mirip: ${products.slice(1, 4).map(product => product.name).join(' | ')}).`);
+      products = [products[0]];
+    } else if (products.length > 1 && (action.kind === 'get_product_details' || action.kind === 'get_inventory')) {
       state.pendingMatches.push({ actionIndex: index, query, candidateIds: products.map(product => product.id) });
       continue;
     }
@@ -1120,7 +1140,7 @@ async function renderOwnerActions(chatId: bigint, ownerId: number, rowId: string
     } else if (action.kind === 'get_product_details' || action.kind === 'get_inventory') {
       responses.push(productDescription(products[0]));
     } else if (action.kind.startsWith('propose_')) {
-      if (!selectedId && !strictProductMatch(query, products[0])) weakMatch = true;
+      if (process.env.OWNER_CONFIRM_DESTRUCTIVE === '1' && !selectedId && !strictProductMatch(query, products[0])) weakMatch = true;
       const proposal = await planOwnerOperations(action, products[0], ownerId);
       if (proposal.operations.length) { operations.push(...proposal.operations); labels.push(...proposal.labels); }
       else responses.push(...proposal.labels);
@@ -1788,8 +1808,13 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
       }
       const memories = await prisma.assistantMemory.findMany({ where: { active: true }, orderBy: { id: 'desc' }, take: 30, select: { kind: true, term: true, content: true } });
       const memoryContext = memories.map(memory => JSON.stringify({ kind: memory.kind, term: memory.term, content: memory.content })).join(' ');
-      const turn = await interpretOwnerTurn({ text, history: state.history, currentActions: currentProposal, memoryContext,
-        apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL });
+      // Daftar voucher per provider yang teratur dibaca langsung tanpa AI (cepat dan pasti); sisanya ditafsirkan AI.
+      const quickLists = parseProviderLists(text);
+      const turn: Awaited<ReturnType<typeof interpretOwnerTurn>> = quickLists
+        ? { reply: 'Siap, langsung saya jalankan.', clarification: null, actions: quickLists.map(list => ({ kind: 'propose_business_action' as const, action: 'provider_sync' as const,
+            data: { provider: list.provider, packages: list.packages, ...(list.replaceAll ? { missing: 'retire' } : {}) } })) }
+        : await interpretWithRetry({ text, history: state.history, currentActions: currentProposal, memoryContext,
+          apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL });
       const ownerEvidence = [...state.history.filter(message => message.role === 'user').map(message => message.content), text]
         .join(' ').toLocaleLowerCase('id-ID').replace(/\s+/g, ' ');
       const validatedActions = turn.actions.map(action => action.kind === 'propose_stock_adjustment' && action.reason &&
@@ -1799,7 +1824,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
       state.selected = state.selected.filter(item => queryForAction(state.actions[item.actionIndex]) === item.query);
       const reply = uniqueMessages([turn.reply, turn.clarification]);
       const hasBalanceAction = state.actions.some(action => action.kind === 'propose_business_action' && action.action === 'balance_update');
-      const historyReply = state.actions.length && !hasBalanceAction ? (ownerAutoApply() ? 'Saya sudah meninjau permintaan. Perubahan yang aman langsung diterapkan; hapus, ubah massal, dan perubahan saldo/penjualan menunggu tombol konfirmasi.' : 'Saya sudah meninjau permintaan. Rencana perubahan hanya akan diterapkan setelah tombol konfirmasi ditekan.') : reply;
+      const historyReply = state.actions.length && !hasBalanceAction ? (ownerAutoApply() ? 'Saya sudah menjalankan permintaan.' : 'Saya sudah meninjau permintaan. Rencana perubahan hanya akan diterapkan setelah tombol konfirmasi ditekan.') : reply;
       state.history = [...state.history, { role: 'user' as const, content: text }, { role: 'assistant' as const, content: historyReply }].slice(-12);
       return await renderOwnerActions(chatId, ownerId, rowId, state, reply, priorActions);
     } catch (error) {

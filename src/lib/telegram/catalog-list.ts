@@ -36,7 +36,7 @@ function categoryKey(value: string | null | undefined): string {
   return (value ?? '').toLocaleLowerCase('id-ID').replace(/[^a-z0-9]+/g, '');
 }
 
-export function planCatalogList(rows: ListRow[], items: ListItem[], options: { defaultCategory?: string | null; replaceAll?: boolean } = {}): ListPlan {
+export function planCatalogList(rows: ListRow[], items: ListItem[], options: { defaultCategory?: string | null; replaceAll?: boolean; resolveAmbiguous?: boolean } = {}): ListPlan {
   const plan: ListPlan = { updates: [], creates: [], retire: [], missing: [], ambiguous: [], invalid: [] };
   const used = new Set<number>();
   const scopeKey = categoryKey(options.defaultCategory);
@@ -59,7 +59,10 @@ export function planCatalogList(rows: ListRow[], items: ListItem[], options: { d
     const exact = free.filter(row => nameKey(row.name) === nameKey(name));
     let match: ListRow | null = null;
     if (exact.length === 1) match = exact[0];
-    else if (exact.length > 1) { plan.ambiguous.push({ label: name, names: exact.map(row => row.name) }); continue; }
+    else if (exact.length > 1) {
+      if (options.resolveAmbiguous) match = [...exact].sort((a, b) => b.stock - a.stock || a.id - b.id)[0];
+      else { plan.ambiguous.push({ label: name, names: exact.map(row => row.name) }); continue; }
+    }
     else {
       // 2) semua kata khas cocok pada satu barang; bila beberapa, pilih yang namanya paling pendek (paling mirip) bila jelas
       const loose = free.filter(row => strictProductMatch(name, row));
@@ -69,6 +72,7 @@ export function planCatalogList(rows: ListRow[], items: ListItem[], options: { d
         const shortest = Math.min(...lengths);
         const closest = loose.filter((_, index) => lengths[index] === shortest);
         if (closest.length === 1) match = closest[0];
+        else if (options.resolveAmbiguous) match = [...closest].sort((a, b) => b.stock - a.stock || a.id - b.id)[0];
         else { plan.ambiguous.push({ label: name, names: loose.map(row => row.name) }); continue; }
       }
     }
