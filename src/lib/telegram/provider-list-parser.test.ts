@@ -85,3 +85,13 @@ test('parseEditStatements: ganti nama dan harga dibaca tanpa AI; kalimat lain ti
   assert.equal(parseEditStatements('ganti 10GB jadi 8GB'), null);
   assert.equal(parseEditStatements('harga Surya berapa'), null);
 });
+
+test('kalimat paket provider tidak ditangkap jalur hapus/ubah barang biasa', async () => {
+  const { parseDeleteStatement, parseEditStatements } = await import('./provider-list-parser');
+  assert.equal(parseEditStatements('harga jual Telkomsel 3 hari jadi 20rb'), null);
+  assert.equal(parseEditStatements('ubah harga modal Axis 5 hari jadi 9000'), null);
+  assert.equal(parseDeleteStatement('hapus Telkomsel 5 hari'), null);
+  assert.equal(parseDeleteStatement('hapus semua voucher telkomsel'), null);
+  assert.equal(parseDeleteStatement('hapus paket XL 7GB'), null);
+  assert.notEqual(parseDeleteStatement('hapus semua rokok'), null);
+});

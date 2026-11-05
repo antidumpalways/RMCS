@@ -132,12 +132,15 @@ export function parseOnlyStatement(text: string): OnlyStatement | null {
   return { category, items: items.filter(item => !seen.has(item.name.toLocaleLowerCase('id-ID')) && seen.add(item.name.toLocaleLowerCase('id-ID'))) };
 }
 
+// Kalimat paket provider/voucher (hari, GB, nama provider) bukan barang biasa: biarkan ke jalur paket provider.
+const PROVIDER_TALK = /\b(?:telkomsel|simpati|kartu as|loop|axis|xl|indosat|im3|tri|three|smartfren|by\.?u|byu|voucher|paket|kuota|kuota|data)\b|\d+\s*(?:hari|hr|gb|mb)\b|\bgb\b/i;
 // "hapus semua rokok" / "hapus Surya 12, Gudang Garam": penghapusan biasa dibaca tanpa AI.
 export type DeleteStatement = { category: string | null; names: string[] };
 const DELETE_SKIP = /^(?:kategori|subkategori|sub|hutang|utang|lokasi|rak|memori|ingatan|penjualan|transaksi|catatan|pengeluaran|shift|rekap|opname|riwayat|laporan|draf|draft)\b/i;
 export function parseDeleteStatement(text: string): DeleteStatement | null {
   const rawLines = text.trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   if (!rawLines.length || rawLines.length > 41 || text.length > 2000) return null;
+  if (PROVIDER_TALK.test(text)) return null;
   const head = /^(?:tolong\s+|oke\s+|ok\s+)?(?:hapus|buang|delete)\b[\s:,-]*(.*?)[.!\s]*$/iu.exec(rawLines[0]);
   if (!head) return null;
   const cleanName = (value: string) => value.replace(/^[\s•*\-–·\d.)]+(?=\p{L})/u, '').replace(/\s*[·|(].*$/u, '').replace(/\s+(?:stok|harga|rp)\b.*$/iu, '').trim();
@@ -171,6 +174,7 @@ const NAME_OK = /^[\p{L}\p{N}][\p{L}\p{N}\s.\-/]*$/u;
 export function parseEditStatements(text: string): EditStatement[] | null {
   const lines = text.trim().split(/\r?\n/).map(line => line.trim().replace(/\s+/g, ' ')).filter(Boolean);
   if (!lines.length || lines.length > 20 || text.length > 1500) return null;
+  if (PROVIDER_TALK.test(text)) return null;
   const out: EditStatement[] = [];
   for (const line of lines) {
     const rename = /^(?:tolong\s+)?(?:ganti|ubah|rename|edit)\s+nama(?:\s+barang)?\s+(.+?)\s+(?:jadi|menjadi|ke|dengan)\s+(.+?)[.!\s]*$/iu.exec(line);
