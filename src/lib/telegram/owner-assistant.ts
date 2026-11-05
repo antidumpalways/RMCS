@@ -955,7 +955,7 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
   }  if (kind === 'catalog_delete') {
     const name = text('productName'); if (!name) return { clarification: 'Sebutkan nama barang yang ingin dihapus.' };
     const resolved = await chooseProduct(name); if (!resolved.product) return { clarification: resolved.issue };
-    return build('catalog.delete', 'Draf hapus barang', [{ label: 'Barang', value: resolved.product.name, emphasis: true }, { label: 'Catatan', value: 'Penghapusan ditolak jika barang punya riwayat transaksi/stok.' }], { productId: resolved.product.id });
+    return build('catalog.delete', 'Draf hapus barang', [{ label: 'Dihapus', value: resolved.product.name, emphasis: true }], { productId: resolved.product.id });
   }
   if (kind === 'catalog_audit') {
     const rawFocus = Array.isArray(data.focus) ? data.focus : [];
