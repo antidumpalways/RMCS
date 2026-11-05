@@ -136,8 +136,19 @@ export function parseOnlyStatement(text: string): OnlyStatement | null {
 export type DeleteStatement = { category: string | null; names: string[] };
 const DELETE_SKIP = /^(?:kategori|subkategori|sub|hutang|utang|lokasi|rak|memori|ingatan|penjualan|transaksi|catatan|pengeluaran|shift|rekap|opname|riwayat|laporan|draf|draft)\b/i;
 export function parseDeleteStatement(text: string): DeleteStatement | null {
-  const line = text.trim().replace(/\s+/g, ' ');
-  if (!line || line.includes(String.fromCharCode(10)) || line.length > 200) return null;
+  const rawLines = text.trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (!rawLines.length || rawLines.length > 41 || text.length > 2000) return null;
+  const head = /^(?:tolong\s+|oke\s+|ok\s+)?(?:hapus|buang|delete)\b[\s:,-]*(.*?)[.!\s]*$/iu.exec(rawLines[0]);
+  if (!head) return null;
+  const cleanName = (value: string) => value.replace(/^[\s•*\-–·\d.)]+(?=\p{L})/u, '').replace(/\s*[·|(].*$/u, '').replace(/\s+(?:stok|harga|rp)\b.*$/iu, '').trim();
+  // Daftar bertitik di baris berikutnya (mis. hasil salinan daftar katalog): "hapus ini" + baris "• Nama · stok 10 · Rp 70.000".
+  if (rawLines.length > 1) {
+    if (!/^(?:ini|itu|yang ini|yg ini|semua ini|berikut|barang ini|barang berikut|daftar ini|)$/i.test(head[1].trim())) return null;
+    const names = rawLines.slice(1).map(cleanName);
+    return names.every(name => name.length >= 2 && name.length <= 60 && /^[\p{L}\p{N}][\p{L}\p{N}\s.\-/]*$/u.test(name)) ? { category: null, names } : null;
+  }
+  const line = rawLines[0].replace(/\s+/g, ' ');
+  if (line.length > 200) return null;
   const match = /^(?:tolong\s+|oke\s+|ok\s+)?(?:hapus|buang|delete)\s+(.+?)[.!\s]*$/iu.exec(line);
   if (!match) return null;
   let rest = match[1].replace(/^(?:barang|produk|item)\s+/i, '');

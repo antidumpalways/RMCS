@@ -67,3 +67,11 @@ test('parseDeleteStatement: hapus semua kategori / beberapa barang; perintah lai
   assert.equal(parseDeleteStatement('hapus utang budi'), null);
   assert.equal(parseDeleteStatement('hapus pertalite harga 12000'), null);
 });
+
+test('parseDeleteStatement: daftar bertitik hasil salinan katalog ("hapus ini" + baris • Nama · stok · Rp)', async () => {
+  const { parseDeleteStatement } = await import('./provider-list-parser');
+  const nl = String.fromCharCode(10);
+  const text = ['hapus ini', '', ' Liquid 3mg 30ml · stok 10 · Rp 70.000', '• Liquid 6mg 30ml · stok 10 · Rp 70.000', ' Marlboro Ice Burst 12 · stok 15 · Rp 32.000', '• Pod Refill · stok 15 · Rp 35.000'].join(nl);
+  assert.deepEqual(parseDeleteStatement(text), { category: null, names: ['Liquid 3mg 30ml', 'Liquid 6mg 30ml', 'Marlboro Ice Burst 12', 'Pod Refill'] });
+  assert.equal(parseDeleteStatement(['hapus semua yang mahal', '• A'].join(nl)), null);
+});
