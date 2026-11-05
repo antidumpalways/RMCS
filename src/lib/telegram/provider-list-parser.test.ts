@@ -75,3 +75,13 @@ test('parseDeleteStatement: daftar bertitik hasil salinan katalog ("hapus ini" +
   assert.deepEqual(parseDeleteStatement(text), { category: null, names: ['Liquid 3mg 30ml', 'Liquid 6mg 30ml', 'Marlboro Ice Burst 12', 'Pod Refill'] });
   assert.equal(parseDeleteStatement(['hapus semua yang mahal', '• A'].join(nl)), null);
 });
+
+test('parseEditStatements: ganti nama dan harga dibaca tanpa AI; kalimat lain tidak dibajak', async () => {
+  const { parseEditStatements } = await import('./provider-list-parser');
+  assert.deepEqual(parseEditStatements('ganti nama Surya 12 jadi Surya Pro 12'), [{ kind: 'rename', from: 'Surya 12', to: 'Surya Pro 12' }]);
+  assert.deepEqual(parseEditStatements('harga jual Surya 12 jadi 28rb'), [{ kind: 'price', name: 'Surya 12', field: 'sellPrice', amount: '28rb' }]);
+  assert.deepEqual(parseEditStatements(['ubah harga modal Pertalite jadi 11000', 'harga jual Pertalite jadi 12.000'].join(String.fromCharCode(10))), [
+    { kind: 'price', name: 'Pertalite', field: 'costPrice', amount: '11000' }, { kind: 'price', name: 'Pertalite', field: 'sellPrice', amount: '12.000' }]);
+  assert.equal(parseEditStatements('ganti 10GB jadi 8GB'), null);
+  assert.equal(parseEditStatements('harga Surya berapa'), null);
+});

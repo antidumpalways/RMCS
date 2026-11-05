@@ -162,3 +162,32 @@ export function parseDeleteStatement(text: string): DeleteStatement | null {
   if (!names.length || names.length > 8 || !names.every(name => name.length >= 2 && name.length <= 60 && /^[\p{L}\p{N}][\p{L}\p{N}\s.\-/]*$/u.test(name))) return null;
   return { category: null, names };
 }
+
+// "ganti nama Surya 12 jadi Surya Pro 12" / "harga jual Surya 12 jadi 28rb" / "harga modal Pertalite 11000": ubah nama atau harga dibaca tanpa AI.
+export type EditStatement =
+  | { kind: 'rename'; from: string; to: string }
+  | { kind: 'price'; name: string; field: 'sellPrice' | 'costPrice'; amount: string };
+const NAME_OK = /^[\p{L}\p{N}][\p{L}\p{N}\s.\-/]*$/u;
+export function parseEditStatements(text: string): EditStatement[] | null {
+  const lines = text.trim().split(/\r?\n/).map(line => line.trim().replace(/\s+/g, ' ')).filter(Boolean);
+  if (!lines.length || lines.length > 20 || text.length > 1500) return null;
+  const out: EditStatement[] = [];
+  for (const line of lines) {
+    const rename = /^(?:tolong\s+)?(?:ganti|ubah|rename|edit)\s+nama(?:\s+barang)?\s+(.+?)\s+(?:jadi|menjadi|ke|dengan)\s+(.+?)[.!\s]*$/iu.exec(line);
+    if (rename) {
+      const from = rename[1].trim(), to = rename[2].trim();
+      if (!NAME_OK.test(from) || !NAME_OK.test(to) || to.length > 80 || from.length > 80) return null;
+      out.push({ kind: 'rename', from, to });
+      continue;
+    }
+    const price = /^(?:tolong\s+)?(?:(?:ganti|ubah|edit|set|naikkan|turunkan)\s+)?harga\s+(jual|modal|beli)\s+(.+?)\s+(?:jadi|menjadi|ke|=)\s+(?:rp\.?\s*)?(\d[\d.,]*\s*(?:rb|ribu|k|jt|juta)?)[.!\s]*$/iu.exec(line);
+    if (price) {
+      const name = price[2].trim();
+      if (!NAME_OK.test(name) || name.length > 80) return null;
+      out.push({ kind: 'price', name, field: price[1].toLowerCase() === 'jual' ? 'sellPrice' : 'costPrice', amount: price[3].trim() });
+      continue;
+    }
+    return null;
+  }
+  return out;
+}

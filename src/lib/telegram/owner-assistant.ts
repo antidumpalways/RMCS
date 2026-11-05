@@ -15,7 +15,7 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
-import { parseDeleteStatement, parseOnlyStatement, parseProviderLists } from './provider-list-parser';
+import { parseDeleteStatement, parseEditStatements, parseOnlyStatement, parseProviderLists } from './provider-list-parser';
 import { formatListPlan, planCatalogList, type ListItem } from './catalog-list';
 import { formatPackagePlan, planProviderNormalize, planProviderPackages, type PackageInput } from './provider-packages';
 import { loadQuotas } from '@/lib/services/product-quota';
@@ -1828,7 +1828,12 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
       const quickLists = parseProviderLists(text);
       const quickOnly = quickLists ? null : parseOnlyStatement(text);
       const quickDelete = quickLists || quickOnly ? null : parseDeleteStatement(text);
-      const turn: Awaited<ReturnType<typeof interpretOwnerTurn>> = quickDelete
+      const quickEdit = quickLists || quickOnly || quickDelete ? null : parseEditStatements(text);
+      const turn: Awaited<ReturnType<typeof interpretOwnerTurn>> = quickEdit
+        ? { reply: 'Siap, langsung saya ubah.', clarification: null, actions: quickEdit.map(edit => edit.kind === 'rename'
+            ? { kind: 'propose_business_action' as const, action: 'catalog_update' as const, data: { productName: edit.from, name: edit.to } }
+            : { kind: 'propose_business_action' as const, action: 'catalog_sync' as const, data: { items: [{ name: edit.name, [edit.field]: edit.amount }] } }) }
+        : quickDelete
         ? { reply: 'Siap, langsung saya hapus.', clarification: null, actions: quickDelete.category
             ? [{ kind: 'propose_business_action' as const, action: 'catalog_sync' as const, data: { category: quickDelete.category, items: [], missing: 'retire' } }]
             : quickDelete.names.map(name => ({ kind: 'propose_business_action' as const, action: 'catalog_delete' as const, data: { productName: name } })) }
