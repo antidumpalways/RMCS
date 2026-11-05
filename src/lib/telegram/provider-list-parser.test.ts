@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseProviderLists } from './provider-list-parser';
+import { parseOnlyStatement, parseProviderLists } from './provider-list-parser';
 
 test('daftar Telkomsel persis seperti yang diketik owner dibaca tanpa AI, termasuk dua paket di hari yang sama', () => {
   const lists = parseProviderLists(['Telkomsel, ganti semua', '3 hari 5gb modal 13300 harga jual 15000', '5 hari 5gb modal 15000 harga jual 17000',
@@ -41,4 +41,12 @@ test('kalimat bebas yang kebetulan memuat hari dan harga TIDAK ditangkap (disera
   assert.equal(parseProviderLists('tambah barang baru Telkomsel Voucher Telkomsel 7GB 5 Hari kategori Voucher harga jual 25000 modal 22000 stok 4'), null);
   assert.equal(parseProviderLists('naikkan harga axis 3 hari jadi harga jual 16000'), null);
   assert.equal(parseProviderLists('Axis\n3 hari harga jual 15rb tolong ya'), null);
+});
+
+test('"X yang kita jual cuma Y" dibaca tanpa AI; kalimat lain tidak ikut tertangkap', () => {
+  assert.deepEqual(parseOnlyStatement('Minyak yg kita jual itu cuma pertalite'), { category: 'Minyak', items: ['Pertalite'] });
+  assert.deepEqual(parseOnlyStatement('oke catat, rokok yang dijual hanya Surya dan Sampoerna aja.'), { category: 'rokok', items: ['Surya', 'Sampoerna'] });
+  assert.equal(parseOnlyStatement('harga pertalite berapa?'), null);
+  assert.equal(parseOnlyStatement('kita jual banyak macam minyak, bukan cuma pertalite'), null);
+  assert.equal(parseOnlyStatement('tolong hapus semua yang kita jual cuma yang murah'), null);
 });

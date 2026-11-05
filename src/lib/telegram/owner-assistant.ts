@@ -15,7 +15,7 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
-import { parseProviderLists } from './provider-list-parser';
+import { parseOnlyStatement, parseProviderLists } from './provider-list-parser';
 import { formatListPlan, planCatalogList, type ListItem } from './catalog-list';
 import { formatPackagePlan, planProviderNormalize, planProviderPackages, type PackageInput } from './provider-packages';
 import { loadQuotas } from '@/lib/services/product-quota';
@@ -824,6 +824,7 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
     const lines: Array<{ label: string; value: string; emphasis?: boolean }> = formatListPlan(plan, formatIdr).map(value => ({ label: '', value }));
     if (plan.retire.length) lines.push({ label: 'Diganti daftar ini (dihapus bila belum punya riwayat, kalau punya dinonaktifkan)', value: plan.retire.map(item => item.name).join(', ') });
     if (plan.missing.length) lines.push({ label: zeroIds.length ? 'Tidak ada di daftar (stok dinolkan)' : 'Tidak ada di daftar (dibiarkan)', value: plan.missing.map(item => item.name).slice(0, 15).join(', ') + (plan.missing.length > 15 ? ` …dan ${plan.missing.length - 15} lainnya` : '') });
+    for (const made of plan.creates) if (made.priceMissing) listWarnings.push(`⚠️ ${made.name}: harga jual belum diisi. Isi dengan: ${made.name.toLocaleLowerCase('id-ID')} harga 12rb.`);
     for (const warning of listWarnings) lines.push({ label: '', value: warning });
     const validityById = new Map(rows.map(row => [row.id, row.validity]));
     return build(plan.retire.length ? 'catalog.replace' : 'catalog.sync', 'Draf daftar barang', lines, {
@@ -1810,7 +1811,11 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
       const memoryContext = memories.map(memory => JSON.stringify({ kind: memory.kind, term: memory.term, content: memory.content })).join(' ');
       // Daftar voucher per provider yang teratur dibaca langsung tanpa AI (cepat dan pasti); sisanya ditafsirkan AI.
       const quickLists = parseProviderLists(text);
-      const turn: Awaited<ReturnType<typeof interpretOwnerTurn>> = quickLists
+      const quickOnly = quickLists ? null : parseOnlyStatement(text);
+      const turn: Awaited<ReturnType<typeof interpretOwnerTurn>> = quickOnly
+        ? { reply: 'Siap, kategori itu saya rapikan.', clarification: null, actions: [{ kind: 'propose_business_action' as const, action: 'catalog_sync' as const,
+            data: { category: quickOnly.category, items: quickOnly.items.map(name => ({ name })), missing: 'retire' } }] }
+        : quickLists
         ? { reply: 'Siap, langsung saya jalankan.', clarification: null, actions: quickLists.map(list => ({ kind: 'propose_business_action' as const, action: 'provider_sync' as const,
             data: { provider: list.provider, packages: list.packages, ...(list.replaceAll ? { missing: 'retire' } : {}) } })) }
         : await interpretWithRetry({ text, history: state.history, currentActions: currentProposal, memoryContext,

@@ -15,7 +15,7 @@ type Point = { name: string; sellPrice: bigint; costPrice: bigint; stock: number
 export type ListUpdate = { id: number; from: Point; to: Point; changed: boolean };
 export type ListCreate = {
   name: string; provider: string | null; validity: string | null; sellPrice: bigint; costPrice: bigint; costEstimated: boolean;
-  stock: number; category: string | null; categoryId: number | null; subcategoryId: number | null;
+  stock: number; category: string | null; categoryId: number | null; subcategoryId: number | null; priceMissing: boolean;
 };
 type Leftover = { id: number; name: string; stock: number };
 export type ListPlan = {
@@ -86,15 +86,16 @@ export function planCatalogList(rows: ListRow[], items: ListItem[], options: { d
     }
 
     // 3) tidak ada: barang baru
-    if (item.sellPrice === null) { plan.invalid.push(`${name}: barang baru perlu harga jual`); continue; }
+    const priceMissing = item.sellPrice === null;
+    const sellPrice = item.sellPrice ?? 0n;
     const category = item.category ?? options.defaultCategory ?? null;
     const sample = category ? rows.find(row => categoryKey(row.categoryName) === categoryKey(category)) : undefined;
     const given = item.costPrice;
     const margin = defaultMargin ?? (sample ? marginOf(rows.filter(row => row.categoryId === sample.categoryId)) : null);
-    const estimated = given === null && margin !== null && item.sellPrice > margin;
-    plan.creates.push({ name: item.newName?.trim() || name, provider: item.provider, validity: item.validity, sellPrice: item.sellPrice,
-      costPrice: given ?? (estimated ? item.sellPrice - margin! : 0n), costEstimated: given === null, stock: item.stock ?? 0,
-      category, categoryId: sample?.categoryId ?? null, subcategoryId: null });
+    const estimated = given === null && margin !== null && sellPrice > margin;
+    plan.creates.push({ name: item.newName?.trim() || name, provider: item.provider, validity: item.validity, sellPrice,
+      costPrice: given ?? (estimated ? sellPrice - margin! : 0n), costEstimated: given === null, stock: item.stock ?? 0,
+      category, categoryId: sample?.categoryId ?? null, subcategoryId: null, priceMissing });
   }
 
   const leftovers = scoped.filter(row => !used.has(row.id) && !plan.ambiguous.some(entry => entry.names.includes(row.name)));
@@ -117,7 +118,7 @@ export function formatListPlan(plan: ListPlan, formatMoney: (value: bigint) => s
     lines.push('• ' + parts.join('; '));
   }
   for (const made of plan.creates) {
-    lines.push(`• BARU ${made.name}${made.category ? ' [' + made.category + ']' : ''}: harga ${formatMoney(made.sellPrice)}; modal ${formatMoney(made.costPrice)}${made.costEstimated ? (made.costPrice > 0n ? ' (perkiraan dari margin biasa)' : ' (belum diisi)') : ''}; stok ${made.stock}`);
+    lines.push(`• BARU ${made.name}${made.category ? ' [' + made.category + ']' : ''}: harga ${made.priceMissing ? 'belum diisi' : formatMoney(made.sellPrice)}; modal ${formatMoney(made.costPrice)}${made.costEstimated ? (made.costPrice > 0n ? ' (perkiraan dari margin biasa)' : ' (belum diisi)') : ''}; stok ${made.stock}`);
   }
   return lines;
 }

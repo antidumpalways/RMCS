@@ -40,9 +40,11 @@ test('ganti semua: yang tidak disebut dipensiunkan, hanya di kategori yang diseb
   assert.equal(noScope.invalid.length, 1);
 });
 
-test('barang baru tanpa harga ditolak; ganti nama lewat newName; perubahan kosong ditandai tidak berubah', () => {
+test('barang baru tanpa harga tetap dibuat (harga ditandai belum diisi); ganti nama lewat newName; perubahan kosong ditandai tidak berubah', () => {
   const plan = planCatalogList(rokok, [item('Barang Baru'), item('Surya 12', null, null, null, { newName: 'Surya Pro 12' }), item('Surya 16')], { defaultCategory: 'Rokok' });
-  assert.equal(plan.invalid.length, 1);
+  assert.equal(plan.invalid.length, 0);
+  assert.equal(plan.creates[0].priceMissing, true);
+  assert.equal(plan.creates[0].sellPrice, 0n);
   assert.equal(plan.updates.find(update => update.id === 1)!.to.name, 'Surya Pro 12');
   assert.equal(plan.updates.find(update => update.id === 2)!.changed, false);
 });
@@ -51,4 +53,16 @@ test('kategori berbeda tidak tertukar: nama sama di kategori lain tidak ikut ter
   const catalog = [row(1, 'Kopi Hitam', 'Rokok', 5000n, 4000n, 5), row(2, 'Kopi Hitam', 'Minyak', 6000n, 5000n, 5)];
   const plan = planCatalogList(catalog, [item('Kopi Hitam', 7000n)], { defaultCategory: 'Minyak' });
   assert.equal(plan.updates[0].id, 2);
+});
+
+test('"minyak yang dijual cuma Pertalite": Pertalite dibuat tanpa harga, semua barang minyak lain dipensiunkan, kategori lain aman', () => {
+  const minyak = (id: number, name: string): ListRow => ({ id, name, provider: null, validity: null, sku: null, stock: 10, costPrice: 18000n, sellPrice: 20000n, categoryId: 5, categoryName: 'Minyak', subcategoryId: null });
+  const catalog = [minyak(1, 'Minyak Tanah 1L'), minyak(2, 'Minyak Goreng 1L'), minyak(3, 'Minyak Goreng 2L'), minyak(4, 'Minyak Kayu Putih 100ml'), minyak(5, 'Minyak Kemiri'), ...rokok];
+  const plan = planCatalogList(catalog, [item('Pertalite')], { defaultCategory: 'Minyak', replaceAll: true });
+  assert.equal(plan.creates.length, 1);
+  assert.equal(plan.creates[0].name, 'Pertalite');
+  assert.equal(plan.creates[0].categoryId, 5);
+  assert.equal(plan.creates[0].priceMissing, true);
+  assert.deepEqual(plan.retire.map(entry => entry.id).sort(), [1, 2, 3, 4, 5]);
+  assert.equal(plan.invalid.length, 0);
 });

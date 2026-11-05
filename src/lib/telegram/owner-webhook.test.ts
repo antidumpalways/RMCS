@@ -390,3 +390,25 @@ test('daftar Telkomsel dari owner (dua paket 5 hari) langsung diproses TANPA AI 
     assert.equal(businessWriteCounts.product, 0);
   });
 });
+
+test('"minyak yang kita jual cuma pertalite" langsung dirapikan tanpa AI: Pertalite dibuat, minyak lain digantikan', async () => {
+  const { handleTelegramWebhook } = await modules();
+  process.env.TELEGRAM_OWNER_IDS = '700123';
+  process.env.DEEPSEEK_API_KEY = 'test-api-key';
+  fakeDrafts.clear(); draftSequence = 0;
+  const base = { sku: null, provider: null, validity: null, stock: 10, minStock: 1, costPrice: 18_000n, sellPrice: 20_000n,
+    updatedAt: new Date('2026-01-01T00:00:00.000Z'), locationId: null, categoryId: 5, subcategoryId: null, category: { name: 'Minyak' }, location: null };
+  fakeProducts = [{ ...base, id: 1, name: 'Minyak Tanah 1L' }, { ...base, id: 2, name: 'Minyak Goreng 1L' }, { ...base, id: 3, name: 'Minyak Kemiri' }];
+  fakeCategories = [{ id: 5, name: 'Minyak' }];
+  businessWriteCounts = { product: 0, movement: 0 };
+  await withTelegramFetch(async sent => {
+    const result = await webhook(handleTelegramWebhook, privateUpdate(960, 'Minyak yg kita jual itu cuma pertalite'));
+    assert.equal(result.status, 200);
+    const text = sent.map(payload => String(payload.text ?? '')).join(String.fromCharCode(10));
+    assert.match(text, /BARU Pertalite/);
+    assert.match(text, /harga belum diisi/);
+    assert.match(text, /Minyak Tanah 1L, Minyak Goreng 1L, Minyak Kemiri/);
+    assert.doesNotMatch(text, /Audit selesai|gangguan|Mau saya/);
+    assert.equal(businessWriteCounts.product, 0);
+  });
+});

@@ -84,6 +84,8 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Modal janggal (`modal 2300 harga jual 25000`) → tetap diterapkan, dengan baris peringatan ⚠️.
 - [ ] Kategori paket/barang baru yang belum ada → dibuat otomatis.
 
+- [ ] `minyak yang kita jual cuma pertalite` → langsung: **Pertalite** dibuat (harga ditandai belum diisi) dan barang minyak lain dihapus/dinonaktifkan; tidak ada audit/pertanyaan. Lalu `pertalite harga 12rb` mengisi harganya.
+
 ## F. Pemeriksaan data setelah uji
 - [ ] Stok dan saldo akhir = stok/saldo awal ± perubahan yang memang dilakukan.
 - [ ] Tidak ada produk ganda yang tidak diinginkan.

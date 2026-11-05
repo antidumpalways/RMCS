@@ -78,3 +78,26 @@ export function parseProviderLists(text: string): QuickProviderList[] | null {
   const result = [...lists.values()].filter(list => list.packages.length);
   return result.length ? result : null;
 }
+
+// "Minyak yang kita jual itu cuma Pertalite" / "rokok yg dijual hanya surya dan sampoerna":
+// kategori itu kini hanya berisi barang yang disebut. Dibaca tanpa AI.
+export type OnlyStatement = { category: string; items: string[] };
+const ONLY_FILLER = new Set(['oke', 'ok', 'catat', 'ya', 'nih', 'eh', 'btw', 'info', 'jadi', 'itu', 'tolong', 'sekarang', 'mulai', 'dari', 'sini', 'yang', 'yg', 'kita', 'kami']);
+const ONLY_PATTERN = /^(.{2,60}?)\s+(?:yang|yg)\s+(?:kita\s+|kami\s+|saya\s+|aku\s+|toko\s+)?(?:jual|dijual|jualan)\s*(?:itu|nya|ini)?\s*(?:cuma|cuman|hanya)\s+(.+?)[.!\s]*$/iu;
+
+export function parseOnlyStatement(text: string): OnlyStatement | null {
+  const line = text.trim().replace(/\s+/g, ' ');
+  if (!line || line.includes(String.fromCharCode(10)) || line.length > 200) return null;
+  const match = ONLY_PATTERN.exec(line);
+  if (!match) return null;
+  // Kalimat perintah ("hapus semua yang kita jual cuma ...") bukan pernyataan isi kategori.
+  if (VERBS.test(match[1]) || /^(?:yang|semua)/i.test(match[2])) return null;
+  if (/semua/i.test(match[1])) return null;
+  const tokens = match[1].split(' ').map(token => token.replace(/[^\p{L}\p{N}.-]/gu, '')).filter(token => token && !ONLY_FILLER.has(token.toLocaleLowerCase('id-ID')));
+  if (!tokens.length || tokens.length > 2 || !tokens.every(token => /^[\p{L}][\p{L}\p{N}.-]*$/u.test(token))) return null;
+  const items = match[2].split(/\s*(?:,|&|\bdan\b|\bsama\b)\s*/i)
+    .map(item => item.replace(/\b(?:aja|saja)\b/gi, '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  if (!items.length || items.length > 10 || items.some(item => item.length < 2 || item.length > 40)) return null;
+  const title = (value: string) => value.split(' ').map(word => word.charAt(0).toLocaleUpperCase('id-ID') + word.slice(1)).join(' ');
+  return { category: tokens.join(' '), items: [...new Set(items.map(title))] };
+}
