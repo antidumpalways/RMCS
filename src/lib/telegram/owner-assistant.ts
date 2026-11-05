@@ -15,7 +15,7 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
-import { parseOnlyStatement, parseProviderLists } from './provider-list-parser';
+import { parseDeleteStatement, parseOnlyStatement, parseProviderLists } from './provider-list-parser';
 import { formatListPlan, planCatalogList, type ListItem } from './catalog-list';
 import { formatPackagePlan, planProviderNormalize, planProviderPackages, type PackageInput } from './provider-packages';
 import { loadQuotas } from '@/lib/services/product-quota';
@@ -786,8 +786,8 @@ async function planOwnerBusinessAction(kind: OwnerBusinessKind, data: Record<str
   }
   if (kind === 'catalog_sync') {
     const rawItems = Array.isArray(data.items) ? data.items.slice(0, 80) : [];
-    if (!rawItems.length) return { clarification: 'Sebutkan daftar barangnya: nama barang, dan harga atau stok yang mau diubah.' };
     const scopeCategory = text('category', 60);
+    if (!rawItems.length && !(data.missing === 'retire' && scopeCategory)) return { clarification: 'Sebutkan daftar barangnya: nama barang, dan harga atau stok yang mau diubah.' };
     const asText = (value: unknown) => typeof value === 'string' ? value : typeof value === 'number' ? String(value) : null;
     const items: ListItem[] = [];
     const listWarnings: string[] = [];
@@ -1822,7 +1822,12 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
       // Daftar voucher per provider yang teratur dibaca langsung tanpa AI (cepat dan pasti); sisanya ditafsirkan AI.
       const quickLists = parseProviderLists(text);
       const quickOnly = quickLists ? null : parseOnlyStatement(text);
-      const turn: Awaited<ReturnType<typeof interpretOwnerTurn>> = quickOnly
+      const quickDelete = quickLists || quickOnly ? null : parseDeleteStatement(text);
+      const turn: Awaited<ReturnType<typeof interpretOwnerTurn>> = quickDelete
+        ? { reply: 'Siap, langsung saya hapus.', clarification: null, actions: quickDelete.category
+            ? [{ kind: 'propose_business_action' as const, action: 'catalog_sync' as const, data: { category: quickDelete.category, items: [], missing: 'retire' } }]
+            : quickDelete.names.map(name => ({ kind: 'propose_business_action' as const, action: 'catalog_delete' as const, data: { productName: name } })) }
+        : quickOnly
         ? { reply: 'Siap, kategori itu saya rapikan.', clarification: null, actions: [{ kind: 'propose_business_action' as const, action: 'catalog_sync' as const,
             data: { category: quickOnly.category, items: quickOnly.items, missing: 'retire' } }] }
         : quickLists

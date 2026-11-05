@@ -57,3 +57,13 @@ test('kalimat owner persis: "hapus semua minyak, ... yg kita jual hanya minyak p
   assert.deepEqual(parseOnlyStatement('Minyak yg kita jual hanya pertalite modal 11000 harga jual 12000')?.items[0], { name: 'Pertalite', sellPrice: '12000', costPrice: '11000' });
   assert.equal(parseOnlyStatement('hapus semua minyak'), null);
 });
+
+test('parseDeleteStatement: hapus semua kategori / beberapa barang; perintah lain tidak dibajak', async () => {
+  const { parseDeleteStatement } = await import('./provider-list-parser');
+  assert.deepEqual(parseDeleteStatement('hapus semua rokok'), { category: 'rokok', names: [] });
+  assert.deepEqual(parseDeleteStatement('Hapus Surya 12, Gudang Garam dan Djarum'), { category: null, names: ['Surya 12', 'Gudang Garam', 'Djarum'] });
+  assert.equal(parseDeleteStatement('hapus kategori rokok'), null);
+  assert.equal(parseDeleteStatement('hapus semua minyak, yang kita jual hanya pertalite'), null);
+  assert.equal(parseDeleteStatement('hapus utang budi'), null);
+  assert.equal(parseDeleteStatement('hapus pertalite harga 12000'), null);
+});

@@ -66,3 +66,10 @@ test('"minyak yang dijual cuma Pertalite": Pertalite dibuat tanpa harga, semua b
   assert.deepEqual(plan.retire.map(entry => entry.id).sort(), [1, 2, 3, 4, 5]);
   assert.equal(plan.invalid.length, 0);
 });
+
+test('"hapus semua minyak": daftar kosong + replaceAll memensiunkan seluruh kategori itu saja', () => {
+  const minyak = (id: number, name: string): ListRow => ({ id, name, provider: null, validity: null, sku: null, stock: 3, costPrice: 1000n, sellPrice: 2000n, categoryId: 5, categoryName: 'Minyak', subcategoryId: null });
+  const plan = planCatalogList([minyak(1, 'Minyak Tanah 1L'), minyak(2, 'Minyak Kemiri'), ...rokok], [], { defaultCategory: 'Minyak', replaceAll: true });
+  assert.deepEqual(plan.retire.map(entry => entry.id).sort(), [1, 2]);
+  assert.equal(plan.creates.length, 0);
+});

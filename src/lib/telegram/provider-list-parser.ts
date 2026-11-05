@@ -131,3 +131,23 @@ export function parseOnlyStatement(text: string): OnlyStatement | null {
   const seen = new Set<string>();
   return { category, items: items.filter(item => !seen.has(item.name.toLocaleLowerCase('id-ID')) && seen.add(item.name.toLocaleLowerCase('id-ID'))) };
 }
+
+// "hapus semua rokok" / "hapus Surya 12, Gudang Garam": penghapusan biasa dibaca tanpa AI.
+export type DeleteStatement = { category: string | null; names: string[] };
+const DELETE_SKIP = /^(?:kategori|subkategori|sub|hutang|utang|lokasi|rak|memori|ingatan|penjualan|transaksi|catatan|pengeluaran|shift|rekap|opname|riwayat|laporan|draf|draft)\b/i;
+export function parseDeleteStatement(text: string): DeleteStatement | null {
+  const line = text.trim().replace(/\s+/g, ' ');
+  if (!line || line.includes(String.fromCharCode(10)) || line.length > 200) return null;
+  const match = /^(?:tolong\s+|oke\s+|ok\s+)?(?:hapus|buang|delete)\s+(.+?)[.!\s]*$/iu.exec(line);
+  if (!match) return null;
+  let rest = match[1].replace(/^(?:barang|produk|item)\s+/i, '');
+  if (DELETE_SKIP.test(rest) || /\b(?:cuma|hanya|kecuali|yang|yg|ganti|jadi|modal|harga|stok)\b/i.test(rest)) return null;
+  const all = /^semua\s+(.+)$/i.exec(rest);
+  if (all) {
+    const category = all[1].trim();
+    return category.split(' ').length <= 2 && /^[\p{L}][\p{L}\p{N}\s.-]*$/u.test(category) ? { category, names: [] } : null;
+  }
+  const names = rest.split(/\s*(?:,|&|\bdan\b)\s*/i).map(name => name.trim()).filter(Boolean);
+  if (!names.length || names.length > 8 || !names.every(name => name.length >= 2 && name.length <= 60 && /^[\p{L}\p{N}][\p{L}\p{N}\s.\-/]*$/u.test(name))) return null;
+  return { category: null, names };
+}

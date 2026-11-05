@@ -42,14 +42,23 @@ function optionalText(value: unknown, maxLength: number) {
 
 async function deleteCatalogProduct(payload: Record<string, unknown>) {
   const id = positiveId(payload.productId);
-  const product = await prisma.product.findUnique({ where: { id }, select: { id: true, name: true } });
+  const product = await prisma.product.findUnique({ where: { id }, select: { id: true, name: true, stock: true, costPrice: true, categoryId: true } });
   if (!product) throw new Error('Barang tidak ditemukan di katalog.');
-  const [sales, moves] = await Promise.all([
+  const [sales, moves, postings, opnames] = await Promise.all([
     prisma.saleItem.count({ where: { productId: id } }),
     prisma.inventoryMovement.count({ where: { productId: id } }),
+    prisma.telegramInventoryPosting.count({ where: { productId: id } }),
+    prisma.stockOpname.count({ where: { productId: id } }),
   ]);
-  if (sales > 0 || moves > 0) {
-    throw new Error(`Barang “${product.name}” punya riwayat. Gunakan koreksi stok, bukan menghapus.`);
+  if (sales > 0 || moves > 0 || postings > 0 || opnames > 0) {
+    // Punya riwayat: jangan ditolak, nonaktifkan (stok 0, nama diberi tanda) supaya riwayat tetap utuh.
+    await prisma.$transaction(async tx => {
+      if (product.stock > 0) await tx.inventoryMovement.create({ data: { productId: id, type: 'OWNER_PROVIDER_SYNC', qty: -product.stock, costAtTime: product.costPrice, note: 'Barang dihapus owner', userId: null } });
+      let inactiveName = product.name.endsWith(' (nonaktif)') ? product.name : `${product.name} (nonaktif)`;
+      if (await tx.product.findFirst({ where: { id: { not: id }, categoryId: product.categoryId, name: { equals: inactiveName, mode: 'insensitive' } }, select: { id: true } })) inactiveName = `${inactiveName} #${id}`;
+      await tx.product.update({ where: { id }, data: { stock: 0, validity: null, name: inactiveName.slice(0, 180) } });
+    });
+    return { ok: true as const, message: `Barang “${product.name}” punya riwayat, jadi dinonaktifkan (stok 0) supaya riwayatnya aman.` };
   }
   await deleteProduct(id);
   return { ok: true as const, message: `Barang “${product.name}” dihapus dari katalog.` };
