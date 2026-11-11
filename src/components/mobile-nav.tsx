@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { Home, Package, ArrowRightLeft, FileText, Tag, Wallet, Settings as Cog, ClipboardCheck, ClipboardList, MoreHorizontal, MessageCircle } from 'lucide-react';
+import { Home, ScanBarcode, ReceiptText, Boxes, Clock, Menu as MenuIcon, Package, ArrowRightLeft, FileText, Tag, Wallet, Settings as Cog, ClipboardCheck, ClipboardList, MoreHorizontal, MessageCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 
@@ -15,6 +15,7 @@ type NavItem = {
 
 const allItems: NavItem[] = [
   { href: '/', label: 'Ringkasan', icon: Home },
+  { href: '/kasir', label: 'Kasir', icon: ScanBarcode },
   { href: '/asisten', label: 'Asisten', icon: MessageCircle },
   { href: '/inventory', label: 'Stok', icon: Package },
   { href: '/transaksi', label: 'Transaksi', icon: ArrowRightLeft },
@@ -34,12 +35,11 @@ export function MobileNav({
   pathname: string;
 }) {
   const items = isKaryawan ? [
-    { href: '/', label: 'Beranda', icon: Home },
-    { href: '/transaksi', label: 'Penjualan', icon: ArrowRightLeft },
-    { href: '/asisten', label: 'Asisten', icon: MessageCircle },
-    { href: '/cek-stok', label: 'Cek Stok', icon: ClipboardCheck },
-    { href: '/piutang', label: 'Bon', icon: Wallet },
-    { href: '/serah-terima', label: 'Serah Terima', icon: ClipboardList },
+    { href: '/kasir', label: 'Kasir', icon: ScanBarcode },
+    { href: '/riwayat', label: 'Riwayat', icon: ReceiptText },
+    { href: '/stok', label: 'Stok', icon: Boxes },
+    { href: '/shift', label: 'Shift', icon: Clock },
+    { href: '/menu', label: 'Menu', icon: MenuIcon },
   ] : allItems;
   const [moreOpen, setMoreOpen] = React.useState(false);
 

@@ -57,7 +57,7 @@ export async function loginAction(formData: FormData) {
   }
   clearAttempts(username);
   await setSessionUser(user.id);
-  redirect('/');
+  redirect(user.role === 'karyawan' ? '/kasir' : '/');
 }
 
 export async function logoutAction() {
