@@ -8,7 +8,6 @@ dist
 .DS_Store
 prisma/dev.db
 prisma/dev.db-journal
-public/sw.js
 .vercel
 *.tsbuildinfo
 test-*.ts
