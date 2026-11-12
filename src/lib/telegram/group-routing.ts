@@ -76,3 +76,17 @@ export function isImplicitCatalogQuestion(text: string): boolean {
   if (asksPrice) return !hasMoney && !hasQuantityUnit;
   return asksAvailability && !hasMoney && !hasQuantityUnit;
 }
+
+const QUESTION_FILLER = new Set(['harga', 'harganya', 'berapa', 'berapaan', 'brp', 'ada', 'adakah', 'ready', 'stok', 'stoknya', 'stock', 'sisa', 'kosong', 'punya', 'masih', 'cek', 'cari', 'tolong', 'tanya', 'dong', 'ya', 'kak', 'bang', 'bos', 'min', 'gak', 'ga', 'nggak', 'tidak', 'yang', 'yg', 'untuk', 'buat', 'nya', 'sih', 'nih', 'kah', 'apakah', 'info', 'mau', 'kalau', 'kalo', 'itu', 'ini', 'si', 'jual', 'dijual']);
+
+// Mengambil nama barang dari pertanyaan harga/stok sederhana ("harga axis 3 hari berapa?" => "axis 3 hari").
+// Mengembalikan null bila bukan pertanyaan satu barang yang jelas, supaya ditangani asisten biasa.
+export function quickCatalogQuery(text: string): string | null {
+  const value = text.trim();
+  if (value.length < 4 || value.length > 120 || /\n/.test(value) || !looksLikeCatalogQuestion(value)) return null;
+  const words = value.toLocaleLowerCase('id-ID').replace(/[^\p{L}\p{N}.\s]/gu, ' ').split(/\s+/).filter(word => word && !QUESTION_FILLER.has(word));
+  if (!words.some(word => /\p{L}{2,}/u.test(word) && !/^\d/.test(word) && !['hari', 'hr', 'gb', 'mb', 'bulan', 'pcs', 'biji'].includes(word))) return null;
+  // Pertanyaan lanjutan seperti "yang 7 hari?" butuh konteks percakapan.
+  if (words.length > 8) return null;
+  return words.join(' ');
+}

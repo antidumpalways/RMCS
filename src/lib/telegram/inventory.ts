@@ -75,8 +75,27 @@ export function resolveInventoryProduct(
     const relaxed = matchTerms(withoutQuota);
     if (relaxed.status === 'MATCHED') return relaxed;
   }
+  // Nama provider sering ditulis dengan sebutan lain ("tri" untuk Three, "im3" untuk Indosat). Coba sebutan lain bila belum pasti.
+  const base = hasDay && withoutQuota.length ? withoutQuota : rawTerms;
+  for (const group of PROVIDER_SYNONYMS) {
+    const index = base.findIndex(term => group.includes(term));
+    if (index < 0) continue;
+    for (const alternative of group) {
+      if (alternative === base[index]) continue;
+      const swapped = matchTerms(base.map((term, position) => position === index ? alternative : term));
+      if (swapped.status === 'MATCHED') return swapped;
+    }
+  }
   return full;
 }
+
+const PROVIDER_SYNONYMS = [
+  ['tri', 'three', 'tree'],
+  ['indosat', 'im3', 'isat', 'ooredoo'],
+  ['telkomsel', 'tsel', 'simpati', 'tsell'],
+  ['smartfren', 'smart', 'smartfrend'],
+  ['byu', 'by.u'],
+];
 
 export function calculateUnrecordedQuantity(reportedQty: number, recordedWebQty: number, coverage: 'INCLUDES_APP_SALES' | 'UNRECORDED_ONLY') {
   if (!Number.isSafeInteger(reportedQty) || reportedQty < 0 || !Number.isSafeInteger(recordedWebQty) || recordedWebQty < 0) return null;

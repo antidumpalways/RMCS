@@ -15,6 +15,7 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
+import { quickCatalogQuery } from './group-routing';
 import { parseDeleteStatement, parseEditStatements, parseOnlyStatement, parseProviderLists } from './provider-list-parser';
 import { formatListPlan, planCatalogList, type ListItem } from './catalog-list';
 import { formatPackagePlan, planProviderNormalize, planProviderPackages, type PackageInput } from './provider-packages';
@@ -1783,7 +1784,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
   const command = /^\/([a-z]+)(?:@\w+)?(?:\s+([\s\S]*))?$/i.exec(text);
   if (command?.[1].toLowerCase() === 'menu' || command?.[1].toLowerCase() === 'fitur') return showOwnerHome(chatId, ownerId);
   if (command?.[1].toLowerCase() === 'start' || command?.[1].toLowerCase() === 'help') {
-    return sendTelegramMessage(chatId, 'Hai, saya asisten owner R-CELL. Buka /menu untuk memilih fitur. Anda juga bisa bertanya dengan kata-kata sendiri. Setiap perubahan menunggu konfirmasi sebelum diterapkan. /whoami menampilkan ID Telegram Anda.', ownerMenuKeyboard());
+    return sendTelegramMessage(chatId, 'Hai, saya asisten owner R-CELL. Buka /menu untuk memilih fitur. Anda juga bisa bertanya dengan kata-kata sendiri. ' + (ownerAutoApply() ? 'Perubahan langsung saya jalankan dan bisa dibatalkan lewat tombol ↩️ Batalkan (60 menit); hapus barang dan ubah saldo tetap meminta konfirmasi.' : 'Setiap perubahan menunggu konfirmasi sebelum diterapkan.') + ' /whoami menampilkan ID Telegram Anda.', ownerMenuKeyboard());
   }
   const startedAt = Date.now();
   try {
@@ -1919,6 +1920,19 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
     return;
   }
   try {
+    // Jalur cepat: "harga axis 3 hari berapa?" dijawab langsung dari katalog tanpa menunggu AI.
+    const quickQuery = quickCatalogQuery(input.text);
+    if (quickQuery) {
+      const matches = await findProductCandidates(quickQuery, await getCatalog());
+      if (matches.length >= 1 && matches.length <= 5) {
+        const response = matches.map(product => `• ${product.name}${product.quota ? ` (kuota ${product.quota})` : ''} — ${formatIdr(product.sellPrice)} · ${product.stock > 0 ? `stok ${product.stock}` : 'HABIS'}`).join('\n');
+        state.history = [...state.history, { role: 'user' as const, content: input.text.slice(0, 1000) }, { role: 'assistant' as const, content: response.slice(0, 1200) }].slice(-12);
+        state.lastReply = response;
+        state.processedUpdateIds = [...(state.processedUpdateIds ?? []), input.updateId].slice(-80);
+        await prisma.telegramDraft.update({ where: { id }, data: { payload: state as object, status: 'PENDING', expiresAt: new Date(Date.now() + GROUP_ASSISTANT_TTL) } });
+        return sendTelegramMessage(input.chatId, response);
+      }
+    }
     const turn = await interpretOwnerTurn({ text: input.text, history: state.history, currentActions: [],
       apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL });
     // Pertanyaan tanpa tag bot: bila ternyata bukan soal harga/stok barang, diam saja agar obrolan grup tidak terganggu.

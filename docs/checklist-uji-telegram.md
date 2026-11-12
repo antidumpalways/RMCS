@@ -95,3 +95,15 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 ## G. Laporan harian otomatis
 - [ ] Pesan **📊 LAPORAN HARIAN** tiba di chat pribadi owner sekitar pukul 21.00 WIB (berisi rekap hari itu, barang terjual, saldo, stok menipis).
 - [ ] Hari tanpa rekap → tertulis "Belum ada rekap shift hari ini."
+
+## H. Tulis singkat (tanpa "pcs", tanpa "rekap")
+- [ ] Di luar sesi rekap, tulis `telkomsel 3 hari` → rekap terbuka otomatis dan barang tercatat 1 pcs.
+- [ ] `axis 5 hari 2`, `2 surya`, `xl 7hr dua` → terbaca dengan jumlah yang benar tanpa kata pcs.
+- [ ] `tsel 3 hari sama axis 5 hari 2` → dua barang.
+- [ ] `axis 7` (tanpa kata hari) → bot **bertanya** 7 hari atau 7 pcs; tidak mencatat.
+- [ ] `tri 3 hari`, `im3 5 hari` → cocok ke produk Three/Indosat.
+- [ ] `saldo 26jt`, `sisa uang 26jt`, `beli plastik 10rb` → terbaca sebagai saldo / pengeluaran.
+- [ ] `axis 5 hari harusnya 3` → jumlah dikoreksi; `hapus axis 5 hari` → barang hilang dari draf.
+- [ ] Rekap panjang (15+ barang dalam satu pesan) → semua barang masuk draf.
+- [ ] Obrolan biasa (`besok libur 2 hari`, `aku telat 5 menit`) → bot **diam**.
+- [ ] `harga axis 3 hari berapa?` → jawaban singkat satu baris, cepat.

@@ -13,6 +13,7 @@ import { identifyTelegramActor, configuredTelegramOwners, type TelegramActor } f
 import { handleGroupAssistantMessage, handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
 import { authorizedOwnerPrivateChat } from './owner-intent';
 import { isImplicitCatalogQuestion, lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
+import { isLikelySaleNote } from './item-line';
 import type { Prisma } from '@prisma/client';
 import { applyLateEntry } from '@/lib/services/telegram-late-entry';
 
@@ -333,8 +334,10 @@ function keyboard(id:string,revision:number,stockCountComplete:boolean,canConfir
  const rows:Array<Array<{text:string;callback_data:string}>>=[];
  if(canConfirm)rows.push([{text:'✅ Selesai · Simpan rekap',callback_data:'rcms:ok:'+id+':'+revision}]);
  if(!stockCountComplete)rows.push([{text:'⚠️ Ada selisih stok',callback_data:'rcms:stockend:'+id+':'+revision}]);
+ quick=quick.slice(0,4);
  for(let i=0;i<quick.length;i+=2)rows.push(quick.slice(i,i+2).map(item=>({text:'➕ '+item.label.slice(0,24),callback_data:'rcms:q:'+item.id})));
- for(const item of removable.slice(0,8))rows.push([{text:'🗑 Hapus: '+item.label.slice(0,26),callback_data:inventoryCallback('remove',id,String(item.index),'-',revision)}]);
+ // Hanya empat barang terakhir yang diberi tombol hapus supaya draf tidak penuh tombol; yang lain cukup ditulis "hapus <nama barang>".
+ for(const item of removable.slice(-4))rows.push([{text:'🗑 Hapus: '+item.label.slice(0,26),callback_data:inventoryCallback('remove',id,String(item.index),'-',revision)}]);
  rows.push([{text:'Koreksi Rekap',callback_data:'rcms:edit:'+id+':'+revision},{text:'Batal',callback_data:'rcms:cancel:'+id+':'+revision}]);
  return{inline_keyboard:rows};
 }
@@ -919,14 +922,18 @@ async function processUpdate(u:TelegramUpdate){
  if(m&&!assistantRequest&&!command&&startRequest===null&&lateEntry===null&&m.text&&isImplicitCatalogQuestion(m.text)){assistantRequest=true;implicitAsk=true;}
  // Ignore ordinary group chatter before creating Telegram identities or update rows.
  let aiIntent:ShiftIntent|null=null;
+ let recapStart=startRequest;
  if(!c&&!command&&!startRequest&&!assistantRequest&&lateEntry===null){
   const existingIdentity=await prisma.telegramIdentity.findUnique({where:{telegramUserId:senderId},select:{id:true}});
   const active=existingIdentity?await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId:BigInt(chat.id),telegramIdentityId:existingIdentity.id}},select:{state:true,draftId:true,expiresAt:true}}):null;
   const inFlow=!!active&&['REPORTING','OPENING'].includes(active.state)&&!!active.draftId&&active.expiresAt>new Date();
   if(!inFlow){
+   // Karyawan langsung menulis barang terjual ("telkomsel 3 hari", "axis 5 hari 2 pcs") tanpa mengetik "rekap":
+   // buka rekap otomatis dan catat isinya, jangan didiamkan.
+   if(m?.text&&!m.photo&&!m.document&&isLikelySaleNote(m.text))recapStart={shiftLabel:null,rest:m.text.trim()};
    // Bahasa bebas: AI hanya menilai niat pada pesan teks yang lolos penyaring kasar. Gagal/ragu = diam.
-   if(m&&!m.photo&&!m.document&&worthClassifying(m.text)){const found=await classifyShiftIntent(m.text!);if(found.intent!=='none'&&found.confidence==='high')aiIntent=found;}
-   if(!aiIntent)return false;
+   else if(m&&!m.photo&&!m.document&&worthClassifying(m.text)){const found=await classifyShiftIntent(m.text!);if(found.intent!=='none'&&found.confidence==='high')aiIntent=found;}
+   if(!aiIntent&&!recapStart)return false;
   }
  }
  const claim=await claimUpdate(id);if(claim==='PROCESSED')return true;if(claim==='BUSY')throw new TelegramUpdateBusy();
@@ -936,10 +943,10 @@ async function processUpdate(u:TelegramUpdate){
   else if(m&&command)await handleCommand(m,actor,command.command,command.args,id);
   else if(m&&lateEntry!==null)await handleLateEntry(m,actor,lateEntry,id);
   else if(m&&aiIntent)await handleAiShiftIntent(BigInt(chat.id),actor,aiIntent,m.text??'',m,id);
-  else if(m&&startRequest){
-   const chatId=BigInt(chat.id),body=startRequest.rest;
-   if(m.photo||m.document){await openReport(chatId,actor,startRequest.shiftLabel);await handleTelegramPhoto(m,actor.identityId,id);}
-   else await openReport(chatId,actor,startRequest.shiftLabel,body?{...m,text:body}:undefined,id);
+  else if(m&&recapStart){
+   const chatId=BigInt(chat.id),body=recapStart.rest;
+   if(m.photo||m.document){await openReport(chatId,actor,recapStart.shiftLabel);await handleTelegramPhoto(m,actor.identityId,id);}
+   else await openReport(chatId,actor,recapStart.shiftLabel,body?{...m,text:body}:undefined,id);
   }
   else if(m&&assistantRequest&&m.text){const text=stripBotMention(m.text);await handleGroupAssistantMessage({chatId:BigInt(chat.id),identityId:actor.identityId,text:text||'Tanya apa yang bisa saya bantu soal barang?',updateId:id.toString(),implicit:implicitAsk});}
   else if(m&&await recordShiftOpeningMessage(m,actor)){}
