@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { MAX_UPDATE_ATTEMPTS, allowedTelegramGroup, authorizedTelegramGroupSender, callbackBelongsToActor, duplicateUpdateDisposition, formatTelegramRupiah, parseTelegramCallback, parseTelegramCommand, telegramId } from './core';
 import { classifyShiftIntent, matchCorrectionPosting, worthClassifying, type ShiftIntent } from './shift-intent';
 import { answerTelegramCallback, deleteTelegramMessage, sendTelegramMessage, tryAnswerTelegramCallback, type InlineKeyboard } from './client';
-import { applyExtraction, buildAggregateReport, inputDuplicateKey, canFinalizeRecap, emptyRecap, extractRecapMessage, parseIndonesianRupiah, recapIssues, recapTotals, type RecapDraft } from './recap';
+import { applyExtraction, buildAggregateReport, inputDuplicateKey, canFinalizeRecap, deterministicExtraction, emptyRecap, extractRecapMessage, parseIndonesianRupiah, recapIssues, recapTotals, type RecapDraft } from './recap';
 import { correctTelegramPhotoFromText, handleTelegramPhoto, handleTelegramVisionCallback, sendLatestPhotoReview, visionCallbackFromData } from './photo-flow';
 import { calculateUnrecordedQuantity, correctedStockDeduction, correctionDelta, inventoryCallback, parseInventoryCallback, parseStockCountLines, type InventoryCallbackAction } from './inventory';
 import { prepareInventoryReview, postTelegramInventory, inventoryPreview, TelegramInventoryError } from '@/lib/services/telegram-inventory';
@@ -71,7 +71,7 @@ function formatDraft(d:RecapDraft):string{
  const totals=recapTotals(d);
  const labels:Array<[keyof typeof totals,string]>=[['service_fee','Admin jasa'],['sale','Penjualan (rupiah)'],['service_volume','Volume jasa'],['expense','Pengeluaran']];
  const rows=labels.filter(([key])=>BigInt(totals[key])!==0n).map(([key,label])=>label+': '+formatTelegramRupiah(BigInt(totals[key])));
- return '🧾 REKAP SHIFT'+(d.shiftLabel?' '+d.shiftLabel.toLocaleUpperCase('id-ID'):'')+' (belum disimpan)'+(rows.length?'\n'+rows.join('\n'):'');
+ return '🧾 REKAP SHIFT'+(d.shiftLabel?' '+d.shiftLabel.toLocaleUpperCase('id-ID'):'')+' (belum disimpan)'+(d.contributors?.length?'\n👥 Ikut mengisi: '+d.contributors.join(', '):'')+(rows.length?'\n'+rows.join('\n'):'');
 }
 type ShiftOpeningLine={productId:number;name:string;provider?:string|null;sku:string|null;expectedQty:number;actualQty:number|null};
 type ShiftOpeningPayload={version:1;shiftId?:string;stage:'CHECK'|'COUNT'|'REVIEW';shiftStart:string;shiftLabel:string|null;openingBalance:string;openedByIdentityId:string;lines:ShiftOpeningLine[];reviewStatus?:'CLEAR'|'OWNER_REVIEW';startedAt?:string;closedAt?:string;closingReportId?:string;closedByIdentityId?:string};
@@ -766,6 +766,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
  if(!draft||!callbackBelongsToActor(draft.telegramIdentityId,actor.identityId)||draft.chatId!==chatId||draft.kind!=='SHIFT_RECAP'){await answerTelegramCallback(c.id,'Rekap ini sedang dikerjakan karyawan lain.');return;}
  if(parsed.operation==='edit'){await answerTelegramCallback(c.id,'Silakan koreksi rekap.');await sendTelegramMessage(chatId,'Kirim nilai koreksi sebagai pesan baru, misalnya: rokok tadi salah bukan 175rb tapi 195rb atau axis salah bukan 7 pcs tapi 5 pcs.');return;}
  if(parsed.operation==='cancel'){
+  if(actor.sharedRecap){await answerTelegramCallback(c.id,'Hanya '+actor.sharedRecap.starterName+' (yang memulai rekap) yang bisa membatalkan.');return;}
   const changed=await prisma.telegramDraft.updateMany({where:{id:draft.id,status:'PENDING'},data:{status:'CANCELLED'}});
   await prisma.telegramSession.deleteMany({where:{telegramIdentityId:actor.identityId,chatId,draftId:draft.id}});
   await prisma.telegramShiftRegister.updateMany({where:{chatId,recapIdentityId:actor.identityId},data:{recapIdentityId:null}});
@@ -833,7 +834,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
   const check=finalBalanceCheck,gap=check?BigInt(check.difference):0n,gapAbs=gap<0n?-gap:gap;
   const balanceLine=check?(check.status==='MATCH'?'PAS ✅ '+formatTelegramRupiah(BigInt(check.actualBalance)):(check.status==='SHORT'?'⚠️ KURANG ':'⚠️ LEBIH ')+formatTelegramRupiah(gapAbs)+' (seharusnya '+formatTelegramRupiah(BigInt(check.expectedBalance))+', dihitung karyawan '+formatTelegramRupiah(BigInt(check.actualBalance))+')'):'belum direkonsiliasi';
   const stockLine=closingStockDifferences.length?'⚠️ ada selisih\n'+closingStockDifferences.map(item=>'• '+item.name+': seharusnya '+item.expectedQty+', stok sebenarnya '+item.actualQty).join('\n'):'sesuai ✅';
-  await notifyOwnersText('📋 REKAP SHIFT DISIMPAN'+(data.shiftLabel?' · '+data.shiftLabel:'')+'\nKaryawan: '+actor.displayName+(summary?'\n\n'+summary:'')+'\n\nAdmin: '+formatTelegramRupiah(BigInt(recapTotals(data).service_fee))+' · Pengeluaran: '+formatTelegramRupiah(BigInt(recapTotals(data).expense))+'\n💰 Saldo: '+balanceLine+'\n📦 Stok akhir: '+stockLine+'\n\nSaldo sistem sudah mengikuti hitungan karyawan. Penyebab selisih (jika ada) silakan diperiksa manual.\nID laporan: '+reportIdResult);
+  await notifyOwnersText('📋 REKAP SHIFT DISIMPAN'+(data.shiftLabel?' · '+data.shiftLabel:'')+'\nKaryawan: '+(actor.sharedRecap?actor.sharedRecap.starterName+' (disimpan oleh '+actor.displayName+')':actor.displayName)+(data.contributors?.length?'\nIkut mengisi: '+data.contributors.join(', '):'')+(summary?'\n\n'+summary:'')+'\n\nAdmin: '+formatTelegramRupiah(BigInt(recapTotals(data).service_fee))+' · Pengeluaran: '+formatTelegramRupiah(BigInt(recapTotals(data).expense))+'\n💰 Saldo: '+balanceLine+'\n📦 Stok akhir: '+stockLine+'\n\nSaldo sistem sudah mengikuti hitungan karyawan. Penyebab selisih (jika ada) silakan diperiksa manual.\nID laporan: '+reportIdResult);
  }catch{/* Rincian untuk owner hanya pelengkap. */}
  await sendLongTelegramMessage(chatId,'✅ REKAP DISIMPAN'+(data.shiftLabel?' · Shift '+data.shiftLabel:'')+(summary?'\n\n'+summary:'')+'\n\n💰 Saldo: '+(finalBalanceCheck?.status==='SHORT'?'kurang '+formatTelegramRupiah(-BigInt(finalBalanceCheck.difference))+' ⚠️':finalBalanceCheck?.status==='MATCH'?'cocok ✅':'tercatat ✅')+'\n📦 Stok akhir: '+(closingStockDifferences.length?'ada selisih ⚠️ (dicatat untuk Owner)':'sesuai ✅')+'\n\nSalah catat? Tulis saja, contoh: axis 13gb tadi harusnya 5.\nAda yang terlewat? Tulis: susulan <barang atau uang>.');
 }
@@ -868,6 +869,33 @@ async function handleLateEntry(m:TelegramMessage,actor:TelegramActor,content:str
  }catch(error){if((error as {code?:string}).code!=='P2002')throw error;}
  return sendTelegramMessage(chatId,'⚠️ Belum bisa dicatat otomatis ('+applied.reason+'). Sudah saya teruskan ke owner untuk disesuaikan.');
 }
+// Rekap shift bersama: draf dimiliki karyawan yang memulai, tetapi karyawan lain di grup boleh ikut mengisi.
+// Karyawan lain "meminjam" identitas pemilik draf agar semua alur (pesan, tombol, simpan) menuju draf yang sama.
+async function activeSharedRecap(chatId:bigint){
+ const register=await prisma.telegramShiftRegister.findUnique({where:{chatId}});
+ if(!register?.recapIdentityId)return null;
+ const session=await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId,telegramIdentityId:register.recapIdentityId}}});
+ if(!session||session.state!=='REPORTING'||!session.draftId||session.expiresAt<=new Date())return null;
+ const draft=await prisma.telegramDraft.findUnique({where:{id:session.draftId},select:{id:true,status:true,expiresAt:true,payload:true}});
+ if(!draft||draft.status!=='PENDING'||draft.expiresAt<=new Date())return null;
+ return{starterIdentityId:register.recapIdentityId,draftId:draft.id,payload:draft.payload as unknown as RecapDraft};
+}
+async function joinSharedRecap(actor:TelegramActor,chatId:bigint):Promise<TelegramActor>{
+ const shared=await activeSharedRecap(chatId);
+ if(!shared||shared.starterIdentityId===actor.identityId)return actor;
+ const starter=await prisma.telegramIdentity.findUnique({where:{id:shared.starterIdentityId},select:{displayName:true,linkedUserId:true}});
+ if(!starter)return actor;
+ const names=shared.payload.contributors??[];
+ if(!names.includes(actor.displayName))await mergeDraftPayload(shared.draftId,{contributors:[...names,actor.displayName].slice(-8)});
+ return{...actor,identityId:shared.starterIdentityId,linkedUserId:starter.linkedUserId,sharedRecap:{starterName:starter.displayName,realIdentityId:actor.identityId}};
+}
+// Pesan yang jelas berisi rekap (barang, admin, saldo) dan tidak menyisakan bagian yang tidak dipahami.
+function looksLikeRecapContent(text:string){
+ if(text.length>1500||text.startsWith('/'))return false;
+ const found=deterministicExtraction(stripRecapHeader(text));
+ return (found.entries.length>0||(found.inventoryLines?.length??0)>0)&&found.unresolved.length===0&&!(found.inventoryLines??[]).some(line=>line.ambiguity);
+}
+function recapCallback(data:string|undefined){return /^rcms:(?:ok|cancel|edit|i|q|stockend|stocklist|dup):/.test(data??'')||data==='rcms:group:rekap'||!!visionCallbackFromData(data);}
 async function processUpdate(u:TelegramUpdate){
  const id=telegramId(u.update_id);if(id===null)throw new Error('Invalid Telegram update_id');
  const m=u.message,c=u.callback_query,chat=m?.chat??c?.message?.chat,from=m?.from??c?.from;if(!chat||!from)return false;
@@ -923,6 +951,7 @@ async function processUpdate(u:TelegramUpdate){
  // Ignore ordinary group chatter before creating Telegram identities or update rows.
  let aiIntent:ShiftIntent|null=null;
  let recapStart=startRequest;
+ let sharedContent=false;
  if(!c&&!command&&!startRequest&&!assistantRequest&&lateEntry===null){
   const existingIdentity=await prisma.telegramIdentity.findUnique({where:{telegramUserId:senderId},select:{id:true}});
   const active=existingIdentity?await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId:BigInt(chat.id),telegramIdentityId:existingIdentity.id}},select:{state:true,draftId:true,expiresAt:true}}):null;
@@ -930,15 +959,19 @@ async function processUpdate(u:TelegramUpdate){
   if(!inFlow){
    // Karyawan langsung menulis barang terjual ("telkomsel 3 hari", "axis 5 hari 2 pcs") tanpa mengetik "rekap":
    // buka rekap otomatis dan catat isinya, jangan didiamkan.
-   if(m?.text&&!m.photo&&!m.document&&isLikelySaleNote(m.text))recapStart={shiftLabel:null,rest:m.text.trim()};
+   // Karyawan lain ikut mengisi rekap yang sedang berjalan: hanya pesan yang jelas berisi rekap, obrolan tetap didiamkan.
+   if(m?.text&&!m.photo&&!m.document&&looksLikeRecapContent(m.text)&&await activeSharedRecap(BigInt(chat.id)))sharedContent=true;
+   else if(m?.text&&!m.photo&&!m.document&&isLikelySaleNote(m.text))recapStart={shiftLabel:null,rest:m.text.trim()};
    // Bahasa bebas: AI hanya menilai niat pada pesan teks yang lolos penyaring kasar. Gagal/ragu = diam.
    else if(m&&!m.photo&&!m.document&&worthClassifying(m.text)){const found=await classifyShiftIntent(m.text!);if(found.intent!=='none'&&found.confidence==='high')aiIntent=found;}
-   if(!aiIntent&&!recapStart)return false;
+   if(!aiIntent&&!recapStart&&!sharedContent)return false;
   }
  }
  const claim=await claimUpdate(id);if(claim==='PROCESSED')return true;if(claim==='BUSY')throw new TelegramUpdateBusy();
  try{
-  const actor=await identifyTelegramActor(from,BigInt(chat.id));if(!actor)throw new Error('Invalid sender id');
+  let actor=await identifyTelegramActor(from,BigInt(chat.id));if(!actor)throw new Error('Invalid sender id');
+  const recapRelated=c?recapCallback(c.data):!!m&&(command?command.command==='rekap':lateEntry===null&&!(assistantRequest&&m.text)&&aiIntent?.intent!=='correct_report');
+  if(recapRelated)actor=await joinSharedRecap(actor,BigInt(chat.id));
   if(c)await handleCallback(c,actor);
   else if(m&&command)await handleCommand(m,actor,command.command,command.args,id);
   else if(m&&lateEntry!==null)await handleLateEntry(m,actor,lateEntry,id);

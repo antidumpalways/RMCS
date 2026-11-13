@@ -7,6 +7,8 @@ export type TelegramActor = {
   displayName: string;
   linkedUserId: number | null;
   isOwner: boolean;
+  /** Terisi bila karyawan ini ikut mengisi rekap yang dimulai orang lain: identityId menunjuk pemilik draf. */
+  sharedRecap?: { starterName: string; realIdentityId: string };
 };
 
 export function configuredTelegramOwners(value = process.env.TELEGRAM_OWNER_IDS): Set<string> {

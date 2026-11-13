@@ -107,3 +107,10 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Rekap panjang (15+ barang dalam satu pesan) → semua barang masuk draf.
 - [ ] Obrolan biasa (`besok libur 2 hari`, `aku telat 5 menit`) → bot **diam**.
 - [ ] `harga axis 3 hari berapa?` → jawaban singkat satu baris, cepat.
+
+## I. Rekap bersama (lebih dari satu karyawan)
+- [ ] Karyawan A memulai rekap. Karyawan B menulis `axis 5 hari 2` → masuk ke draf yang sama; draf menampilkan "👥 Ikut mengisi: B".
+- [ ] Karyawan B menulis `admin 45rb` atau `saldo 26jt` → masuk ke draf yang sama.
+- [ ] Karyawan B mengobrol biasa (`oke bentar ya`) saat rekap berjalan → bot **diam**.
+- [ ] Karyawan B menekan ➕ barang cepat atau **Selesai** → berfungsi; pesan owner menulis "disimpan oleh B" dan "Ikut mengisi".
+- [ ] Karyawan B menekan **Batal** → ditolak; hanya A (yang memulai) yang bisa membatalkan.
