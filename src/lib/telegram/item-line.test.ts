@@ -106,3 +106,15 @@ test('template Rekap: "nama : jumlah", baris kosong dilewati, saldo di akhir', a
   assert.equal(bareBalanceExtraction('5', emptyRecap()), null);
   assert.equal(bareBalanceExtraction('26jt', emptyRecap())?.entries[0].amount, '26000000');
 });
+
+test('barang lama tanpa masa aktif tetap ditemukan lewat nama dan kuota ("Paket DATA BY.U 11 GB 5 HARI")', async () => {
+  process.env.DATABASE_URL = 'postgresql://test:test@localhost:5432/test';
+  delete process.env.DEEPSEEK_API_KEY;
+  const { findProductCandidates } = await import('./owner-assistant');
+  const make = (id: number, name: string, category: string, provider: string | null, validity: string | null) => ({ id, name, sku: null, provider, validity, stock: 3, minStock: 1,
+    costPrice: 10_000n, sellPrice: 12_000n, locationId: null, updatedAt: new Date(), category: { name: category }, location: null });
+  const catalog = [make(1, 'Paket Data 11GB By.U', 'Voucher', 'By.U', null), make(2, 'SP BY U 11GB', 'Kartu Perdana', null, null), make(3, 'Axis 5 Hari', 'Voucher', 'Axis', '5 hari'), make(4, 'Paket Data 10GB Three', 'Voucher', 'Three', '5 hari')];
+  assert.deepEqual((await findProductCandidates('Paket DATA BY.U 11 GB 5 HARI', catalog)).map(product => product.id), [1]);
+  // Masa aktif yang tercatat berbeda tidak boleh diabaikan.
+  assert.equal((await findProductCandidates('axis 7 hari', catalog)).some(product => product.id === 3), false);
+});

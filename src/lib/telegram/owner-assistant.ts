@@ -209,6 +209,16 @@ export async function findProductCandidates(query: string, catalog: CatalogProdu
       respectsNumericAttributes(query, { id: item.product.id, name: item.product.name, categoryName: item.product.categoryName,
         provider: item.product.provider, validity: item.product.validity })).slice(0, 5);
     if (eligible.length) return eligible.map(item => catalog.find(product => product.id === item.product.id)!).filter(Boolean);
+    // Masa aktif ("5 hari") tidak tercatat pada beberapa barang lama. Bila hanya itu yang membuat tidak cocok dan tepat satu barang
+    // tanpa masa aktif yang cocok dengan sisa katanya, pakai barang itu.
+    const dayTerms = terms.filter(term => /^\d+hari$/.test(term));
+    if (dayTerms.length) {
+      const queryWithoutDays = terms.filter(term => !dayTerms.includes(term)).join(' ');
+      const relaxed = ranked.filter(item => !item.product.validity && item.score >= threshold && item.matched >= Math.min(2, terms.length - dayTerms.length) &&
+        respectsNumericAttributes(queryWithoutDays, { id: item.product.id, name: item.product.name, categoryName: item.product.categoryName,
+          provider: item.product.provider, validity: item.product.validity }));
+      if (relaxed.length === 1) { const found = catalog.find(product => product.id === relaxed[0].product.id); if (found) return [found]; }
+    }
   }
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey || catalog.length > 3000) return [];
@@ -1845,7 +1855,7 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
     warnings.length ? warnings.map(line => '⚠️ ' + line).join('\n') : '',
     aiNotes.length ? `🤖 Dicocokkan AI (periksa; bisa dibatalkan):\n${aiNotes.map(line => '• ' + line).join('\n')}` : '',
     same.length ? `Sudah sesuai, tidak diubah: ${same.join(', ')}` : '',
-    unclear.length ? `⚠️ Belum diubah karena nama kurang jelas:\n${unclear.map(line => '• ' + line).join('\n')}\nTulis ulang baris itu lebih lengkap (mis. tambahkan kuota: “Telkomsel 5 hari 7gb : 28”).` : '',
+    unclear.length ? `⚠️ Belum diubah karena nama kurang jelas atau barangnya belum ada:\n${unclear.map(line => '• ' + line).join('\n')}\nKalau barangnya sudah ada, tulis lebih lengkap (mis. tambahkan kuota: “Telkomsel 5 hari 7gb : 28”). Kalau belum ada, tambahkan dulu, mis.: “tambah produk IM3 4GB 3 hari harga 15rb modal 13rb stok 3”.` : '',
     list.invalid.length ? `⚠️ Belum diubah karena angkanya kurang jelas (tulis lengkap, mis. 15rb atau 15.000): ${list.invalid.join(', ')}` : '',
     list.skipped.length ? `Dilewati (angka kosong): ${list.skipped.join(', ')}` : '',
   ].filter(Boolean).join('\n\n');
