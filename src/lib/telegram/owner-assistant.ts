@@ -7,7 +7,7 @@ import { isAssistantAction, type AssistantAction, type AssistantDraft } from '@/
 import { saleSnapshotSignature } from '@/lib/sale-chat';
 import { analyzeCatalog, cleanupsForKinds, AUDIT_KINDS, type AuditKind } from '@/lib/catalog-audit';
 import { jakartaTodayBounds } from '@/lib/sale-chat';
-import { catalogSearchTerms, rankCatalogProducts } from '@/lib/catalog-search';
+import { catalogQueryKey, catalogSearchTerms, rankCatalogProducts } from '@/lib/catalog-search';
 import { respectsNumericAttributes, semanticCatalogSearch } from '@/lib/semantic-catalog';
 import { answerTelegramCallback, sendTelegramMessage, type InlineKeyboard } from './client';
 import { parseOwnerRupiah, telegramOwnerAuthorized, validateOwnerIntent, type OwnerIntent } from './owner-intent';
@@ -16,13 +16,14 @@ import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
 import { matchLinesWithAi } from './stock-ai';
+import { brandKnown, catalogTokens, parseNewProductSpec, parsePriceReply, type NewProductSpec, type PendingPrice, type PriceReply } from './new-product';
 import { parseUpdateList, type UpdateItem, type UpdateKind, type UpdateList } from './stock-list';
 import { resolveInventoryProduct } from './inventory';
 import { quickCatalogQuery } from './group-routing';
 import { parseDeleteStatement, parseEditStatements, parseOnlyStatement, parseProviderLists } from './provider-list-parser';
 import { formatListPlan, planCatalogList, type ListItem } from './catalog-list';
 import { formatPackagePlan, planProviderNormalize, planProviderPackages, type PackageInput } from './provider-packages';
-import { loadQuotas } from '@/lib/services/product-quota';
+import { loadQuotas, saveQuotas } from '@/lib/services/product-quota';
 import { sendTelegramLongMessage } from './client';
 import { applyUndo, formatUndoResult, latestUndoId, recordUndo, snapshotProducts } from '@/lib/services/owner-undo';
 import { composeOwnerReply, interpretOwnerTurn, OwnerAgentUnavailable, planStockInPricing, type OwnerAgentAction, type OwnerBusinessKind, type OwnerChatMessage } from './owner-agent';
@@ -50,7 +51,9 @@ type OwnerBatchOperation = OwnerOperation | OwnerProductCreate;
 type OwnerBatch = { version: 2; ownerId: string; operations: OwnerBatchOperation[]; labels: string[] };
 type OwnerChatState = { version: 1; ownerId: string; history: OwnerChatMessage[]; actions: OwnerAgentAction[]; menuFlow?: string | null;
   selected: Array<{ actionIndex: number; query: string; productId: number }>; pendingMatches: Array<{ actionIndex: number; query: string; candidateIds: number[] }>;
-  proposalDraftId: string | null; preview: string | null };
+  proposalDraftId: string | null; preview: string | null;
+  /** Barang baru yang dibuat dari Update stok dan masih menunggu modal + harga jual dari owner. */
+  pricePending?: PendingPrice[] };
 const DRAFT_TTL = 15 * 60_000;
 const CHAT_TTL = 7 * 24 * 60 * 60_000;
 const idr = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 });
@@ -422,7 +425,8 @@ function parseOwnerChatState(value: unknown, ownerId: number): OwnerChatState | 
     selected: state.selected, pendingMatches: Array.isArray(state.pendingMatches) ? state.pendingMatches : [],
     proposalDraftId: typeof state.proposalDraftId === 'string' ? state.proposalDraftId : null,
     preview: typeof state.preview === 'string' ? state.preview : null,
-    menuFlow: typeof state.menuFlow === 'string' ? state.menuFlow : null } as OwnerChatState;
+    menuFlow: typeof state.menuFlow === 'string' ? state.menuFlow : null,
+    pricePending: Array.isArray(state.pricePending) ? state.pricePending.filter((item): item is PendingPrice => !!item && Number.isSafeInteger(item.id) && typeof item.name === 'string').slice(0, 40) : undefined } as OwnerChatState;
 }
 
 async function getOwnerChatState(chatId: bigint, ownerId: number): Promise<{ rowId: string; state: OwnerChatState }> {
@@ -1596,6 +1600,7 @@ async function selectAgentCandidate(callback: OwnerCallback, ownerId: number, ac
   state.selected.push({ actionIndex, query, productId });
   state.pendingMatches = state.pendingMatches.filter(item => item.actionIndex !== actionIndex);
   await saveOwnerChatState(rowId, chatId, state);
+  await recordOwnerAlias(query, productId);
   await answerTelegramCallback(callback.id, 'Barang dipilih. Saya meninjau ulang seluruh rencana.');
   return renderOwnerActions(chatId, ownerId, rowId, state, 'Saya sudah memilih barang yang Anda maksud.', state.actions);
 }
@@ -1790,14 +1795,105 @@ export async function handleOwnerCallback(callback: OwnerCallback, ownerId: numb
 
 const normalizeGroup = (value: string) => value.toLocaleLowerCase('id-ID').replace(/[^a-z0-9]+/g, '');
 
+// Pilihan owner untuk menyamakan tulisannya dengan satu barang dicatat sebagai alias yang disetujui,
+// sehingga penulisan yang sama dikenali otomatis lain kali (rekap karyawan juga memakai alias ini).
+async function recordOwnerAlias(query: string, productId: number) {
+  try {
+    const queryKey = catalogQueryKey(query);
+    if (!queryKey) return;
+    const owner = await prisma.user.findFirst({ where: { role: 'owner', active: true }, select: { id: true }, orderBy: { id: 'asc' } });
+    if (!owner) return;
+    const existing = await prisma.assistantFeedback.findFirst({ where: { queryKey, productId, status: 'APPROVED' }, select: { id: true } });
+    if (existing) return;
+    await prisma.assistantFeedback.create({ data: { query: query.slice(0, 200), queryKey, productId, note: 'Dipilih owner lewat Telegram', status: 'APPROVED',
+      userId: owner.id, reviewedById: owner.id, reviewedAt: new Date() } });
+  } catch { /* Alias hanya pelengkap; pilihan tetap diterapkan. */ }
+}
+
+// Balasan modal + harga jual untuk barang baru yang menunggu harga.
+async function applyOwnerPriceReplies(chatId: bigint, ownerId: number, rowId: string, state: OwnerChatState, replies: PriceReply[], text: string) {
+  const catalog = await getCatalog();
+  const byId = new Map(catalog.map(product => [product.id, product]));
+  const operations: OwnerBatchOperation[] = [], labels: string[] = [], lines: string[] = [], warnings: string[] = [], done = new Set<number>();
+  for (const reply of replies) {
+    const product = byId.get(reply.id);
+    if (!product) continue;
+    const cost = await planOwnerOperations({ kind: 'propose_price_update', query: product.name, field: 'costPrice', amount: String(reply.costPrice) }, product, ownerId);
+    const sell = await planOwnerOperations({ kind: 'propose_price_update', query: product.name, field: 'sellPrice', amount: String(reply.sellPrice) }, product, ownerId);
+    operations.push(...cost.operations, ...sell.operations);
+    labels.push(...cost.operations.map(() => `modal ${formatIdr(product.costPrice)} → ${formatIdr(BigInt(reply.costPrice))}`), ...sell.operations.map(() => `harga jual ${formatIdr(product.sellPrice)} → ${formatIdr(BigInt(reply.sellPrice))}`));
+    lines.push(`• ${fullNameOf(product)}: modal ${formatIdr(BigInt(reply.costPrice))}, jual ${formatIdr(BigInt(reply.sellPrice))}`);
+    if (reply.warning) warnings.push(reply.warning);
+    done.add(reply.id);
+  }
+  const remaining = (state.pricePending ?? []).filter(item => !done.has(item.id));
+  // Pilihan barang yang masih menunggu tidak boleh hilang karena owner mengisi harga lebih dulu.
+  const keep = { actions: state.actions, selected: state.selected, pendingMatches: state.pendingMatches };
+  const previousDraftId = state.proposalDraftId;
+  state.history = [...state.history, { role: 'user' as const, content: text.slice(0, 1000) }, { role: 'assistant' as const, content: 'Harga barang baru diproses.' }].slice(-12);
+  state.menuFlow = null; state.proposalDraftId = null; state.preview = null; state.pricePending = remaining;
+  if (!operations.length) {
+    await saveOwnerChatState(rowId, chatId, state);
+    return sendTelegramMessage(chatId, 'Barang yang menunggu harga tidak ditemukan lagi di katalog.');
+  }
+  const batch = await createBatchDraft(chatId, ownerId, operations, labels);
+  const success = [`✅ Harga barang baru diisi:${String.fromCharCode(10)}${lines.join(String.fromCharCode(10))}`, warnings.map(line => '⚠️ ' + line).join(String.fromCharCode(10)),
+    remaining.length ? `Masih menunggu harga: ${remaining.map(item => item.name).join(', ')}` : ''].filter(Boolean).join(String.fromCharCode(10, 10));
+  state.proposalDraftId = batch.draftId; state.preview = batch.preview;
+  rememberOwnerReply(state, success);
+  await saveOwnerChatState(rowId, chatId, state);
+  if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+  if (!ownerAutoApply()) return sendTelegramLongMessage(chatId, batch.preview, ownerActionKeyboard(batch.draftId));
+  await autoApplyDraft(chatId, ownerId, batch.draftId, success);
+  try {
+    // Penerapan batch mengosongkan keadaan percakapan; tulis ulang daftar yang masih menunggu harga.
+    const fresh = await getOwnerChatState(chatId, ownerId);
+    fresh.state.pricePending = remaining;
+    fresh.state.actions = keep.actions; fresh.state.selected = keep.selected; fresh.state.pendingMatches = keep.pendingMatches;
+    await saveOwnerChatState(fresh.rowId, chatId, fresh.state);
+  } catch { /* Pelengkap. */ }
+}
+
+function fullNameOf(product: CatalogProduct) {
+  return `${product.name}${product.validity && !product.name.toLowerCase().includes(product.validity.toLowerCase()) ? ` (${product.validity})` : ''}`;
+}
+
+// Kata merek di awal baris ("BY U 10 GB 5 hari" -> by, u): dipakai agar pilihan hanya memuat barang bermerek sama.
+function brandWordsOf(label: string): string[] {
+  const words: string[] = [];
+  for (const word of label.toLocaleLowerCase('id-ID').split(/[^\p{L}\p{N}]+/u).filter(Boolean)) {
+    if (/^\d+(?:gb|mb|hari)?$/.test(word) || /^(?:gb|mb|hari|hr)$/.test(word)) break;
+    words.push(word);
+  }
+  return words;
+}
+const hasBrand = (product: CatalogProduct, brand: string[]) => {
+  const tokens = catalogTokens([product.name, product.provider ?? '']);
+  return brand.length > 0 && brand.every(word => tokens.has(word));
+};
+
+// Kandidat untuk tombol pilihan: hasil pencarian katalog biasa, dengan barang bermerek sama didahulukan (bukan tebakan).
+function findCandidatesForPick(label: string, catalog: CatalogProduct[]): CatalogProduct[] {
+  const terms = catalogSearchTerms(label);
+  const ranked = rankCatalogProducts(catalog.map(product => ({ ...product, categoryName: product.category.name, validity: [product.validity, product.quota].filter(Boolean).join(' ') || null })), terms)
+    .map(item => catalog.find(product => product.id === item.product.id)).filter((product): product is CatalogProduct => !!product);
+  const brand = brandWordsOf(label);
+  const sameBrand = ranked.filter(product => hasBrand(product, brand));
+  // Kartu perdana ("SP ...") ikut bila merek sama; bila ada barang bermerek sama, yang lain tidak ditampilkan.
+  return (sameBrand.length ? sameBrand : ranked).slice(0, 5);
+}
+
 // Menerapkan daftar "Update stok / harga / modal / margin" sekaligus: yang cocok pasti langsung diubah, sisanya dilaporkan tanpa menebak.
 async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: string, state: OwnerChatState, list: UpdateList, text: string) {
   const catalog = await getCatalog();
   const searchable = catalog.map(product => ({ id: product.id, name: product.name, sku: product.sku, provider: product.provider,
     validity: [product.validity, product.quota].filter(Boolean).join(' ') || null, categoryName: product.category.name, stock: product.stock, locationId: product.locationId }));
   const byId = new Map(catalog.map(product => [product.id, product]));
+  const aliasRows = await prisma.assistantFeedback.findMany({ where: { status: 'APPROVED', productId: { not: null } }, select: { queryKey: true, productId: true } }).catch(() => [] as Array<{ queryKey: string; productId: number | null }>);
   const targets = new Map<number, Partial<Record<UpdateKind, number>>>(), unclear: string[] = [];
   const pending: Array<{ item: UpdateItem; label: string; similar: string[] }> = [], aiNotes: string[] = [];
+  const toCreate: Array<{ spec: NewProductSpec; stock: number; category: { id: number; name: string } }> = [];
+  const ambiguous: Array<{ item: UpdateItem; label: string; similar: string[] }> = [];
   // Nama lengkap untuk laporan: voucher sering bernama sama dan hanya dibedakan masa aktif/kuota.
   const fullName = (product: CatalogProduct) => `${product.name}${product.validity && !product.name.toLowerCase().includes(product.validity.toLowerCase()) ? ` (${product.validity})` : ''}${product.quota && !product.name.toLowerCase().includes(product.quota.toLowerCase()) ? ` ${product.quota}` : ''}`;
   const want = (productId: number, item: UpdateItem) => targets.set(productId, { ...targets.get(productId), [item.kind]: item.value });
@@ -1807,6 +1903,9 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
     const hasDay = /\d\s*hari\b/i.test(item.label);
     const label = hasDay ? item.label.replace(/\b\d+(?:[.,]\d+)?\s*(?:gb|mb)\b/gi, ' ').replace(/(^|\s)\d+(?:[.,]\d+)?(?=\s|$)(?!\s*hari)/gi, ' ').replace(/\s+/g, ' ').trim() : item.label;
     const inGroup = item.group ? searchable.filter(product => normalizeGroup(product.categoryName).includes(normalizeGroup(item.group!))) : [];
+    // Penulisan yang pernah dipilih owner (alias disetujui) langsung dikenali.
+    const aliasIds = [...new Set(aliasRows.filter(row => row.queryKey === catalogQueryKey(item.label) && row.productId !== null && byId.has(row.productId)).map(row => row.productId!))];
+    if (aliasIds.length === 1) { want(aliasIds[0], item); continue; }
     let found = inGroup.length ? resolveInventoryProduct(label, inGroup) : resolveInventoryProduct(label, searchable);
     if (found.status !== 'MATCHED' && inGroup.length) found = resolveInventoryProduct(label, searchable);
     if (found.status === 'MATCHED' && found.productId) { want(found.productId, item); continue; }
@@ -1820,11 +1919,30 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
     const aiLines = pending.map((entry, index) => ({ index, label: entry.item.label, group: entry.item.group }));
     const aiCatalog = catalog.map(product => ({ id: product.id, name: product.name, category: product.category.name, provider: product.provider, validity: product.validity, quota: product.quota ?? null }));
     const matched = new Map((await matchLinesWithAi(aiLines, aiCatalog)).map(match => [match.index, match.productId]));
-    pending.forEach((entry, index) => {
+    const knownWords = catalogTokens(catalog.flatMap(product => [product.name, product.provider ?? '', product.category.name]));
+    // Kategori voucher: yang dipakai barang berpenyedia + masa aktif terbanyak.
+    const categories = await prisma.category.findMany({ select: { id: true, name: true } });
+    const voucherCategory = (() => {
+      const counts = new Map<string, number>();
+      for (const product of catalog) if (product.provider && product.validity) counts.set(product.category.name, (counts.get(product.category.name) ?? 0) + 1);
+      const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+      return top ? categories.find(item => item.name === top[0]) ?? null : null;
+    })();
+    for (const [index, entry] of pending.entries()) {
       const productId = matched.get(index);
-      if (productId !== undefined && byId.has(productId)) { want(productId, entry.item); aiNotes.push(`${entry.item.label} → ${fullName(byId.get(productId)!)}`); return; }
+      if (productId !== undefined && byId.has(productId)) { want(productId, entry.item); aiNotes.push(`${entry.item.label} → ${fullName(byId.get(productId)!)}`); continue; }
+      // Barang yang merek/namanya belum dikenal katalog sama sekali: buat barang baru (harga ditanyakan sesudahnya).
+      const spec = entry.item.kind === 'stock' && entry.item.value > 0 ? parseNewProductSpec(entry.item.label, entry.item.group) : null;
+      if (spec && !brandKnown(entry.item.label, knownWords)) {
+        const category = spec.voucher ? voucherCategory ?? categories.find(item => normalizeGroup(item.name) === 'voucher') ?? null
+          : spec.group ? categories.find(item => normalizeGroup(item.name) === normalizeGroup(spec.group!) || normalizeGroup(item.name).includes(normalizeGroup(spec.group!)) || normalizeGroup(spec.group!).includes(normalizeGroup(item.name))) ?? null : null;
+        if (category) { toCreate.push({ spec, stock: entry.item.value, category: { id: category.id, name: category.name } }); continue; }
+        unclear.push(`${entry.item.label} (${shown(entry.item)}) — barang baru, tapi kategorinya belum jelas. Tulis di bawah judul kategori, mis. “ROKOK :”.`);
+        continue;
+      }
       unclear.push(`${entry.item.label} (${shown(entry.item)})${entry.similar.length ? ` — pilihan: ${entry.similar.join(' | ')}` : ' — tidak ada di katalog'}`);
-    });
+      if (entry.similar.length) ambiguous.push(entry);
+    }
   }
   const operations: OwnerBatchOperation[] = [], labels: string[] = [], same: string[] = [], warnings: string[] = [];
   const add = async (action: OwnerAgentAction, product: CatalogProduct, label: string) => {
@@ -1851,7 +1969,22 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
     }
     if (!changed) same.push(product.name);
   }
+  // Barang yang memang belum ada: dibuat langsung (harga Rp 0), lalu modal + harga jual ditanyakan.
+  const createdProducts: PendingPrice[] = [], createdNotes: string[] = [];
+  for (const made of toCreate) {
+    try {
+      const duplicate = await prisma.product.findFirst({ where: { categoryId: made.category.id, name: { equals: made.spec.name, mode: 'insensitive' } }, select: { id: true } });
+      if (duplicate) { unclear.push(`${made.spec.name} (${made.stock}) — namanya sudah dipakai barang lain (mungkin nonaktif); cek lewat “cek ${made.spec.name}”.`); continue; }
+      const product = await prisma.product.create({ data: { name: made.spec.name, categoryId: made.category.id, provider: made.spec.provider, validity: made.spec.validity,
+        costPrice: 0n, sellPrice: 0n, stock: made.stock, minStock: 3 }, select: { id: true } });
+      await prisma.inventoryMovement.create({ data: { productId: product.id, type: 'IN', qty: made.stock, costAtTime: 0n, note: 'Stok awal produk baru dari Update stok Telegram owner ' + ownerId, userId: null } });
+      if (made.spec.quota) await saveQuotas([{ productId: product.id, quota: made.spec.quota }]);
+      createdProducts.push({ id: product.id, name: made.spec.name });
+      createdNotes.push(`${made.spec.name}${made.spec.quota ? ` (${made.spec.quota})` : ''} · ${made.category.name} · stok ${made.stock}`);
+    } catch { unclear.push(`${made.spec.name} (${made.stock}) — gagal dibuat; coba lagi.`); }
+  }
   const notes = [
+    createdNotes.length ? `🆕 Barang baru dibuat (harga masih Rp 0, bisa dihapus dengan “hapus <nama>”):\n${createdNotes.map(line => '• ' + line).join('\n')}` : '',
     warnings.length ? warnings.map(line => '⚠️ ' + line).join('\n') : '',
     aiNotes.length ? `🤖 Dicocokkan AI (periksa; bisa dibatalkan):\n${aiNotes.map(line => '• ' + line).join('\n')}` : '',
     same.length ? `Sudah sesuai, tidak diubah: ${same.join(', ')}` : '',
@@ -1862,12 +1995,42 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
   const previousDraftId = state.proposalDraftId;
   state.history = [...state.history, { role: 'user' as const, content: text.slice(0, 1000) }, { role: 'assistant' as const, content: 'Daftar update diproses.' }].slice(-12);
   state.actions = []; state.selected = []; state.pendingMatches = []; state.menuFlow = null; state.proposalDraftId = null; state.preview = null;
+  // Tindak lanjut setelah balasan terkirim: simpan pertanyaan harga + pilihan barang, lalu kirim pertanyaannya.
+  const followUps = async () => {
+    const actions: OwnerAgentAction[] = [], matches: OwnerChatState['pendingMatches'] = [];
+    for (const entry of ambiguous) {
+      const item = entry.item;
+      const action: OwnerAgentAction = item.kind === 'stock' ? { kind: 'propose_stock_adjustment', query: item.label, targetStock: item.value, reason: null }
+        : { kind: 'propose_price_update', query: item.label, field: item.kind, amount: String(item.value) };
+      const candidates = findCandidatesForPick(item.label, catalog);
+      if (!candidates.length) continue;
+      matches.push({ actionIndex: actions.length, query: item.label, candidateIds: candidates.map(product => product.id) });
+      actions.push(action);
+    }
+    if (!actions.length && !createdProducts.length) return;
+    try {
+      const fresh = await getOwnerChatState(chatId, ownerId);
+      fresh.state.actions = actions; fresh.state.selected = []; fresh.state.pendingMatches = matches;
+      fresh.state.pricePending = [...(fresh.state.pricePending ?? []).filter(old => !createdProducts.some(made => made.id === old.id)), ...createdProducts].slice(-40);
+      await saveOwnerChatState(fresh.rowId, chatId, fresh.state);
+    } catch { /* Pertanyaan tindak lanjut hanya pelengkap; perubahan utama sudah tersimpan. */ }
+    if (createdProducts.length) {
+      await sendTelegramMessage(chatId, `Barang baru tadi belum punya harga. Berapa modal dan harga jualnya?\n${createdProducts.map(item => '• ' + item.name).join('\n')}\n\nBalas satu baris untuk semuanya, mis.: modal 13rb jual 15rb\nAtau per barang:\n${createdProducts.slice(0, 3).map(item => `${item.name} : 13rb 15rb`).join('\n')}\n(urutan: modal lalu jual)`);
+    }
+    for (const [index, pick] of matches.entries()) {
+      const products = catalog.filter(product => pick.candidateIds.includes(product.id));
+      const first = products[0];
+      await sendTelegramMessage(chatId, `Maksud “${pick.query}” yang mana? Pilih barang di katalog supaya perubahannya diterapkan dan pilihanmu saya ingat untuk lain kali.${first && hasBrand(first, brandWordsOf(pick.query)) ? `\nKalau nama di katalog yang perlu diganti, kirim: Ganti ${first.name} jadi ${pick.query}` : ''}`,
+        agentCandidateKeyboard(ownerId, index, products));
+    }
+  };
   if (!operations.length) {
     const reply = [targets.size ? 'Tidak ada yang perlu diubah; semuanya sudah sesuai.' : 'Belum ada yang bisa saya ubah dari daftar itu.', notes].filter(Boolean).join('\n\n');
     rememberOwnerReply(state, reply);
     await saveOwnerChatState(rowId, chatId, state);
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
-    return sendTelegramLongMessage(chatId, reply);
+    await sendTelegramLongMessage(chatId, reply);
+    return followUps();
   }
   const batch = await createBatchDraft(chatId, ownerId, operations, labels);
   const changed = operations.map((operation, index) => `• ${isProductCreate(operation) ? operation.name : fullName(byId.get(operation.productId) ?? ({ name: operation.productName } as CatalogProduct))}: ${labels[index]}`).join('\n');
@@ -1878,8 +2041,9 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
   try { await saveOwnerChatState(rowId, chatId, state); }
   catch (error) { await cancelSupersededDraft(batch.draftId, chatId); throw error; }
   if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
-  if (ownerAutoApply()) return autoApplyDraft(chatId, ownerId, batch.draftId, success);
-  return sendTelegramLongMessage(chatId, [batch.preview, notes].filter(Boolean).join('\n\n'), ownerActionKeyboard(batch.draftId));
+  if (ownerAutoApply()) { await autoApplyDraft(chatId, ownerId, batch.draftId, success); return followUps(); }
+  await sendTelegramLongMessage(chatId, [batch.preview, notes].filter(Boolean).join('\n\n'), ownerActionKeyboard(batch.draftId));
+  return followUps();
 }
 
 export async function handleOwnerMessage(message: OwnerMessage, ownerId: number) {
@@ -1933,6 +2097,11 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
         return await renderOwnerActions(chatId, ownerId, rowId, state, followUpReply, priorActions);
       }
       // Daftar yang diawali "Update stok / harga / modal / margin" (atau stok setelah menu Koreksi stok) diproses langsung tanpa AI.
+      // Balasan modal + harga jual untuk barang baru yang tadi dibuat dari Update stok.
+      if (state.pricePending?.length) {
+        const priceReplies = parsePriceReply(text, state.pricePending);
+        if (priceReplies) return await applyOwnerPriceReplies(chatId, ownerId, rowId, state, priceReplies, text);
+      }
       const updateList = parseUpdateList(text, { lenient: state.menuFlow === 'stock_adjust' });
       if (updateList) return await applyOwnerUpdateList(chatId, ownerId, rowId, state, updateList, text);
       const memories = await prisma.assistantMemory.findMany({ where: { active: true }, orderBy: { id: 'desc' }, take: 30, select: { kind: true, term: true, content: true } });

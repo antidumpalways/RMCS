@@ -157,3 +157,11 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Barang yang memang tidak ada di katalog → dilaporkan "tidak ada di katalog".
 - [ ] Nama barang di balasan memuat masa aktif/kuota (mis. "Paket Data 10GB Three (3 hari)") agar tidak membingungkan.
 - [ ] ↩️ Batalkan mengembalikan semua termasuk yang dicocokkan AI.
+
+## N. Update stok: barang baru, pertanyaan harga, dan pilihan barang
+- [ ] Baris yang mereknya belum ada di katalog (mis. `IM3 4 GB 3 HARI : 3`) → barang baru dibuat (nama `IM3 3 Hari`, kuota 4GB, kategori Voucher, stok sesuai), harga Rp 0.
+- [ ] Baris rokok baru di bawah judul `ROKOK :` (mis. `BULL : 7`) → dibuat di kategori Rokok.
+- [ ] Setelah itu bot bertanya modal dan harga jual barang baru. Balas `modal 13rb jual 15rb` (semua), atau per barang `IM3 3 hari : 13rb 15rb`.
+- [ ] Baris yang kemungkinan barang lama dengan tulisan beda (mis. `BY U 10 GB 5 HARI` padahal katalog "Paket Data 11GB By.U") → tidak dibuat; muncul tombol pilihan barang dan usulan `Ganti <nama katalog> jadi <tulisanmu>`.
+- [ ] Tekan tombol pilihan → stok diterapkan, dan tulisan yang sama langsung dikenali pada Update stok berikutnya.
+- [ ] Mengisi harga lebih dulu tidak menghapus tombol pilihan yang masih menunggu.

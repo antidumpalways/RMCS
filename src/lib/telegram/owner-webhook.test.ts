@@ -453,7 +453,8 @@ test('"Update stok" daftar banyak baris diproses tanpa AI dan drafnya tercatat s
     assert.match(text, /XL 3 Hari — stok 29 → 9/);
     assert.match(text, /On Bold Kecil — stok 3 → 1/);
     assert.match(text, /Sudah sesuai, tidak diubah: Telkomsel 3 Hari/);
-    assert.match(text, /FELOZ \(5\) — tidak ada di katalog/);
+    // Merek belum dikenal katalog: akan dibuat sebagai barang baru; di tes ini kategorinya tidak tersedia, jadi dilaporkan.
+    assert.match(text, /FELOZ \(5\) — barang baru, tapi kategorinya belum jelas/);
     assert.match(text, /Dilewati \(angka kosong\): XL 7 hari/);
     const operation = [...fakeDrafts.values()].find(row => row.kind === 'OWNER_OPERATION');
     const conversation = fakeDrafts.get('owner-agent-700123') as { payload?: { proposalDraftId?: string | null } } | undefined;

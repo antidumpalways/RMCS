@@ -95,7 +95,7 @@ function sectionKind(word: string): UpdateKind {
   return 'sellPrice';
 }
 
-function parseAmount(raw: string): number | null {
+export function parseAmount(raw: string): number | null {
   const value = raw.toLowerCase().replace(/^rp\.?\s*/, '').replace(/\s+/g, '');
   const suffixed = /^(\d+(?:[.,]\d+)?)(rb|ribu|k|jt|juta)$/.exec(value);
   if (suffixed) {
