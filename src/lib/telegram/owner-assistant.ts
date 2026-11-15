@@ -15,6 +15,7 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
+import { matchLinesWithAi } from './stock-ai';
 import { parseUpdateList, type UpdateItem, type UpdateKind, type UpdateList } from './stock-list';
 import { resolveInventoryProduct } from './inventory';
 import { quickCatalogQuery } from './group-routing';
@@ -1786,6 +1787,9 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
     validity: [product.validity, product.quota].filter(Boolean).join(' ') || null, categoryName: product.category.name, stock: product.stock, locationId: product.locationId }));
   const byId = new Map(catalog.map(product => [product.id, product]));
   const targets = new Map<number, Partial<Record<UpdateKind, number>>>(), unclear: string[] = [];
+  const pending: Array<{ item: UpdateItem; label: string; similar: string[] }> = [], aiNotes: string[] = [];
+  // Nama lengkap untuk laporan: voucher sering bernama sama dan hanya dibedakan masa aktif/kuota.
+  const fullName = (product: CatalogProduct) => `${product.name}${product.validity && !product.name.toLowerCase().includes(product.validity.toLowerCase()) ? ` (${product.validity})` : ''}${product.quota && !product.name.toLowerCase().includes(product.quota.toLowerCase()) ? ` ${product.quota}` : ''}`;
   const want = (productId: number, item: UpdateItem) => targets.set(productId, { ...targets.get(productId), [item.kind]: item.value });
   const shown = (item: UpdateItem) => item.kind === 'stock' ? String(item.value) : formatIdr(BigInt(item.value));
   for (const item of list.items) {
@@ -1799,8 +1803,18 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
     // "ONBOLD KECIL" untuk "On Bold Kecil": sama persis bila spasi diabaikan.
     const squashed = searchable.filter(product => normalizeGroup(product.name) === normalizeGroup(label));
     if (squashed.length === 1) { want(squashed[0].id, item); continue; }
-    const similar = found.candidateProductIds.map(id => byId.get(id)?.name).filter(Boolean).slice(0, 3);
-    unclear.push(`${item.label} (${shown(item)})${similar.length ? ` — mirip: ${similar.join(' | ')}` : ' — tidak ada di katalog'}`);
+    pending.push({ item, label, similar: found.candidateProductIds.map(id => byId.get(id)).filter((product): product is CatalogProduct => !!product).slice(0, 4).map(fullName) });
+  }
+  // Baris yang tidak pasti diserahkan ke AI: ia hanya boleh memilih dari katalog dan hanya dipakai bila yakin.
+  if (pending.length) {
+    const aiLines = pending.map((entry, index) => ({ index, label: entry.item.label, group: entry.item.group }));
+    const aiCatalog = catalog.map(product => ({ id: product.id, name: product.name, category: product.category.name, provider: product.provider, validity: product.validity, quota: product.quota ?? null }));
+    const matched = new Map((await matchLinesWithAi(aiLines, aiCatalog)).map(match => [match.index, match.productId]));
+    pending.forEach((entry, index) => {
+      const productId = matched.get(index);
+      if (productId !== undefined && byId.has(productId)) { want(productId, entry.item); aiNotes.push(`${entry.item.label} → ${fullName(byId.get(productId)!)}`); return; }
+      unclear.push(`${entry.item.label} (${shown(entry.item)})${entry.similar.length ? ` — pilihan: ${entry.similar.join(' | ')}` : ' — tidak ada di katalog'}`);
+    });
   }
   const operations: OwnerBatchOperation[] = [], labels: string[] = [], same: string[] = [], warnings: string[] = [];
   const add = async (action: OwnerAgentAction, product: CatalogProduct, label: string) => {
@@ -1829,8 +1843,9 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
   }
   const notes = [
     warnings.length ? warnings.map(line => '⚠️ ' + line).join('\n') : '',
+    aiNotes.length ? `🤖 Dicocokkan AI (periksa; bisa dibatalkan):\n${aiNotes.map(line => '• ' + line).join('\n')}` : '',
     same.length ? `Sudah sesuai, tidak diubah: ${same.join(', ')}` : '',
-    unclear.length ? `⚠️ Belum diubah karena nama kurang jelas:\n${unclear.map(line => '• ' + line).join('\n')}\nTulis ulang baris itu dengan nama yang lebih lengkap.` : '',
+    unclear.length ? `⚠️ Belum diubah karena nama kurang jelas:\n${unclear.map(line => '• ' + line).join('\n')}\nTulis ulang baris itu lebih lengkap (mis. tambahkan kuota: “Telkomsel 5 hari 7gb : 28”).` : '',
     list.invalid.length ? `⚠️ Belum diubah karena angkanya kurang jelas (tulis lengkap, mis. 15rb atau 15.000): ${list.invalid.join(', ')}` : '',
     list.skipped.length ? `Dilewati (angka kosong): ${list.skipped.join(', ')}` : '',
   ].filter(Boolean).join('\n\n');
@@ -1845,7 +1860,7 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
     return sendTelegramLongMessage(chatId, reply);
   }
   const batch = await createBatchDraft(chatId, ownerId, operations, labels);
-  const changed = operations.map((operation, index) => `• ${isProductCreate(operation) ? operation.name : operation.productName}: ${labels[index]}`).join('\n');
+  const changed = operations.map((operation, index) => `• ${isProductCreate(operation) ? operation.name : fullName(byId.get(operation.productId) ?? ({ name: operation.productName } as CatalogProduct))}: ${labels[index]}`).join('\n');
   const success = [`✅ Diperbarui (${operations.length} perubahan):\n${changed}`, notes].filter(Boolean).join('\n\n');
   // Penerapan batch memeriksa bahwa draf ini adalah usulan aktif percakapan, jadi harus dicatat dulu (juga saat jalan-otomatis).
   state.proposalDraftId = batch.draftId; state.preview = batch.preview;

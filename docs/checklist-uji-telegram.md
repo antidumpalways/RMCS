@@ -150,3 +150,10 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Margin untuk barang yang modalnya belum tercatat → tidak diubah, diminta mengisi modal dulu.
 - [ ] Tombol **↩️ Batalkan** → semua harga kembali.
 - [ ] Daftar tanpa kop "Update ..." → tidak diproses langsung.
+
+## M. Update stok/harga: AI untuk baris yang tidak pasti
+- [ ] Baris yang namanya tidak cocok pasti (mis. `IM3 3 HARI`, `BY U 5 HARI`) → AI mencocokkan dari katalog; balasan memuat "🤖 Dicocokkan AI" berisi `tulisan → nama barang`.
+- [ ] Dua barang sama-sama cocok (mis. Telkomsel 5 Hari 5GB dan 7GB) → tidak ditebak; dilaporkan dengan "pilihan: ...".
+- [ ] Barang yang memang tidak ada di katalog → dilaporkan "tidak ada di katalog".
+- [ ] Nama barang di balasan memuat masa aktif/kuota (mis. "Paket Data 10GB Three (3 hari)") agar tidak membingungkan.
+- [ ] ↩️ Batalkan mengembalikan semua termasuk yang dicocokkan AI.
