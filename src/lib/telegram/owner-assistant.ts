@@ -1847,7 +1847,8 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
   const batch = await createBatchDraft(chatId, ownerId, operations, labels);
   const changed = operations.map((operation, index) => `• ${isProductCreate(operation) ? operation.name : operation.productName}: ${labels[index]}`).join('\n');
   const success = [`✅ Diperbarui (${operations.length} perubahan):\n${changed}`, notes].filter(Boolean).join('\n\n');
-  if (!ownerAutoApply()) { state.proposalDraftId = batch.draftId; state.preview = batch.preview; }
+  // Penerapan batch memeriksa bahwa draf ini adalah usulan aktif percakapan, jadi harus dicatat dulu (juga saat jalan-otomatis).
+  state.proposalDraftId = batch.draftId; state.preview = batch.preview;
   rememberOwnerReply(state, success);
   try { await saveOwnerChatState(rowId, chatId, state); }
   catch (error) { await cancelSupersededDraft(batch.draftId, chatId); throw error; }

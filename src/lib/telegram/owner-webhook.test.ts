@@ -432,3 +432,53 @@ test('kalimat owner persis: "hapus semua minyak, ... hanya minyak pertalite moda
     assert.doesNotMatch(text, /gangguan|Mau saya|Audit selesai/);
   });
 });
+
+test('"Update stok" daftar banyak baris diproses tanpa AI dan drafnya tercatat sebagai usulan aktif', async () => {
+  const { handleTelegramWebhook } = await modules();
+  process.env.TELEGRAM_OWNER_IDS = '700123';
+  process.env.DEEPSEEK_API_KEY = 'test-api-key';
+  const product = (id: number, name: string, stock: number, category = 'Voucher') => ({ id, name, sku: null, provider: null, validity: null, stock, minStock: 2,
+    costPrice: 13_000n, sellPrice: 15_000n, locationId: null, updatedAt: new Date('2026-01-01T00:00:00.000Z'), category: { name: category }, location: null });
+  fakeProducts = [product(11, 'Axis 3 Hari', 4), product(12, 'XL 3 Hari', 29), product(13, 'Telkomsel 3 Hari', 51), product(14, 'On Bold Kecil', 3, 'Rokok')];
+  businessWriteCounts = { product: 0, movement: 0 };
+  fakeDrafts.clear();
+  // Tidak ada jawaban DeepSeek yang disiapkan: bila AI dipanggil, tes gagal lewat balasan gangguan.
+  await withTelegramFetch(async sent => {
+    const result = await webhook(handleTelegramWebhook, privateUpdate(990, 'Update stok:\n\nAXIS 3 HARI: 6\nXL 3 HARI : 9\nTELKOMSEL 3 HARI : 51\nXL 7 HARI :\n\nROKOK :\nONBOLD KECIL : 1\nFELOZ : 5'));
+    assert.equal(result.status, 200);
+    const text = sent.map(message => String(message.text)).join('\n');
+    assert.doesNotMatch(text, /gangguan sementara/);
+    assert.match(text, /Rencana perubahan \(3 langkah\)/);
+    assert.match(text, /Axis 3 Hari — stok 4 → 6/);
+    assert.match(text, /XL 3 Hari — stok 29 → 9/);
+    assert.match(text, /On Bold Kecil — stok 3 → 1/);
+    assert.match(text, /Sudah sesuai, tidak diubah: Telkomsel 3 Hari/);
+    assert.match(text, /FELOZ \(5\) — tidak ada di katalog/);
+    assert.match(text, /Dilewati \(angka kosong\): XL 7 hari/);
+    const operation = [...fakeDrafts.values()].find(row => row.kind === 'OWNER_OPERATION');
+    const conversation = fakeDrafts.get('owner-agent-700123') as { payload?: { proposalDraftId?: string | null } } | undefined;
+    // Penerapan batch menolak draf yang bukan usulan aktif percakapan; inilah yang dulu membuat update stok gagal.
+    assert.ok(operation?.id);
+    assert.equal(conversation?.payload?.proposalDraftId, operation?.id);
+    assert.equal(businessWriteCounts.product, 0);
+  });
+});
+
+test('mode jalan-otomatis: draf "Update stok" tetap dicatat sebagai usulan aktif sebelum diterapkan', async () => {
+  const { handleTelegramWebhook } = await modules();
+  process.env.TELEGRAM_OWNER_IDS = '700123';
+  fakeProducts = [{ id: 21, name: 'Axis 3 Hari', sku: null, provider: null, validity: null, stock: 4, minStock: 2, costPrice: 13_000n, sellPrice: 15_000n,
+    locationId: null, updatedAt: new Date('2026-01-01T00:00:00.000Z'), category: { name: 'Voucher' }, location: null }];
+  fakeDrafts.clear();
+  process.env.OWNER_AUTO_APPLY = '1';
+  try {
+    await withTelegramFetch(async () => {
+      // Penerapan ke database tidak tersedia di tes ini; yang diperiksa adalah keadaan percakapan yang disimpan sebelum penerapan.
+      await webhook(handleTelegramWebhook, privateUpdate(991, 'Update stok:\nAXIS 3 HARI : 6')).catch(() => undefined);
+    });
+  } finally { process.env.OWNER_AUTO_APPLY = '0'; }
+  const operation = [...fakeDrafts.values()].find(row => row.kind === 'OWNER_OPERATION');
+  const conversation = fakeDrafts.get('owner-agent-700123') as { payload?: { proposalDraftId?: string | null } } | undefined;
+  assert.ok(operation?.id);
+  assert.equal(conversation?.payload?.proposalDraftId, operation?.id);
+});
