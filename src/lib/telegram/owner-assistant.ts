@@ -15,6 +15,8 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
+import { parseStockList, type StockList } from './stock-list';
+import { resolveInventoryProduct } from './inventory';
 import { quickCatalogQuery } from './group-routing';
 import { parseDeleteStatement, parseEditStatements, parseOnlyStatement, parseProviderLists } from './provider-list-parser';
 import { formatListPlan, planCatalogList, type ListItem } from './catalog-list';
@@ -94,7 +96,7 @@ const OWNER_MENU_ACTIONS: Partial<Record<OwnerMenuPage, Array<{ id: string; labe
     { id: 'product_info', label: 'Cek harga/stok barang', prompt: 'Barang mana yang ingin dicek? Sebut nama atau SKU-nya.' },
     { id: 'product_create', label: 'Tambah barang baru', prompt: 'Sebut nama dan kategori barang. Saya akan tanyakan harga, stok, dan informasi yang belum ada.' },
     { id: 'stock_in', label: 'Tambah stok', prompt: 'Sebut barang dan jumlah yang masuk. Tambahkan harga modal jika ada.' },
-    { id: 'stock_adjust', label: 'Koreksi stok', prompt: 'Sebut barang, jumlah stok fisik yang benar, dan alasan koreksi.' },
+    { id: 'stock_adjust', label: 'Koreksi stok', prompt: 'Tulis barang dan jumlah stok fisiknya. Boleh banyak sekaligus, satu baris per barang. Contoh:\nTelkomsel 3 hari : 52\nAxis 5 hari : 4' },
     { id: 'price_update', label: 'Ubah harga satu barang', prompt: 'Sebut nama barang, harga jual atau modal yang diubah, dan harga barunya.' },
     { id: 'price_bulk', label: 'Ubah harga massal', prompt: 'Sebut cakupan (semua barang/kategori/subkategori) dan persentase margin yang diinginkan.' },
     { id: 'location_move', label: 'Pindah lokasi barang', prompt: 'Sebut nama barang dan lokasi tujuan.' },
@@ -535,10 +537,12 @@ export async function planOwnerOperations(action: OwnerAgentAction, product: Cat
     return { operations, labels };
   }
   if (action.kind === 'propose_stock_adjustment') {
-    if (action.targetStock === null || !action.reason) return { operations: [], labels: [], clarification: `Sebutkan jumlah stok fisik dan alasan koreksi ${product.name}.` };
+    // Alasan tidak wajib: owner cukup menyebut barang dan jumlah stok fisiknya.
+    if (action.targetStock === null) return { operations: [], labels: [], clarification: `Berapa stok fisik ${product.name} sekarang?` };
+    const reason = action.reason || 'Koreksi stok fisik oleh owner';
     if (action.targetStock === product.stock) return { operations: [], labels: [`Stok ${product.name} sudah ${product.stock}; tidak perlu diubah.`] };
-    return { operations: [makeOwnerOperation(ownerId, 'STOCK_ADJUST', product, { newStock: action.targetStock, reason: action.reason })],
-      labels: [`Koreksi stok ${product.stock} → ${action.targetStock}; alasan: ${action.reason}`] };
+    return { operations: [makeOwnerOperation(ownerId, 'STOCK_ADJUST', product, { newStock: action.targetStock, reason })],
+      labels: [`Koreksi stok ${product.stock} → ${action.targetStock}${action.reason ? `; alasan: ${action.reason}` : ''}`] };
   }
   if (action.kind === 'propose_price_update') {
     const amount = parseOwnerRupiah(action.amount);
@@ -1773,6 +1777,63 @@ export async function handleOwnerCallback(callback: OwnerCallback, ownerId: numb
   return confirmOperation(callback, ownerId, draftId);
 }
 
+const normalizeGroup = (value: string) => value.toLocaleLowerCase('id-ID').replace(/[^a-z0-9]+/g, '');
+
+// Menerapkan daftar stok fisik sekaligus: yang cocok pasti langsung diubah, sisanya dilaporkan tanpa menebak.
+async function applyOwnerStockList(chatId: bigint, ownerId: number, rowId: string, state: OwnerChatState, list: StockList, text: string) {
+  const catalog = await getCatalog();
+  const searchable = catalog.map(product => ({ id: product.id, name: product.name, sku: product.sku, provider: product.provider,
+    validity: [product.validity, product.quota].filter(Boolean).join(' ') || null, categoryName: product.category.name, stock: product.stock, locationId: product.locationId }));
+  const byId = new Map(catalog.map(product => [product.id, product]));
+  const targets = new Map<number, number>(), unclear: string[] = [];
+  for (const item of list.items) {
+    // Voucher dikelola per provider per hari: kuota dan angka lepas tidak ikut mencocokkan.
+    const hasDay = /\d\s*hari\b/i.test(item.label);
+    const label = hasDay ? item.label.replace(/\b\d+(?:[.,]\d+)?\s*(?:gb|mb)\b/gi, ' ').replace(/(^|\s)\d+(?:[.,]\d+)?(?=\s|$)(?!\s*hari)/gi, ' ').replace(/\s+/g, ' ').trim() : item.label;
+    const inGroup = item.group ? searchable.filter(product => normalizeGroup(product.categoryName).includes(normalizeGroup(item.group!))) : [];
+    let found = inGroup.length ? resolveInventoryProduct(label, inGroup) : resolveInventoryProduct(label, searchable);
+    if (found.status !== 'MATCHED' && inGroup.length) found = resolveInventoryProduct(label, searchable);
+    if (found.status === 'MATCHED' && found.productId) { targets.set(found.productId, item.stock); continue; }
+    // "ONBOLD KECIL" untuk "On Bold Kecil": sama persis bila spasi diabaikan.
+    const squashed = searchable.filter(product => normalizeGroup(product.name) === normalizeGroup(label));
+    if (squashed.length === 1) { targets.set(squashed[0].id, item.stock); continue; }
+    const similar = found.candidateProductIds.map(id => byId.get(id)?.name).filter(Boolean).slice(0, 3);
+    unclear.push(`${item.label} (${item.stock})${similar.length ? ` — mirip: ${similar.join(' | ')}` : ' — tidak ada di katalog'}`);
+  }
+  const operations: OwnerBatchOperation[] = [], labels: string[] = [], same: string[] = [];
+  for (const [productId, stock] of targets) {
+    const product = byId.get(productId)!;
+    const planned = await planOwnerOperations({ kind: 'propose_stock_adjustment', query: product.name, targetStock: stock, reason: 'Update stok fisik oleh owner' }, product, ownerId);
+    if (planned.operations.length) { operations.push(...planned.operations); labels.push(`stok ${product.stock} → ${stock}`); }
+    else same.push(`${product.name} (${product.stock})`);
+  }
+  const notes = [
+    same.length ? `Sudah sesuai, tidak diubah: ${same.join(', ')}` : '',
+    unclear.length ? `⚠️ Belum diubah karena nama kurang jelas:\n${unclear.map(line => '• ' + line).join('\n')}\nTulis ulang baris itu dengan nama yang lebih lengkap.` : '',
+    list.skipped.length ? `Dilewati (angka kosong): ${list.skipped.join(', ')}` : '',
+  ].filter(Boolean).join('\n\n');
+  const previousDraftId = state.proposalDraftId;
+  state.history = [...state.history, { role: 'user' as const, content: text.slice(0, 1000) }, { role: 'assistant' as const, content: 'Daftar stok diproses.' }].slice(-12);
+  state.actions = []; state.selected = []; state.pendingMatches = []; state.menuFlow = null; state.proposalDraftId = null; state.preview = null;
+  if (!operations.length) {
+    const reply = [targets.size ? 'Tidak ada stok yang perlu diubah.' : 'Belum ada stok yang bisa saya ubah dari daftar itu.', notes].filter(Boolean).join('\n\n');
+    rememberOwnerReply(state, reply);
+    await saveOwnerChatState(rowId, chatId, state);
+    if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+    return sendTelegramLongMessage(chatId, reply);
+  }
+  const batch = await createBatchDraft(chatId, ownerId, operations, labels);
+  const changed = operations.map((operation, index) => `• ${isProductCreate(operation) ? operation.name : operation.productName}: ${labels[index]}`).join('\n');
+  const success = [`✅ Stok diperbarui (${operations.length} barang):\n${changed}`, notes].filter(Boolean).join('\n\n');
+  if (!ownerAutoApply()) { state.proposalDraftId = batch.draftId; state.preview = batch.preview; }
+  rememberOwnerReply(state, success);
+  try { await saveOwnerChatState(rowId, chatId, state); }
+  catch (error) { await cancelSupersededDraft(batch.draftId, chatId); throw error; }
+  if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
+  if (ownerAutoApply()) return autoApplyDraft(chatId, ownerId, batch.draftId, success);
+  return sendTelegramLongMessage(chatId, [batch.preview, notes].filter(Boolean).join('\n\n'), ownerActionKeyboard(batch.draftId));
+}
+
 export async function handleOwnerMessage(message: OwnerMessage, ownerId: number) {
   const chatId = BigInt(message.chat.id);
   if (!message.from || !telegramOwnerAuthorized(message.from.id) || message.from.id !== ownerId ||
@@ -1823,6 +1884,9 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
         state.history = [...state.history, { role: 'user' as const, content: text }, { role: 'assistant' as const, content: followUpReply }].slice(-12);
         return await renderOwnerActions(chatId, ownerId, rowId, state, followUpReply, priorActions);
       }
+      // Daftar stok fisik ("TELKOMSEL 3 HARI : 52" banyak baris, atau "xl 3 hari stok 10") diproses langsung tanpa AI.
+      const stockList = parseStockList(text, { lenient: state.menuFlow === 'stock_adjust' });
+      if (stockList) return await applyOwnerStockList(chatId, ownerId, rowId, state, stockList, text);
       const memories = await prisma.assistantMemory.findMany({ where: { active: true }, orderBy: { id: 'desc' }, take: 30, select: { kind: true, term: true, content: true } });
       const memoryContext = memories.map(memory => JSON.stringify({ kind: memory.kind, term: memory.term, content: memory.content })).join(' ');
       // Daftar voucher per provider yang teratur dibaca langsung tanpa AI (cepat dan pasti); sisanya ditafsirkan AI.
