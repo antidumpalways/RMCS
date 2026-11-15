@@ -20,7 +20,8 @@ const ATTRIBUTE_ONLY = /^(?:[\d.,/\s]|gb|mb|hari|hr|bulan|bln)+$/i;
 // Kalimat ini bukan "stok fisik sekarang": biarkan asisten biasa yang menangani.
 const NOT_STOCK = /\b(?:tambah(?:kan|in)?|masuk|kurang(?:i|in)?|jual|terjual|laku|harga|modal|margin|hapus|ganti|pindah|lokasi|berapa|brp)\b|\?/i;
 const MONEY = /\d\s*(?:rb|ribu|k|jt|juta)\b|\d{1,3}(?:[.,]\d{3})+|\b\d{4,}\b/i;
-const INTRO = /^(?:tolong\s+)?(?:update|koreksi|set|ubah|catat)?\s*stok(?:\s+fisik)?(?:\s+(?:sekarang|terbaru|hari\s+ini))?\s*[:.-]*\s*$/i;
+// Kata pembuka wajib: owner harus menulis "update stok" agar daftar diproses langsung.
+const INTRO = /^(?:tolong\s+)?(?:update|updet|apdet)\s+(?:stok|stock)(?:\s+(?:fisik|sekarang|terbaru|hari\s+ini))*\s*[:.,-]*\s*/i;
 
 function clean(value: string): string {
   return value.replace(/\b(\d+)\s*(?:hr|h)\b/gi, '$1 hari').replace(/(\d)\s*hari\b/gi, '$1 hari').replace(/[\s:=\-–,.]+$/g, '').replace(/\s+/g, ' ').trim();
@@ -35,18 +36,21 @@ export function parseStockList(text: string, options: { lenient?: boolean } = {}
   if (!lines.length || lines.length > 80) return null;
   const items: StockListItem[] = [], skipped: string[] = [];
   let group: string | null = null, explicit = false;
-  for (const raw of lines) {
-    if (INTRO.test(raw)) { explicit = true; continue; }
+  for (let raw of lines) {
+    if (!explicit && INTRO.test(raw)) {
+      explicit = true;
+      // "update stok telkomsel 3 hari 5": isi boleh langsung di baris yang sama.
+      raw = raw.replace(INTRO, '').trim();
+      if (!raw) continue;
+    }
     if (NOT_STOCK.test(raw)) return null;
     let line = raw.replace(/^(?:[-•*]|\d{1,2}[.)])\s+/, '');
-    if (/\bstok\b/i.test(line)) explicit = true;
     line = line.replace(/\b(?:stok(?:nya)?(?:\s+fisik)?|sisa|jadi|tinggal|ada)\b/gi, ' ').replace(/\s+/g, ' ').trim();
     if (MONEY.test(line)) return null;
     const withColon = new RegExp('^(.+?)\\s*[:=]\\s*(\\d{1,3})\\s*' + UNIT + '?\\.?$', 'i').exec(line);
     const plain = withColon ? null : new RegExp('^(.+?\\p{L}.*?)\\s+(\\d{1,3})\\s*' + UNIT + '?\\.?$', 'iu').exec(line);
     const match = withColon ?? plain;
     if (match) {
-      if (withColon) explicit = true;
       let label = clean(match[1]);
       // "10gb/ 3 hari : 5" di bawah judul "AXIS": nama barangnya memakai judul.
       if (ATTRIBUTE_ONLY.test(label.replace(/\s+/g, ''))) {
@@ -65,7 +69,7 @@ export function parseStockList(text: string, options: { lenient?: boolean } = {}
     return null;
   }
   if (!items.length) return null;
-  // Satu baris polos ("axis 3 hari 5") bisa berarti banyak hal; terima hanya bila jelas soal stok.
-  if (items.length === 1 && !explicit && !options.lenient) return null;
+  // Tanpa kata "update stok" (atau menu Koreksi stok), daftar tidak diproses langsung: asisten biasa yang menangani.
+  if (!explicit && !options.lenient) return null;
   return { items, skipped };
 }

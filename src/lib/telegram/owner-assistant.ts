@@ -96,7 +96,7 @@ const OWNER_MENU_ACTIONS: Partial<Record<OwnerMenuPage, Array<{ id: string; labe
     { id: 'product_info', label: 'Cek harga/stok barang', prompt: 'Barang mana yang ingin dicek? Sebut nama atau SKU-nya.' },
     { id: 'product_create', label: 'Tambah barang baru', prompt: 'Sebut nama dan kategori barang. Saya akan tanyakan harga, stok, dan informasi yang belum ada.' },
     { id: 'stock_in', label: 'Tambah stok', prompt: 'Sebut barang dan jumlah yang masuk. Tambahkan harga modal jika ada.' },
-    { id: 'stock_adjust', label: 'Koreksi stok', prompt: 'Tulis barang dan jumlah stok fisiknya. Boleh banyak sekaligus, satu baris per barang. Contoh:\nTelkomsel 3 hari : 52\nAxis 5 hari : 4' },
+    { id: 'stock_adjust', label: 'Koreksi stok', prompt: 'Tulis barang dan jumlah stok fisiknya. Boleh banyak sekaligus, satu baris per barang. Di luar menu ini, awali pesan dengan "Update stok". Contoh:\nTelkomsel 3 hari : 52\nAxis 5 hari : 4' },
     { id: 'price_update', label: 'Ubah harga satu barang', prompt: 'Sebut nama barang, harga jual atau modal yang diubah, dan harga barunya.' },
     { id: 'price_bulk', label: 'Ubah harga massal', prompt: 'Sebut cakupan (semua barang/kategori/subkategori) dan persentase margin yang diinginkan.' },
     { id: 'location_move', label: 'Pindah lokasi barang', prompt: 'Sebut nama barang dan lokasi tujuan.' },
@@ -1884,7 +1884,7 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
         state.history = [...state.history, { role: 'user' as const, content: text }, { role: 'assistant' as const, content: followUpReply }].slice(-12);
         return await renderOwnerActions(chatId, ownerId, rowId, state, followUpReply, priorActions);
       }
-      // Daftar stok fisik ("TELKOMSEL 3 HARI : 52" banyak baris, atau "xl 3 hari stok 10") diproses langsung tanpa AI.
+      // Daftar stok fisik yang diawali "Update stok" (atau dikirim setelah menu Koreksi stok) diproses langsung tanpa AI.
       const stockList = parseStockList(text, { lenient: state.menuFlow === 'stock_adjust' });
       if (stockList) return await applyOwnerStockList(chatId, ownerId, rowId, state, stockList, text);
       const memories = await prisma.assistantMemory.findMany({ where: { active: true }, orderBy: { id: 'desc' }, take: 30, select: { kind: true, term: true, content: true } });

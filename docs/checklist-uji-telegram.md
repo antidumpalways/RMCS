@@ -116,10 +116,11 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Karyawan B menekan **Batal** → ditolak; hanya A (yang memulai) yang bisa membatalkan.
 
 ## J. Owner: update stok cepat
-- [ ] Kirim daftar banyak baris (`TELKOMSEL 3 HARI : 52`, `AXIS 5 HARI : 4`, `ROKOK :` lalu `SAMPOERNA : 7`, ...) → satu balasan "✅ Stok diperbarui (N barang)" dengan stok lama → baru, tanpa pertanyaan alasan.
+- [ ] Kirim pesan yang diawali **Update stok** lalu daftar banyak baris (`TELKOMSEL 3 HARI : 52`, `AXIS 5 HARI : 4`, `ROKOK :` lalu `SAMPOERNA : 7`, ...) → satu balasan "✅ Stok diperbarui (N barang)" dengan stok lama → baru, tanpa pertanyaan alasan.
+- [ ] Daftar yang sama **tanpa** kata "update stok" → tidak diproses langsung (ditangani asisten biasa).
+- [ ] `update stok xl 3 hari 10` (satu baris) → langsung diterapkan.
 - [ ] Baris yang namanya kurang jelas atau tidak ada di katalog → dilaporkan "Belum diubah", barang lain tetap diubah.
 - [ ] Baris tanpa angka (`XL 3 HARI :`) → dilewati.
-- [ ] `XL 3 HARI STOK 10` (satu baris) → langsung diterapkan.
-- [ ] Menu → Koreksi stok → `axis 6gb 5 hari 4` → langsung diterapkan.
+- [ ] Menu → Koreksi stok → `axis 6gb 5 hari 4` → langsung diterapkan (menu sudah menjadi penandanya).
 - [ ] Tombol **↩️ Batalkan** pada balasan → semua stok kembali.
-- [ ] Daftar harga (`axis`, `3 hari 15rb`, `5 hari 15rb`) → tetap diproses sebagai daftar harga, bukan stok.
+- [ ] Koreksi stok lewat kalimat biasa (`xl 3 hari stok 10`) → diterapkan tanpa menanyakan alasan.
