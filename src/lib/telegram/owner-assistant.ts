@@ -15,7 +15,7 @@ import { dailyRecapSummaries, formatRecapReport, parseBalanceTaskTarget, sumReca
 import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
-import { parseStockList, type StockList } from './stock-list';
+import { parseUpdateList, type UpdateItem, type UpdateKind, type UpdateList } from './stock-list';
 import { resolveInventoryProduct } from './inventory';
 import { quickCatalogQuery } from './group-routing';
 import { parseDeleteStatement, parseEditStatements, parseOnlyStatement, parseProviderLists } from './provider-list-parser';
@@ -1779,13 +1779,15 @@ export async function handleOwnerCallback(callback: OwnerCallback, ownerId: numb
 
 const normalizeGroup = (value: string) => value.toLocaleLowerCase('id-ID').replace(/[^a-z0-9]+/g, '');
 
-// Menerapkan daftar stok fisik sekaligus: yang cocok pasti langsung diubah, sisanya dilaporkan tanpa menebak.
-async function applyOwnerStockList(chatId: bigint, ownerId: number, rowId: string, state: OwnerChatState, list: StockList, text: string) {
+// Menerapkan daftar "Update stok / harga / modal / margin" sekaligus: yang cocok pasti langsung diubah, sisanya dilaporkan tanpa menebak.
+async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: string, state: OwnerChatState, list: UpdateList, text: string) {
   const catalog = await getCatalog();
   const searchable = catalog.map(product => ({ id: product.id, name: product.name, sku: product.sku, provider: product.provider,
     validity: [product.validity, product.quota].filter(Boolean).join(' ') || null, categoryName: product.category.name, stock: product.stock, locationId: product.locationId }));
   const byId = new Map(catalog.map(product => [product.id, product]));
-  const targets = new Map<number, number>(), unclear: string[] = [];
+  const targets = new Map<number, Partial<Record<UpdateKind, number>>>(), unclear: string[] = [];
+  const want = (productId: number, item: UpdateItem) => targets.set(productId, { ...targets.get(productId), [item.kind]: item.value });
+  const shown = (item: UpdateItem) => item.kind === 'stock' ? String(item.value) : formatIdr(BigInt(item.value));
   for (const item of list.items) {
     // Voucher dikelola per provider per hari: kuota dan angka lepas tidak ikut mencocokkan.
     const hasDay = /\d\s*hari\b/i.test(item.label);
@@ -1793,30 +1795,50 @@ async function applyOwnerStockList(chatId: bigint, ownerId: number, rowId: strin
     const inGroup = item.group ? searchable.filter(product => normalizeGroup(product.categoryName).includes(normalizeGroup(item.group!))) : [];
     let found = inGroup.length ? resolveInventoryProduct(label, inGroup) : resolveInventoryProduct(label, searchable);
     if (found.status !== 'MATCHED' && inGroup.length) found = resolveInventoryProduct(label, searchable);
-    if (found.status === 'MATCHED' && found.productId) { targets.set(found.productId, item.stock); continue; }
+    if (found.status === 'MATCHED' && found.productId) { want(found.productId, item); continue; }
     // "ONBOLD KECIL" untuk "On Bold Kecil": sama persis bila spasi diabaikan.
     const squashed = searchable.filter(product => normalizeGroup(product.name) === normalizeGroup(label));
-    if (squashed.length === 1) { targets.set(squashed[0].id, item.stock); continue; }
+    if (squashed.length === 1) { want(squashed[0].id, item); continue; }
     const similar = found.candidateProductIds.map(id => byId.get(id)?.name).filter(Boolean).slice(0, 3);
-    unclear.push(`${item.label} (${item.stock})${similar.length ? ` — mirip: ${similar.join(' | ')}` : ' — tidak ada di katalog'}`);
+    unclear.push(`${item.label} (${shown(item)})${similar.length ? ` — mirip: ${similar.join(' | ')}` : ' — tidak ada di katalog'}`);
   }
-  const operations: OwnerBatchOperation[] = [], labels: string[] = [], same: string[] = [];
-  for (const [productId, stock] of targets) {
+  const operations: OwnerBatchOperation[] = [], labels: string[] = [], same: string[] = [], warnings: string[] = [];
+  const add = async (action: OwnerAgentAction, product: CatalogProduct, label: string) => {
+    const planned = await planOwnerOperations(action, product, ownerId);
+    if (planned.operations.length) { operations.push(...planned.operations); labels.push(label); return true; }
+    return false;
+  };
+  for (const [productId, wanted] of targets) {
     const product = byId.get(productId)!;
-    const planned = await planOwnerOperations({ kind: 'propose_stock_adjustment', query: product.name, targetStock: stock, reason: 'Update stok fisik oleh owner' }, product, ownerId);
-    if (planned.operations.length) { operations.push(...planned.operations); labels.push(`stok ${product.stock} → ${stock}`); }
-    else same.push(`${product.name} (${product.stock})`);
+    let changed = false;
+    if (wanted.stock !== undefined) changed = await add({ kind: 'propose_stock_adjustment', query: product.name, targetStock: wanted.stock, reason: 'Update stok fisik oleh owner' }, product, `stok ${product.stock} → ${wanted.stock}`) || changed;
+    const newCost = wanted.costPrice !== undefined ? BigInt(wanted.costPrice) : product.costPrice;
+    if (wanted.costPrice !== undefined) changed = await add({ kind: 'propose_price_update', query: product.name, field: 'costPrice', amount: String(wanted.costPrice) }, product, `modal ${formatIdr(product.costPrice)} → ${formatIdr(newCost)}`) || changed;
+    // Harga jual yang ditulis langsung menang atas margin; margin dihitung dari modal (yang baru bila ikut diubah).
+    let newSell: bigint | null = wanted.sellPrice !== undefined ? BigInt(wanted.sellPrice) : null;
+    if (newSell === null && wanted.margin !== undefined) {
+      if (newCost <= 0n) warnings.push(`${product.name}: margin belum bisa dihitung karena modalnya belum tercatat. Isi dulu lewat "Update modal".`);
+      else newSell = newCost + BigInt(wanted.margin);
+    } else if (newSell !== null && wanted.margin !== undefined) warnings.push(`${product.name}: harga jual dan margin sama-sama ditulis; saya pakai harga jualnya.`);
+    if (newSell !== null) {
+      const margin = newCost > 0n ? ` (margin ${formatIdr(newSell - newCost)})` : '';
+      if (newCost > 0n && newSell < newCost) warnings.push(`${product.name}: harga jual ${formatIdr(newSell)} di bawah modal ${formatIdr(newCost)}.`);
+      changed = await add({ kind: 'propose_price_update', query: product.name, field: 'sellPrice', amount: newSell.toString() }, product, `harga jual ${formatIdr(product.sellPrice)} → ${formatIdr(newSell)}${margin}`) || changed;
+    }
+    if (!changed) same.push(product.name);
   }
   const notes = [
+    warnings.length ? warnings.map(line => '⚠️ ' + line).join('\n') : '',
     same.length ? `Sudah sesuai, tidak diubah: ${same.join(', ')}` : '',
     unclear.length ? `⚠️ Belum diubah karena nama kurang jelas:\n${unclear.map(line => '• ' + line).join('\n')}\nTulis ulang baris itu dengan nama yang lebih lengkap.` : '',
+    list.invalid.length ? `⚠️ Belum diubah karena angkanya kurang jelas (tulis lengkap, mis. 15rb atau 15.000): ${list.invalid.join(', ')}` : '',
     list.skipped.length ? `Dilewati (angka kosong): ${list.skipped.join(', ')}` : '',
   ].filter(Boolean).join('\n\n');
   const previousDraftId = state.proposalDraftId;
-  state.history = [...state.history, { role: 'user' as const, content: text.slice(0, 1000) }, { role: 'assistant' as const, content: 'Daftar stok diproses.' }].slice(-12);
+  state.history = [...state.history, { role: 'user' as const, content: text.slice(0, 1000) }, { role: 'assistant' as const, content: 'Daftar update diproses.' }].slice(-12);
   state.actions = []; state.selected = []; state.pendingMatches = []; state.menuFlow = null; state.proposalDraftId = null; state.preview = null;
   if (!operations.length) {
-    const reply = [targets.size ? 'Tidak ada stok yang perlu diubah.' : 'Belum ada stok yang bisa saya ubah dari daftar itu.', notes].filter(Boolean).join('\n\n');
+    const reply = [targets.size ? 'Tidak ada yang perlu diubah; semuanya sudah sesuai.' : 'Belum ada yang bisa saya ubah dari daftar itu.', notes].filter(Boolean).join('\n\n');
     rememberOwnerReply(state, reply);
     await saveOwnerChatState(rowId, chatId, state);
     if (previousDraftId) await cancelSupersededDraft(previousDraftId, chatId);
@@ -1824,7 +1846,7 @@ async function applyOwnerStockList(chatId: bigint, ownerId: number, rowId: strin
   }
   const batch = await createBatchDraft(chatId, ownerId, operations, labels);
   const changed = operations.map((operation, index) => `• ${isProductCreate(operation) ? operation.name : operation.productName}: ${labels[index]}`).join('\n');
-  const success = [`✅ Stok diperbarui (${operations.length} barang):\n${changed}`, notes].filter(Boolean).join('\n\n');
+  const success = [`✅ Diperbarui (${operations.length} perubahan):\n${changed}`, notes].filter(Boolean).join('\n\n');
   if (!ownerAutoApply()) { state.proposalDraftId = batch.draftId; state.preview = batch.preview; }
   rememberOwnerReply(state, success);
   try { await saveOwnerChatState(rowId, chatId, state); }
@@ -1884,9 +1906,9 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
         state.history = [...state.history, { role: 'user' as const, content: text }, { role: 'assistant' as const, content: followUpReply }].slice(-12);
         return await renderOwnerActions(chatId, ownerId, rowId, state, followUpReply, priorActions);
       }
-      // Daftar stok fisik yang diawali "Update stok" (atau dikirim setelah menu Koreksi stok) diproses langsung tanpa AI.
-      const stockList = parseStockList(text, { lenient: state.menuFlow === 'stock_adjust' });
-      if (stockList) return await applyOwnerStockList(chatId, ownerId, rowId, state, stockList, text);
+      // Daftar yang diawali "Update stok / harga / modal / margin" (atau stok setelah menu Koreksi stok) diproses langsung tanpa AI.
+      const updateList = parseUpdateList(text, { lenient: state.menuFlow === 'stock_adjust' });
+      if (updateList) return await applyOwnerUpdateList(chatId, ownerId, rowId, state, updateList, text);
       const memories = await prisma.assistantMemory.findMany({ where: { active: true }, orderBy: { id: 'desc' }, take: 30, select: { kind: true, term: true, content: true } });
       const memoryContext = memories.map(memory => JSON.stringify({ kind: memory.kind, term: memory.term, content: memory.content })).join(' ');
       // Daftar voucher per provider yang teratur dibaca langsung tanpa AI (cepat dan pasti); sisanya ditafsirkan AI.

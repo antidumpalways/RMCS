@@ -37,3 +37,26 @@ test('bukan daftar stok: harga, tambah stok, pertanyaan, obrolan', () => {
     assert.equal(parseStockList(text, { lenient: true }), null, text);
   }
 });
+
+test('update harga / modal / margin memakai format yang sama', async () => {
+  const { parseUpdateList } = await import('./stock-list');
+  const show = (text: string, lenient = false) => parseUpdateList(text, { lenient })?.items.map(item => `${item.kind}:${item.label}=${item.value}`) ?? null;
+  assert.deepEqual(show('Update harga:\nTELKOMSEL 3 HARI : 15rb\nAXIS 5 HARI : 16.000\nXL 7 HARI 25000\nROKOK :\nSAMPOERNA : 31rb'),
+    ['sellPrice:TELKOMSEL 3 hari=15000', 'sellPrice:AXIS 5 hari=16000', 'sellPrice:XL 7 hari=25000', 'sellPrice:SAMPOERNA=31000']);
+  assert.deepEqual(show('update margin\naxis 3 hari : 2rb\naxis 5 hari : 2500'), ['margin:axis 3 hari=2000', 'margin:axis 5 hari=2500']);
+  assert.deepEqual(show('Update modal: telkomsel 3 hari 13rb'), ['costPrice:telkomsel 3 hari=13000']);
+  // Beberapa bagian dalam satu pesan.
+  assert.deepEqual(show('Update stok:\naxis 3 hari : 5\n\nUpdate harga:\naxis 3 hari : 15rb\n\nUpdate margin:\naxis 3 hari : 2rb'),
+    ['stock:axis 3 hari=5', 'sellPrice:axis 3 hari=15000', 'margin:axis 3 hari=2000']);
+  // Angka terlalu kecil tidak ditebak; baris kosong dilewati.
+  const odd = parseUpdateList('update harga\naxis 3 hari : 15\nxl 3 hari :\naxis 5 hari : 16rb');
+  assert.deepEqual(odd?.invalid, ['axis 3 hari (15)']);
+  assert.deepEqual(odd?.skipped, ['xl 3 hari']);
+  assert.equal(odd?.items.length, 1);
+  // Tanpa kop tidak diproses; pertanyaan tidak diproses.
+  assert.equal(show('TELKOMSEL 3 HARI : 15rb\nAXIS 5 HARI : 16rb'), null);
+  assert.equal(show('update harga axis 3 hari berapa?'), null);
+  assert.equal(show('update harga'), null);
+  // Menu Koreksi stok tetap menerima stok tanpa kop.
+  assert.deepEqual(show('Axis 6gb 5 hari 4', true), ['stock:Axis 6gb 5 hari=4']);
+});

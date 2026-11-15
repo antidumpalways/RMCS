@@ -139,3 +139,14 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Template yang sama **tanpa** baris saldo → draf diakhiri "❓ Saldo total akhirnya berapa?".
 - [ ] Balas `26jt` (angka saja) → terbaca sebagai saldo total; pertanyaan hilang.
 - [ ] Draf kosong menampilkan contoh format template.
+
+## L. Owner: update harga / modal / margin sekali banyak
+- [ ] `Update harga:` lalu `TELKOMSEL 3 HARI : 15rb`, `AXIS 5 HARI : 16.000`, ... → satu balasan "✅ Diperbarui (N perubahan)" dengan harga jual lama → baru dan marginnya.
+- [ ] `Update modal:` lalu daftar → modal lama → baru.
+- [ ] `Update margin:` lalu `AXIS 3 HARI : 2rb` → harga jual menjadi modal + margin.
+- [ ] Satu pesan berisi `Update stok:` ... `Update harga:` ... → keduanya diterapkan dalam satu balasan.
+- [ ] Angka tanpa satuan yang terlalu kecil (`axis 3 hari : 15`) → dilaporkan "angkanya kurang jelas", tidak diubah.
+- [ ] Harga jual di bawah modal → tetap diterapkan dengan peringatan ⚠️.
+- [ ] Margin untuk barang yang modalnya belum tercatat → tidak diubah, diminta mengisi modal dulu.
+- [ ] Tombol **↩️ Batalkan** → semua harga kembali.
+- [ ] Daftar tanpa kop "Update ..." → tidak diproses langsung.
