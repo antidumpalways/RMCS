@@ -86,3 +86,23 @@ test('pertanyaan harga sederhana dijawab lewat jalur cepat', async () => {
   assert.equal(quickCatalogQuery('yang 7 hari?'), null);
   assert.equal(quickCatalogQuery('axis 3 hari 2 pcs'), null);
 });
+
+test('template Rekap: "nama : jumlah", baris kosong dilewati, saldo di akhir', async () => {
+  const { bareBalanceExtraction, recapIssues, SALDO_QUESTION } = await import('./recap');
+  const text = 'TELKOMSEL 3 HARI : 2\nAXIS 5HARI : 3\nXL 7 HARI: \nTHREE 3 HARI : 0\n\nROKOK : \nSAMPOERNA : 3\n\nAdmin : 45rb';
+  const found = deterministicExtraction(text);
+  assert.deepEqual(found.inventoryLines?.map(line => [line.label, Number(line.quantity)]), [['TELKOMSEL 3 HARI', 2], ['AXIS 5HARI', 3], ['SAMPOERNA', 3]]);
+  assert.deepEqual(found.unresolved, []);
+  let draft = applyExtraction(emptyRecap(), found, text, 'u1');
+  // Saldo lupa ditulis: bot menanyakannya.
+  assert.ok(recapIssues(draft).includes(SALDO_QUESTION));
+  // Karyawan cukup membalas angkanya.
+  const answer = bareBalanceExtraction('26.350.000', draft);
+  assert.equal(answer?.entries[0].amount, '26350000');
+  draft = applyExtraction(draft, answer!, '26.350.000', 'u2');
+  assert.ok(!recapIssues(draft).includes(SALDO_QUESTION));
+  // Setelah saldo ada, angka polos tidak lagi dianggap saldo; angka kecil tidak pernah dianggap saldo.
+  assert.equal(bareBalanceExtraction('27jt', draft), null);
+  assert.equal(bareBalanceExtraction('5', emptyRecap()), null);
+  assert.equal(bareBalanceExtraction('26jt', emptyRecap())?.entries[0].amount, '26000000');
+});

@@ -124,3 +124,18 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Menu → Koreksi stok → `axis 6gb 5 hari 4` → langsung diterapkan (menu sudah menjadi penandanya).
 - [ ] Tombol **↩️ Batalkan** pada balasan → semua stok kembali.
 - [ ] Koreksi stok lewat kalimat biasa (`xl 3 hari stok 10`) → diterapkan tanpa menanyakan alasan.
+
+## K. Karyawan: template Rekap
+- [ ] Kirim satu pesan:
+  ```
+  Rekap
+  Telkomsel 3 hari : 2
+  Axis 5 hari : 1
+  XL 7 hari :
+  Admin : 45rb
+  Saldo total : 26jt
+  ```
+  → draf memuat 2 barang (baris XL kosong dilewati), admin, dan "💰 SALDO TOTAL" di bagian akhir.
+- [ ] Template yang sama **tanpa** baris saldo → draf diakhiri "❓ Saldo total akhirnya berapa?".
+- [ ] Balas `26jt` (angka saja) → terbaca sebagai saldo total; pertanyaan hilang.
+- [ ] Draf kosong menampilkan contoh format template.
