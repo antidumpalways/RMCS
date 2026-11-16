@@ -34,3 +34,15 @@ test('balasan modal + harga jual', () => {
   // Bukan balasan harga.
   for (const text of ['oke', 'berapa modalnya?', 'tambah stok axis 3 hari 10', 'IM3 3 hari : 13rb', '15', 'Update stok:\nIM3 3 HARI : 3']) assert.equal(parsePriceReply(text, one), null, text);
 });
+
+test('kartu perdana tidak dihitung sebagai voucher yang sudah ada', async () => {
+  const { isStarterPack } = await import('./new-product');
+  assert.equal(isStarterPack({ name: 'SP IM3', category: 'Kartu Perdana' }), true);
+  assert.equal(isStarterPack({ name: 'SP BY U 11GB', category: 'Voucher' }), true);
+  assert.equal(isStarterPack({ name: 'Axis 3 Hari', category: 'Voucher' }), false);
+  assert.equal(isStarterPack({ name: 'Paket Data 11GB By.U', category: 'Voucher' }), false);
+  // Merek IM3 hanya muncul pada kartu perdana: voucher IM3 dianggap belum ada.
+  const vouchersOnly = catalogTokens(['Axis 3 Hari', 'Three 3 Hari', 'Paket Data 11GB By.U']);
+  assert.equal(brandKnown('IM3 4 GB 3 hari', vouchersOnly), false);
+  assert.equal(brandKnown('BY U 10 GB 5 hari', vouchersOnly), true);
+});

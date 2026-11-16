@@ -116,3 +116,8 @@ export function parsePriceReply(text: string, pending: PendingPrice[]): PriceRep
   }
   return out.length ? out : null;
 }
+
+// Kartu perdana ("SP AXIS", "SP BY U 11GB") bukan voucher: keberadaannya tidak membuktikan voucher merek itu sudah ada.
+export function isStarterPack(product: { name: string; category: string }): boolean {
+  return /^\s*sp\b/i.test(product.name) || /perdana|starter/i.test(product.name) || /perdana|starter/i.test(product.category);
+}

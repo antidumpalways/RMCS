@@ -16,7 +16,7 @@ import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
 import { matchLinesWithAi } from './stock-ai';
-import { brandKnown, catalogTokens, parseNewProductSpec, parsePriceReply, type NewProductSpec, type PendingPrice, type PriceReply } from './new-product';
+import { brandKnown, catalogTokens, isStarterPack, parseNewProductSpec, parsePriceReply, type NewProductSpec, type PendingPrice, type PriceReply } from './new-product';
 import { parseUpdateList, type UpdateItem, type UpdateKind, type UpdateList } from './stock-list';
 import { resolveInventoryProduct } from './inventory';
 import { quickCatalogQuery } from './group-routing';
@@ -1878,7 +1878,9 @@ function findCandidatesForPick(label: string, catalog: CatalogProduct[]): Catalo
   const ranked = rankCatalogProducts(catalog.map(product => ({ ...product, categoryName: product.category.name, validity: [product.validity, product.quota].filter(Boolean).join(' ') || null })), terms)
     .map(item => catalog.find(product => product.id === item.product.id)).filter((product): product is CatalogProduct => !!product);
   const brand = brandWordsOf(label);
-  const sameBrand = ranked.filter(product => hasBrand(product, brand));
+  // Baris voucher (ada masa aktif): kartu perdana tidak ditawarkan sebagai pilihan.
+  const voucherLine = /\d\s*hari\b/i.test(label);
+  const sameBrand = ranked.filter(product => hasBrand(product, brand) && !(voucherLine && isStarterPack({ name: product.name, category: product.category.name })));
   // Kartu perdana ("SP ...") ikut bila merek sama; bila ada barang bermerek sama, yang lain tidak ditampilkan.
   return (sameBrand.length ? sameBrand : ranked).slice(0, 5);
 }
@@ -1920,6 +1922,9 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
     const aiCatalog = catalog.map(product => ({ id: product.id, name: product.name, category: product.category.name, provider: product.provider, validity: product.validity, quota: product.quota ?? null }));
     const matched = new Map((await matchLinesWithAi(aiLines, aiCatalog)).map(match => [match.index, match.productId]));
     const knownWords = catalogTokens(catalog.flatMap(product => [product.name, product.provider ?? '', product.category.name]));
+    // Untuk baris voucher, hanya voucher yang dihitung: kartu perdana "SP IM3" tidak membuat voucher IM3 dianggap sudah ada.
+    const knownVoucherWords = catalogTokens(catalog.filter(product => !isStarterPack({ name: product.name, category: product.category.name }) && (product.provider || product.validity))
+      .flatMap(product => [product.name, product.provider ?? '']));
     // Kategori voucher: yang dipakai barang berpenyedia + masa aktif terbanyak.
     const categories = await prisma.category.findMany({ select: { id: true, name: true } });
     const voucherCategory = (() => {
@@ -1933,7 +1938,7 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
       if (productId !== undefined && byId.has(productId)) { want(productId, entry.item); aiNotes.push(`${entry.item.label} → ${fullName(byId.get(productId)!)}`); continue; }
       // Barang yang merek/namanya belum dikenal katalog sama sekali: buat barang baru (harga ditanyakan sesudahnya).
       const spec = entry.item.kind === 'stock' && entry.item.value > 0 ? parseNewProductSpec(entry.item.label, entry.item.group) : null;
-      if (spec && !brandKnown(entry.item.label, knownWords)) {
+      if (spec && !brandKnown(entry.item.label, spec.voucher ? knownVoucherWords : knownWords)) {
         const category = spec.voucher ? voucherCategory ?? categories.find(item => normalizeGroup(item.name) === 'voucher') ?? null
           : spec.group ? categories.find(item => normalizeGroup(item.name) === normalizeGroup(spec.group!) || normalizeGroup(item.name).includes(normalizeGroup(spec.group!)) || normalizeGroup(spec.group!).includes(normalizeGroup(item.name))) ?? null : null;
         if (category) { toCreate.push({ spec, stock: entry.item.value, category: { id: category.id, name: category.name } }); continue; }
