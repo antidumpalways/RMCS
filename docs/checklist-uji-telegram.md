@@ -165,3 +165,15 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Baris yang kemungkinan barang lama dengan tulisan beda (mis. `BY U 10 GB 5 HARI` padahal katalog "Paket Data 11GB By.U") → tidak dibuat; muncul tombol pilihan barang dan usulan `Ganti <nama katalog> jadi <tulisanmu>`.
 - [ ] Tekan tombol pilihan → stok diterapkan, dan tulisan yang sama langsung dikenali pada Update stok berikutnya.
 - [ ] Mengisi harga lebih dulu tidak menghapus tombol pilihan yang masih menunggu.
+
+## O. Karyawan: Update stok setelah shift (barang laku dihitung dari selisih stok)
+- [ ] Owner menetapkan saldo awal gabungan (saldo + cash) lewat asisten pribadi (mis. "ubah saldo jadi 34jt"). Shift berikutnya dibuka otomatis dengan saldo itu.
+- [ ] Setelah shift, karyawan mengirim di grup: `Update stok` + daftar sisa stok (`TELKOMSEL 3 HARI : 38`, judul `ROKOK :`, dst) + `Admin: 82` + `Total: 34463`.
+- [ ] Draf menampilkan barang laku = stok sistem - hitungan, nilainya dari harga katalog, admin, dan "💰 SALDO TOTAL".
+- [ ] Angka tanpa satuan (`Admin: 82`, `Total: 34463`) dibaca ribuan dan dituliskan di "CATATAN HITUNGAN" supaya bisa diperiksa; `82rb` / `34,4jt` dipakai apa adanya.
+- [ ] Uang lebih dari perkiraan -> keterangan "kemungkinan dari penjualan pertalite/aksesori yang tidak ikut dihitung, atau pembayaran bon". Uang kurang -> "kemungkinan bon, pengeluaran belum ditulis, atau barang keluar belum tercatat".
+- [ ] Selisih yang setara 1-3 pcs barang tertentu disebut ("setara 2 pcs Telkomsel 3 Hari").
+- [ ] Hitungan lebih besar dari stok sistem -> dicatat "barang masuk?" dan tidak dihitung terjual.
+- [ ] Barang yang namanya tidak dikenali -> dicatat sebagai "belum dikenali", tidak menghalangi Selesai.
+- [ ] Setelah Selesai, stok sistem = hitungan karyawan, dan owner menerima laporan lengkap dengan keterangan selisih.
+- [ ] Mengirim ulang `Update stok` menggantikan hitungan sebelumnya di draf yang sama.
