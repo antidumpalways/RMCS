@@ -11,8 +11,18 @@ export type CountMessage = {
   expense: CountMoney | null;
 };
 
-const HEADER = /^(?:tolong\s+)?(?:update|updet|apdet)\s+(?:stok|stock)(?:\s+(?:akhir|fisik|sekarang|terbaru|shift|tutup))*\s*[:.,-]*\s*/i;
-const FINANCE_LINE = /^(admin|total(?:\s+(?:saldo|kas|uang|akhir))*|saldo(?:\s+(?:total|akhir))*|kas|pengeluaran|biaya)\s*[:=]\s*(.+)$/i;
+const HEADER = /^(?:tolong\s+)?(?:update|updet|apdet)\s+(?:stok|stock)(?:\s+(?:akhir|fisik|sekarang|terbaru|shift|tutup|pagi|sore|buka|awal))*\s*[:.,-]*\s*/i;
+// "Modal" yang ditulis karyawan berarti uang gabungan saldo + cash, sama seperti "Total".
+const FINANCE_LINE = /^(admin|total(?:\s+(?:saldo|kas|uang|akhir))*|modal(?:\s+(?:awal|akhir|saldo|kas|uang))*|saldo(?:\s+(?:total|akhir))*|kas|pengeluaran|biaya)\s*[:=]\s*(.+)$/i;
+
+// Kop bisa menyebut pagi/buka (membuka shift) atau sore/tutup/akhir (menutup shift); tanpa penanda ditentukan dari keadaan shift.
+export function countMode(text: string): 'open' | 'close' | null {
+  const first = text.trim().split(/\r?\n/)[0] ?? '';
+  const header = HEADER.exec(first)?.[0] ?? '';
+  if (/\b(?:pagi|buka|awal)\b/i.test(header)) return 'open';
+  if (/\b(?:sore|tutup|akhir)\b/i.test(header)) return 'close';
+  return null;
+}
 
 export function isCountMessage(text: string): boolean {
   const first = text.trim().split(/\r?\n/)[0] ?? '';

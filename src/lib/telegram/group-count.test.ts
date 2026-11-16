@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { balanceExplanation, differenceHints, interpretMoney, isCountMessage, parseCountMessage, soldFromCounts } from './group-count';
+import { balanceExplanation, countMode, differenceHints, interpretMoney, isCountMessage, parseCountMessage, soldFromCounts } from './group-count';
 
 test('pesan "Update stok" karyawan: stok, Admin, dan Total', () => {
   const message = parseCountMessage('Update stok\nTELKOMSEL 3 HARI : 38\nTELKOMSEL 5 HARI : 24\n\nROKOK :\nSAMPOERNA : 7\nSamsu Ketengan : 11 batang\n\nAdmin: 82\nTotal: 34463', 30_000_000);
@@ -65,4 +65,18 @@ test('pesan hanya berisi Admin dan Total tetap terbaca', () => {
   const message = parseCountMessage(['Update stok', 'Admin: 82', 'Total: 34463'].join(String.fromCharCode(10)), 30_000_000);
   assert.equal(message?.items.length, 0);
   assert.equal(message?.total?.amount, 34_463_000);
+});
+
+test('Modal dibaca sama seperti Total; kop pagi/sore menentukan mode', () => {
+  const NL = String.fromCharCode(10);
+  const message = parseCountMessage(['Update stok pagi', 'Axis 3 hari : 5', 'Modal: 34463'].join(NL), 30_000_000);
+  assert.equal(message?.total?.amount, 34_463_000);
+  assert.equal(message?.items.length, 1);
+  assert.equal(parseCountMessage(['Update stok', 'Modal awal: 34,4jt'].join(NL))?.total?.amount, 34_400_000);
+  assert.equal(countMode('Update stok pagi' + NL + 'x : 1'), 'open');
+  assert.equal(countMode('Update stok buka' + NL + 'x : 1'), 'open');
+  assert.equal(countMode('Update stok sore' + NL + 'x : 1'), 'close');
+  assert.equal(countMode('Update stok tutup' + NL + 'x : 1'), 'close');
+  assert.equal(countMode('Update stok' + NL + 'x : 1'), null);
+  assert.equal(isCountMessage('Update stok pagi' + NL + 'Axis 3 hari : 5'), true);
 });

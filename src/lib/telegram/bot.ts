@@ -11,7 +11,8 @@ import { cashOnHandAt, shiftOpening } from '@/lib/automation';
 import { combinedBalanceAt, recordedCombinedMovementsBetween, setCombinedBalance } from '@/lib/services/combined-balance';
 import { identifyTelegramActor, configuredTelegramOwners, type TelegramActor } from './identity';
 import { getCatalog, handleGroupAssistantMessage, handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
-import { balanceExplanation, differenceHints, isCountMessage, parseCountMessage, soldFromCounts, type CountMessage } from './group-count';
+import { balanceExplanation, countMode, differenceHints, isCountMessage, parseCountMessage, soldFromCounts, type CountMessage } from './group-count';
+import { applyMorningCount } from './morning-count';
 import { extractCountMessage } from './count-extract';
 import { authorizedOwnerPrivateChat } from './owner-intent';
 import { isImplicitCatalogQuestion, lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
@@ -175,11 +176,11 @@ async function autoOpenShift(chatId:bigint,actor:TelegramActor,shiftLabel:string
   return true;
  }catch(error){if((error as Error).message==='SHIFT_ALREADY_ACTIVE')return false;throw error;}
 }
-async function closeStaleShift(chatId:bigint,actor:TelegramActor,opening:{row:{id:string};payload:ShiftOpeningPayload}){
+async function closeStaleShift(chatId:bigint,actor:TelegramActor,opening:{row:{id:string};payload:ShiftOpeningPayload},force=false){
  // Shift yang lupa ditutup tidak boleh memblokir shift berikutnya: tutup otomatis tanpa rekap (stok dan saldo tidak diubah).
  const ageHours=(Date.now()-new Date(opening.payload.shiftStart).getTime())/3_600_000;
  const sameOpener=opening.payload.openedByIdentityId===actor.identityId;
- if(!(ageHours>24||(!sameOpener&&ageHours>14)))return false;
+ if(!force&&!(ageHours>24||(!sameOpener&&ageHours>14)))return false;
  const shiftId=opening.payload.shiftId??opening.row.id;
  const activeRecap=await prisma.telegramSession.findFirst({where:{chatId,state:'REPORTING',expiresAt:{gt:new Date()}},select:{id:true}});
  if(activeRecap)return false;
@@ -907,6 +908,46 @@ function looksLikeRecapContent(text:string){
  return (found.entries.length>0||(found.inventoryLines?.length??0)>0)&&found.unresolved.length===0&&!(found.inventoryLines??[]).some(line=>line.ambiguity);
 }
 function recapCallback(data:string|undefined){return /^rcms:(?:ok|cancel|edit|i|q|stockend|stocklist|dup):/.test(data??'')||data==='rcms:group:rekap'||!!visionCallbackFromData(data);}
+// "Update stok" pagi membuka shift; yang sore menutupnya lewat rekap. Penanda di kop (pagi/sore) didahulukan,
+// selain itu ditentukan dari keadaan shift: tanpa shift berjalan, atau shift yang sudah sangat lama, berarti pagi.
+async function decideCountMode(chatId:bigint,text:string):Promise<'open'|'close'>{
+ const explicit=countMode(text);
+ if(explicit)return explicit;
+ const opening=await activeShiftOpening(chatId,'');
+ if(!opening)return 'open';
+ const ageHours=(Date.now()-new Date(opening.payload.shiftStart).getTime())/3_600_000;
+ return ageHours>=16?'open':'close';
+}
+async function handleMorningCountMessage(m:TelegramMessage,actor:TelegramActor){
+ const chatId=BigInt(m.chat.id),text=m.text??'';
+ const running=await activeShiftOpening(chatId,actor.identityId);
+ if(running&&!await closeStaleShift(chatId,actor,running,true)){
+  return sendTelegramMessage(chatId,'Shift sebelumnya masih berjalan (ada rekap yang sedang diisi). Selesaikan atau batalkan rekap itu dulu, lalu kirim Update stok pagi lagi.');
+ }
+ const reference=Number(await combinedBalanceAt(new Date()));
+ const count=parseCountMessage(text,reference);
+ if(!count||(!count.items.length&&!count.total))return sendTelegramMessage(chatId,'Update stok pagi belum terbaca. Contoh:\nUpdate stok pagi\nTelkomsel 3 hari : 38\nAxis 5 hari : 9\nModal: 34.463.000');
+ const result=await applyMorningCount(count,actor.displayName);
+ await autoOpenShift(chatId,actor,'pagi');
+ const money=formatTelegramRupiah;
+ const lines=['✅ SHIFT PAGI DIBUKA'];
+ lines.push('📦 Stok: '+(result.changes.length?result.changes.length+' barang disesuaikan dengan hitunganmu':'semua sama dengan catatan sistem')+(result.unchanged&&result.changes.length?', '+result.unchanged+' sama':''));
+ for(const change of result.changes.slice(0,25))lines.push('• '+change);
+ if(result.changes.length>25)lines.push('…dan '+(result.changes.length-25)+' lainnya.');
+ if(result.balance)lines.push('💰 Uang awal (saldo + cash): '+money(result.balance.after)+(result.balance.changed?' (catatan sistem sebelumnya '+money(result.balance.before)+', selisih '+money(result.balance.after-result.balance.before)+'; sekarang mengikuti hitunganmu)':' ✅ sama dengan catatan sistem'));
+ if(count.total?.amount!=null&&count.total.assumedThousands)lines.push('ℹ️ Modal “'+count.total.raw+'” dibaca '+money(count.total.amount)+' (angka tanpa satuan dianggap ribuan).');
+ if(result.unmatched.length)lines.push('⚠️ Belum dikenali (tidak diubah): '+result.unmatched.join(', ')+'. Tulis ulang dengan nama lengkap atau kabari owner.');
+ for(const note of result.notes)lines.push('ℹ️ '+note);
+ lines.push('','Sore nanti kirim lagi: Update stok + Admin + Total (atau Modal).');
+ await sendLongTelegramMessage(chatId,lines.join('\n'));
+ if(result.changes.length||result.balance?.changed||result.unmatched.length){
+  const owner=['🌅 UPDATE STOK PAGI','Karyawan: '+actor.displayName];
+  if(result.changes.length)owner.push('Stok disesuaikan dengan hitungan karyawan ('+result.changes.length+' barang):',...result.changes.slice(0,40).map(change=>'• '+change));
+  if(result.balance?.changed)owner.push('Uang awal diubah dari '+money(result.balance.before)+' menjadi '+money(result.balance.after)+' (selisih '+money(result.balance.after-result.balance.before)+').');
+  if(result.unmatched.length)owner.push('Belum dikenali: '+result.unmatched.join(', '));
+  try{await notifyOwnersText(owner.join('\n'));}catch{/* Info untuk owner hanya pelengkap. */}
+ }
+}
 async function processUpdate(u:TelegramUpdate){
  const id=telegramId(u.update_id);if(id===null)throw new Error('Invalid Telegram update_id');
  const m=u.message,c=u.callback_query,chat=m?.chat??c?.message?.chat,from=m?.from??c?.from;if(!chat||!from)return false;
@@ -963,6 +1004,7 @@ async function processUpdate(u:TelegramUpdate){
  let aiIntent:ShiftIntent|null=null;
  let recapStart=startRequest;
  let sharedContent=false;
+ let morningCount=false;
  if(!c&&!command&&!startRequest&&!assistantRequest&&lateEntry===null){
   const existingIdentity=await prisma.telegramIdentity.findUnique({where:{telegramUserId:senderId},select:{id:true}});
   const active=existingIdentity?await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId:BigInt(chat.id),telegramIdentityId:existingIdentity.id}},select:{state:true,draftId:true,expiresAt:true}}):null;
@@ -971,12 +1013,12 @@ async function processUpdate(u:TelegramUpdate){
    // Karyawan langsung menulis barang terjual ("telkomsel 3 hari", "axis 5 hari 2 pcs") tanpa mengetik "rekap":
    // buka rekap otomatis dan catat isinya, jangan didiamkan.
    // Karyawan lain ikut mengisi rekap yang sedang berjalan: hanya pesan yang jelas berisi rekap, obrolan tetap didiamkan.
-   if(m?.text&&!m.photo&&!m.document&&isCountMessage(m.text))recapStart={shiftLabel:null,rest:m.text.trim()};
+   if(m?.text&&!m.photo&&!m.document&&isCountMessage(m.text)){if(await decideCountMode(BigInt(chat.id),m.text)==='open')morningCount=true;else recapStart={shiftLabel:null,rest:m.text.trim()};}
    else if(m?.text&&!m.photo&&!m.document&&looksLikeRecapContent(m.text)&&await activeSharedRecap(BigInt(chat.id)))sharedContent=true;
    else if(m?.text&&!m.photo&&!m.document&&isLikelySaleNote(m.text))recapStart={shiftLabel:null,rest:m.text.trim()};
    // Bahasa bebas: AI hanya menilai niat pada pesan teks yang lolos penyaring kasar. Gagal/ragu = diam.
    else if(m&&!m.photo&&!m.document&&worthClassifying(m.text)){const found=await classifyShiftIntent(m.text!);if(found.intent!=='none'&&found.confidence==='high')aiIntent=found;}
-   if(!aiIntent&&!recapStart&&!sharedContent)return false;
+   if(!aiIntent&&!recapStart&&!sharedContent&&!morningCount)return false;
   }
  }
  const claim=await claimUpdate(id);if(claim==='PROCESSED')return true;if(claim==='BUSY')throw new TelegramUpdateBusy();
@@ -988,6 +1030,7 @@ async function processUpdate(u:TelegramUpdate){
   else if(m&&command)await handleCommand(m,actor,command.command,command.args,id);
   else if(m&&lateEntry!==null)await handleLateEntry(m,actor,lateEntry,id);
   else if(m&&aiIntent)await handleAiShiftIntent(BigInt(chat.id),actor,aiIntent,m.text??'',m,id);
+  else if(m&&morningCount)await handleMorningCountMessage(m,actor);
   else if(m&&recapStart){
    const chatId=BigInt(chat.id),body=recapStart.rest;
    if(m.photo||m.document){await openReport(chatId,actor,recapStart.shiftLabel);await handleTelegramPhoto(m,actor.identityId,id);}

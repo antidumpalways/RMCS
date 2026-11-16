@@ -6,11 +6,13 @@ import { formatTelegramRupiah } from './core';
 import { getCatalog } from './owner-assistant';
 import { resolveInventoryProduct } from './inventory';
 import { soldFromCounts, type CountMessage, type CountProduct } from './group-count';
+import type { StockListItem } from './stock-list';
 import type { RecapEntry, RecapExtraction, RecapInventoryExtraction } from './recap';
 
 const squash = (value: string) => value.toLocaleLowerCase('id-ID').replace(/[^a-z0-9]+/g, '');
 
-export async function extractCountMessage(count: CountMessage): Promise<RecapExtraction> {
+// Mencocokkan baris hitungan dengan barang katalog (alias disetujui owner, kata kunci, kategori judul kelompok).
+export async function resolveCountItems(count: CountMessage): Promise<{ counts: Array<{ item: StockListItem; product: CountProduct | null }>; catalogProducts: CountProduct[] }> {
   const catalog = await getCatalog();
   const searchable = catalog.map(product => ({ id: product.id, name: product.name, sku: product.sku, provider: product.provider,
     validity: [product.validity, product.quota].filter(Boolean).join(' ') || null, categoryName: product.category.name, stock: product.stock, locationId: product.locationId }));
@@ -39,8 +41,12 @@ export async function extractCountMessage(count: CountMessage): Promise<RecapExt
     const product = productId === null ? null : byId.get(productId) ?? null;
     return { item, product: product ? toCountProduct(product) : null };
   });
+  return { counts, catalogProducts: catalog.map(toCountProduct) };
+}
 
-  const result = soldFromCounts(counts, catalog.map(toCountProduct));
+export async function extractCountMessage(count: CountMessage): Promise<RecapExtraction> {
+  const { counts, catalogProducts } = await resolveCountItems(count);
+  const result = soldFromCounts(counts, catalogProducts);
   const inventoryLines: RecapInventoryExtraction[] = result.sold.map(line => ({
     productId: line.productId, sourceText: `${line.label}: stok sistem ${line.systemStock}, hitungan ${line.counted}`, label: line.label, quantity: line.sold, unit: 'pcs', operation: 'add', ambiguity: null }));
 

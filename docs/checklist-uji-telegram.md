@@ -177,3 +177,12 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Barang yang namanya tidak dikenali -> dicatat sebagai "belum dikenali", tidak menghalangi Selesai.
 - [ ] Setelah Selesai, stok sistem = hitungan karyawan, dan owner menerima laporan lengkap dengan keterangan selisih.
 - [ ] Mengirim ulang `Update stok` menggantikan hitungan sebelumnya di draf yang sama.
+
+## P. Pagi buka shift, sore tutup (Update stok dua kali sehari)
+- [ ] **Pagi** (belum ada shift berjalan): kirim `Update stok` + daftar stok + `Modal: 34463` -> bot membalas "SHIFT PAGI DIBUKA".
+- [ ] Stok sistem disesuaikan dengan hitungan pagi; balasan memuat daftar "26 -> 28 (+2)" dan owner menerima "UPDATE STOK PAGI".
+- [ ] Uang awal (saldo + cash) mengikuti Modal pagi; bila beda dari catatan, balasan dan owner menyebut selisihnya.
+- [ ] Nama yang tidak dikenali dilaporkan, tidak mengubah apa pun.
+- [ ] **Sore** (shift sudah berjalan): `Update stok` + stok + `Admin: 82` + `Modal: 34600` -> draf rekap dengan barang laku dari selisih stok pagi vs sore, dan keterangan lebih/kurang.
+- [ ] Penanda di kop memaksa mode: `Update stok pagi` / `buka` membuka shift; `Update stok sore` / `tutup` menutupnya.
+- [ ] Shift kemarin belum direkap lalu karyawan kirim `Update stok pagi` -> shift lama ditutup otomatis (owner diberi tahu) dan shift baru dibuka.
