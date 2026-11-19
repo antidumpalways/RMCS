@@ -10,7 +10,7 @@ import { resolveCountItems } from './count-extract';
 import { parseStockList } from './stock-list';
 import type { CountMessage } from './group-count';
 
-const HEADER = /^(?:tolong\s+)?(?:barang|stok|stock)\s+masuk|^(?:tolong\s+)?(?:restock|kulakan|tambah\s+stok)\b/i;
+const HEADER = /^(?:tolong\s+)?(?:barang|stok|stock)\s+masuk|^(?:tolong\s+)?(?:restock|kulakan|tambah(?:kan|in)?\s+(?:stok|stock))\b/i;
 const RECEIPT_TTL = 30 * 60_000;
 const MAX_QTY = 10_000;
 
