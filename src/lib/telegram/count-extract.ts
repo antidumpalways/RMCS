@@ -5,14 +5,15 @@ import { catalogQueryKey } from '@/lib/catalog-search';
 import { formatTelegramRupiah } from './core';
 import { getCatalog } from './owner-assistant';
 import { resolveInventoryProduct } from './inventory';
-import { soldFromCounts, type CountMessage, type CountProduct } from './group-count';
+import { dedupeCounts, soldFromCounts, type CountMessage, type CountProduct } from './group-count';
+import { looseUnitConflict } from './variant-guard';
 import type { StockListItem } from './stock-list';
 import type { RecapEntry, RecapExtraction, RecapInventoryExtraction } from './recap';
 
 const squash = (value: string) => value.toLocaleLowerCase('id-ID').replace(/[^a-z0-9]+/g, '');
 
 // Mencocokkan baris hitungan dengan barang katalog (alias disetujui owner, kata kunci, kategori judul kelompok).
-export async function resolveCountItems(count: CountMessage): Promise<{ counts: Array<{ item: StockListItem; product: CountProduct | null }>; catalogProducts: CountProduct[] }> {
+export async function resolveCountItems(count: CountMessage): Promise<{ counts: Array<{ item: StockListItem; product: CountProduct | null }>; catalogProducts: CountProduct[]; duplicateNotes: string[] }> {
   const catalog = await getCatalog();
   const searchable = catalog.map(product => ({ id: product.id, name: product.name, sku: product.sku, provider: product.provider,
     validity: [product.validity, product.quota].filter(Boolean).join(' ') || null, categoryName: product.category.name, stock: product.stock, locationId: product.locationId }));
@@ -38,14 +39,16 @@ export async function resolveCountItems(count: CountMessage): Promise<{ counts: 
         if (squashed.length === 1) productId = squashed[0].id;
       }
     }
-    const product = productId === null ? null : byId.get(productId) ?? null;
+    let product = productId === null ? null : byId.get(productId) ?? null;
+    if (product && looseUnitConflict(item.label, product.name)) product = null;
     return { item, product: product ? toCountProduct(product) : null };
   });
-  return { counts, catalogProducts: catalog.map(toCountProduct) };
+  const deduped = dedupeCounts(counts);
+  return { counts: deduped.counts, catalogProducts: catalog.map(toCountProduct), duplicateNotes: deduped.notes };
 }
 
 export async function extractCountMessage(count: CountMessage): Promise<RecapExtraction> {
-  const { counts, catalogProducts } = await resolveCountItems(count);
+  const { counts, catalogProducts, duplicateNotes } = await resolveCountItems(count);
   const result = soldFromCounts(counts, catalogProducts);
   const inventoryLines: RecapInventoryExtraction[] = result.sold.map(line => ({
     productId: line.productId, sourceText: `${line.label}: stok sistem ${line.systemStock}, hitungan ${line.counted}`, label: line.label, quantity: line.sold, unit: 'pcs', operation: 'add', ambiguity: null }));
@@ -67,7 +70,9 @@ export async function extractCountMessage(count: CountMessage): Promise<RecapExt
   else if (count.items.length) notes.push('Tidak ada selisih stok: semua hitungan sama dengan stok sistem.');
   if (result.unmatched.length) notes.push(`Belum dikenali (tidak dihitung, tulis ulang dengan nama lengkap atau kabari owner): ${result.unmatched.join(', ')}.`);
   if (count.skipped.length) notes.push(`Dilewati (angka kosong): ${count.skipped.join(', ')}.`);
-  notes.push(...result.notes);
+  if (count.invalid.length) notes.push(`Baris ini tidak terbaca dan diabaikan: ${count.invalid.slice(0, 6).join('; ')}.`);
+  notes.push(...duplicateNotes, ...result.notes);
+  notes.unshift('Dibaca sebagai Update stok SORE (penutup shift). Kalau ini sebenarnya pagi, batalkan lalu kirim ulang dengan kop “Update stok pagi”.');
 
   return { replaceInventory: true, entries, inventoryLines, unresolved, notes };
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { balanceExplanation, countMode, differenceHints, interpretMoney, isCountMessage, parseCountMessage, soldFromCounts } from './group-count';
+import { balanceExplanation, countMode, dedupeCounts, differenceHints, interpretMoney, isCountMessage, parseCountMessage, soldFromCounts } from './group-count';
+import { looseUnitConflict } from './variant-guard';
 
 test('pesan "Update stok" karyawan: stok, Admin, dan Total', () => {
   const message = parseCountMessage('Update stok\nTELKOMSEL 3 HARI : 38\nTELKOMSEL 5 HARI : 24\n\nROKOK :\nSAMPOERNA : 7\nSamsu Ketengan : 11 batang\n\nAdmin: 82\nTotal: 34463', 30_000_000);
@@ -79,4 +80,44 @@ test('Modal dibaca sama seperti Total; kop pagi/sore menentukan mode', () => {
   assert.equal(countMode('Update stok tutup' + NL + 'x : 1'), 'close');
   assert.equal(countMode('Update stok' + NL + 'x : 1'), null);
   assert.equal(isCountMessage('Update stok pagi' + NL + 'Axis 3 hari : 5'), true);
+});
+
+test('Uang keluar terbaca, ikut gaya ribuan Total, dan tidak membuang daftar stok', () => {
+  const NL = String.fromCharCode(10);
+  const message = parseCountMessage(['Update stok', 'TELKOMSEL 3 HARI : 58', 'BATANGAN FELOZ : 16 BATANG', 'ROKOK :', 'SAMPOERNA : 8', 'Uang keluar: 1190', 'Admin: 154', 'Total: 37954'].join(NL), 37_000_000);
+  assert.equal(message?.items.length, 3);
+  assert.equal(message?.expense?.amount, 1_190_000);
+  assert.equal(message?.admin?.amount, 154_000);
+  assert.equal(message?.total?.amount, 37_954_000);
+  // Satuan eksplisit tidak dikalikan lagi.
+  assert.equal(parseCountMessage(['Update stok', 'Axis 3 hari : 5', 'Uang keluar: 90rb', 'Admin: 154', 'Total: 37954'].join(NL), 37_000_000)?.expense?.amount, 90_000);
+  // Baris kosong dan baris tak terbaca tidak menjatuhkan daftar.
+  const messy = parseCountMessage(['Update stok', 'Axis 3 hari : 5', 'harga axis 15rb', 'Uang keluar: ', 'Admin: ', 'Total:'].join(NL));
+  assert.equal(messy?.items.length, 1);
+  assert.deepEqual(messy?.invalid, ['harga axis 15rb']);
+});
+
+test('Admin atau Uang keluar terisi berarti sore; template kosong ditentukan dari keadaan shift', () => {
+  const NL = String.fromCharCode(10);
+  assert.equal(countMode(['Update stok', 'Axis 3 hari : 5', 'Uang keluar: ', 'Admin: 154', 'Total: 37954'].join(NL)), 'close');
+  assert.equal(countMode(['Update stok', 'Axis 3 hari : 5', 'Uang keluar: 1190', 'Admin: ', 'Total:'].join(NL)), 'close');
+  assert.equal(countMode(['Update stok', 'Axis 3 hari : 5', 'Uang keluar: ', 'Admin: ', 'Total:'].join(NL)), null);
+  assert.equal(countMode(['Update stok', 'Axis 3 hari : 5', 'Modal: 34463'].join(NL)), null);
+});
+
+test('dua baris ke barang yang sama tidak saling menimpa dan batangan bukan bungkus', () => {
+  const product = (id: number, name: string, stock: number, quota?: string) => ({ id, name, stock, sellPrice: 15_000n, validity: null, quota: quota ?? null });
+  const item = (label: string, stock: number) => ({ label, stock, group: null, sourceText: `${label} : ${stock}` });
+  const im3 = product(1, 'IM3 4GB 3 Hari', 2, '4GB'), samsu = product(2, 'Samsu Ketengan', 9);
+  const result = dedupeCounts([
+    { item: item('IM3 10 GB 3 hari', 1), product: im3 }, { item: item('IM3 4 GB 3 hari', 2), product: im3 },
+    { item: item('Samsu Ketengan', 9), product: samsu }, { item: item('SAMSUE', 5), product: samsu },
+  ]);
+  // Kuota cocok menang walau ditulis belakangan; pada Samsu yang pertama menang.
+  assert.deepEqual(result.counts.map(entry => entry.product?.id ?? null), [null, 1, 2, null]);
+  assert.equal(result.notes.length, 2);
+  assert.equal(soldFromCounts(result.counts, [im3, samsu]).sold.length, 0);
+  assert.equal(looseUnitConflict('BATANGAN FELOZ', 'FELOZ'), true);
+  assert.equal(looseUnitConflict('Samsu Ketengan', 'Samsu Ketengan'), false);
+  assert.equal(looseUnitConflict('FELOZ', 'FELOZ'), false);
 });

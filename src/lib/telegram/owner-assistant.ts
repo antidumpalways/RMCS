@@ -16,6 +16,7 @@ import { setCombinedBalance } from '@/lib/services/combined-balance';
 import { applySpecReplacement } from './spec-swap';
 import { strictProductMatch } from './product-match';
 import { matchLinesWithAi } from './stock-ai';
+import { looseUnitConflict } from './variant-guard';
 import { brandKnown, catalogTokens, isStarterPack, parseNewProductSpec, parsePriceReply, type NewProductSpec, type PendingPrice, type PriceReply } from './new-product';
 import { parseUpdateList, type UpdateItem, type UpdateKind, type UpdateList } from './stock-list';
 import { resolveInventoryProduct } from './inventory';
@@ -1898,7 +1899,15 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
   const ambiguous: Array<{ item: UpdateItem; label: string; similar: string[] }> = [];
   // Nama lengkap untuk laporan: voucher sering bernama sama dan hanya dibedakan masa aktif/kuota.
   const fullName = (product: CatalogProduct) => `${product.name}${product.validity && !product.name.toLowerCase().includes(product.validity.toLowerCase()) ? ` (${product.validity})` : ''}${product.quota && !product.name.toLowerCase().includes(product.quota.toLowerCase()) ? ` ${product.quota}` : ''}`;
-  const want = (productId: number, item: UpdateItem) => targets.set(productId, { ...targets.get(productId), [item.kind]: item.value });
+  const want = (productId: number, item: UpdateItem) => {
+    // Dua baris yang cocok ke barang yang sama (mis. "FELOZ" dan "BATANGAN FELOZ") tidak boleh saling menimpa.
+    const existing = targets.get(productId)?.[item.kind];
+    if (existing !== undefined && existing !== item.value) {
+      unclear.push(`${item.label} (${shown(item)}) — sama-sama cocok ke ${byId.get(productId)?.name ?? 'barang yang sama'} dengan baris lain; hanya baris pertama yang dipakai. Kalau ini barang lain, tambahkan dulu ke katalog.`);
+      return;
+    }
+    targets.set(productId, { ...targets.get(productId), [item.kind]: item.value });
+  };
   const shown = (item: UpdateItem) => item.kind === 'stock' ? String(item.value) : formatIdr(BigInt(item.value));
   for (const item of list.items) {
     // Voucher dikelola per provider per hari: kuota dan angka lepas tidak ikut mencocokkan.
@@ -1910,7 +1919,7 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
     if (aliasIds.length === 1) { want(aliasIds[0], item); continue; }
     let found = inGroup.length ? resolveInventoryProduct(label, inGroup) : resolveInventoryProduct(label, searchable);
     if (found.status !== 'MATCHED' && inGroup.length) found = resolveInventoryProduct(label, searchable);
-    if (found.status === 'MATCHED' && found.productId) { want(found.productId, item); continue; }
+    if (found.status === 'MATCHED' && found.productId && !looseUnitConflict(item.label, byId.get(found.productId)?.name ?? '')) { want(found.productId, item); continue; }
     // "ONBOLD KECIL" untuk "On Bold Kecil": sama persis bila spasi diabaikan.
     const squashed = searchable.filter(product => normalizeGroup(product.name) === normalizeGroup(label));
     if (squashed.length === 1) { want(squashed[0].id, item); continue; }

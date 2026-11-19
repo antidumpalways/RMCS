@@ -186,3 +186,11 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] **Sore** (shift sudah berjalan): `Update stok` + stok + `Admin: 82` + `Modal: 34600` -> draf rekap dengan barang laku dari selisih stok pagi vs sore, dan keterangan lebih/kurang.
 - [ ] Penanda di kop memaksa mode: `Update stok pagi` / `buka` membuka shift; `Update stok sore` / `tutup` menutupnya.
 - [ ] Shift kemarin belum direkap lalu karyawan kirim `Update stok pagi` -> shift lama ditutup otomatis (owner diberi tahu) dan shift baru dibuka.
+
+## Q. Dua shift: perbaikan dari percakapan nyata
+- [ ] `Uang keluar: 1190` terbaca Rp 1.190.000 (ikut gaya ribuan Total) dan muncul sebagai Pengeluaran di draf; daftar stok tidak hilang.
+- [ ] Baris stok yang tidak terbaca disebut di catatan ("Baris ini tidak terbaca dan diabaikan"), tidak membuang seluruh daftar.
+- [ ] `IM3 4 GB 3 HARI` dan `IM3 10 GB 3 HARI` (atau `Samsu Ketengan` dan `SAMSUE`) tidak saling menimpa; yang tidak dipakai dilaporkan sebagai barang yang belum ada di katalog.
+- [ ] `BATANGAN FELOZ` tidak pernah dicocokkan ke `FELOZ` (juga di Update stok owner).
+- [ ] Template dengan `Admin` atau `Uang keluar` terisi selalu dibaca SORE; template kosong mengikuti keadaan shift; kop `pagi`/`sore` memaksa.
+- [ ] Draf sore selalu menyebut "Dibaca sebagai Update stok SORE" supaya karyawan tahu bagaimana bot membacanya.

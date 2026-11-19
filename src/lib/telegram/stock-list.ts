@@ -13,7 +13,7 @@ export type StockListItem = {
   sourceText: string;
 };
 
-export type StockList = { items: StockListItem[]; skipped: string[] };
+export type StockList = { items: StockListItem[]; skipped: string[]; /** Baris yang tidak terbaca (hanya diisi pada mode tolerant). */ invalid?: string[] };
 
 const UNIT = '(?:pcs?|unit|units?|biji|buah|lembar|batang|pack|pak|box|bungkus|bks|botol|slop)';
 const ATTRIBUTE_ONLY = /^(?:[\d.,/\s]|gb|mb|hari|hr|bulan|bln)+$/i;
@@ -31,10 +31,12 @@ function clean(value: string): string {
  * Mengembalikan null bila pesan bukan daftar stok. `lenient` (mis. owner baru menekan menu Koreksi stok)
  * menerima satu baris tanpa kata "stok" atau titik dua, seperti "axis 6gb 5 hari 4".
  */
-export function parseStockList(text: string, options: { lenient?: boolean } = {}): StockList | null {
+export function parseStockList(text: string, options: { lenient?: boolean; tolerant?: boolean } = {}): StockList | null {
   const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   if (!lines.length || lines.length > 80) return null;
-  const items: StockListItem[] = [], skipped: string[] = [];
+  const items: StockListItem[] = [], skipped: string[] = [], invalid: string[] = [];
+  // Mode tolerant (pesan karyawan): satu baris yang tidak terbaca dilaporkan, tidak membuang seluruh daftar.
+  const bad = (raw: string) => { if (!options.tolerant) return true; invalid.push(raw); return false; };
   let group: string | null = null, explicit = false;
   for (let raw of lines) {
     if (!explicit && INTRO.test(raw)) {
@@ -43,10 +45,10 @@ export function parseStockList(text: string, options: { lenient?: boolean } = {}
       raw = raw.replace(INTRO, '').trim();
       if (!raw) continue;
     }
-    if (NOT_STOCK.test(raw)) return null;
+    if (NOT_STOCK.test(raw)) { if (bad(raw)) return null; continue; }
     let line = raw.replace(/^(?:[-•*]|\d{1,2}[.)])\s+/, '');
     line = line.replace(/\b(?:stok(?:nya)?(?:\s+fisik)?|sisa|jadi|tinggal|ada)\b/gi, ' ').replace(/\s+/g, ' ').trim();
-    if (MONEY.test(line)) return null;
+    if (MONEY.test(line)) { if (bad(raw)) return null; continue; }
     const withColon = new RegExp('^(.+?)\\s*[:=]\\s*(\\d{1,3})\\s*' + UNIT + '?\\.?$', 'i').exec(line);
     const plain = withColon ? null : new RegExp('^(.+?\\p{L}.*?)\\s+(\\d{1,3})\\s*' + UNIT + '?\\.?$', 'iu').exec(line);
     const match = withColon ?? plain;
@@ -54,10 +56,10 @@ export function parseStockList(text: string, options: { lenient?: boolean } = {}
       let label = clean(match[1]);
       // "10gb/ 3 hari : 5" di bawah judul "AXIS": nama barangnya memakai judul.
       if (ATTRIBUTE_ONLY.test(label.replace(/\s+/g, ''))) {
-        if (!group) return null;
+        if (!group) { if (bad(raw)) return null; continue; }
         label = clean(group + ' ' + label.replace(/\//g, ' '));
       }
-      if (!/\p{L}/u.test(label) || label.length > 100) return null;
+      if (!/\p{L}/u.test(label) || label.length > 100) { if (bad(raw)) return null; continue; }
       items.push({ label, stock: Number(match[2]), group, sourceText: raw });
       continue;
     }
@@ -66,12 +68,12 @@ export function parseStockList(text: string, options: { lenient?: boolean } = {}
     // Judul kelompok: "ROKOK :", "AXIS".
     const header = /^([\p{L}][\p{L}\s.&]{0,30}?)\s*:?\s*$/u.exec(line);
     if (header) { group = header[1].trim(); continue; }
-    return null;
+    if (bad(raw)) return null;
   }
   if (!items.length) return null;
   // Tanpa kata "update stok" (atau menu Koreksi stok), daftar tidak diproses langsung: asisten biasa yang menangani.
   if (!explicit && !options.lenient) return null;
-  return { items, skipped };
+  return options.tolerant ? { items, skipped, invalid } : { items, skipped };
 }
 
 // ---------------------------------------------------------------------------------------------

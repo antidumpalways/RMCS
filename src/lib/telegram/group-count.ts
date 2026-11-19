@@ -6,6 +6,8 @@ export type CountMoney = { raw: string; amount: number | null; assumedThousands:
 export type CountMessage = {
   items: StockListItem[];
   skipped: string[];
+  /** Baris stok yang tidak terbaca; dilaporkan ke karyawan, tidak diam-diam dibuang. */
+  invalid: string[];
   admin: CountMoney | null;
   total: CountMoney | null;
   expense: CountMoney | null;
@@ -13,7 +15,7 @@ export type CountMessage = {
 
 const HEADER = /^(?:tolong\s+)?(?:update|updet|apdet)\s+(?:stok|stock)(?:\s+(?:akhir|fisik|sekarang|terbaru|shift|tutup|pagi|sore|buka|awal))*\s*[:.,-]*\s*/i;
 // "Modal" yang ditulis karyawan berarti uang gabungan saldo + cash, sama seperti "Total".
-const FINANCE_LINE = /^(admin|total(?:\s+(?:saldo|kas|uang|akhir))*|modal(?:\s+(?:awal|akhir|saldo|kas|uang))*|saldo(?:\s+(?:total|akhir))*|kas|pengeluaran|biaya)\s*[:=]\s*(.+)$/i;
+const FINANCE_LINE = /^(admin|total(?:\s+(?:saldo|kas|uang|akhir))*|modal(?:\s+(?:awal|akhir|saldo|kas|uang))*|saldo(?:\s+(?:total|akhir))*|kas|uang\s+keluar|pengeluaran|biaya)\s*[:=]\s*(.+)$/i;
 
 // Kop bisa menyebut pagi/buka (membuka shift) atau sore/tutup/akhir (menutup shift); tanpa penanda ditentukan dari keadaan shift.
 export function countMode(text: string): 'open' | 'close' | null {
@@ -21,6 +23,8 @@ export function countMode(text: string): 'open' | 'close' | null {
   const header = HEADER.exec(first)?.[0] ?? '';
   if (/\b(?:pagi|buka|awal)\b/i.test(header)) return 'open';
   if (/\b(?:sore|tutup|akhir)\b/i.test(header)) return 'close';
+  // Admin atau Uang keluar yang sudah terisi hanya ada pada laporan penutup shift.
+  if (text.split(/\r?\n/).some(line => /^\s*(?:admin|uang\s+keluar|pengeluaran)\s*[:=]\s*\d/i.test(line))) return 'close';
   return null;
 }
 
@@ -31,6 +35,10 @@ export function isCountMessage(text: string): boolean {
 
 // Angka kecil tanpa satuan pada isian uang ("Admin: 82", "Total: 34463") ditulis dalam ribuan oleh karyawan.
 // Satuan eksplisit (rb, jt) dan angka bertitik ribuan dipakai apa adanya. Hasilnya selalu ditampilkan di draf untuk diperiksa.
+export function hasExplicitUnit(raw: string): boolean {
+  return /(?:rb|ribu|k|jt|juta)\b/i.test(raw) || /^\D*\d{1,3}(?:[.,]\d{3})+\D*$/.test(raw.trim());
+}
+
 export function interpretMoney(raw: string, kind: 'admin' | 'total' | 'expense', reference: number | null = null): CountMoney {
   const text = raw.trim();
   const explicit = parseAmount(text);
@@ -63,12 +71,19 @@ export function parseCountMessage(text: string, openingBalance: number | null = 
   for (const line of body) {
     const finance = FINANCE_LINE.exec(line);
     if (!finance) { stockLines.push(line); continue; }
-    const key = /^admin/i.test(finance[1]) ? 'admin' : /^(?:pengeluaran|biaya)/i.test(finance[1]) ? 'expense' : 'total';
+    const key = /^admin/i.test(finance[1]) ? 'admin' : /^(?:pengeluaran|biaya|uang\s+keluar)/i.test(finance[1]) ? 'expense' : 'total';
     money[key] = interpretMoney(finance[2], key, key === 'total' ? openingBalance : null);
   }
-  const stock = stockLines.length ? parseStockList(stockLines.join('\n'), { lenient: true }) : null;
+  // Gaya ribuan: bila Total ditulis dalam ribuan (37954 = 37,954 juta), Admin dan Uang keluar tanpa satuan ikut ribuan.
+  if (money.total?.assumedThousands) {
+    for (const key of ['admin', 'expense'] as const) {
+      const entry = money[key];
+      if (entry && entry.amount !== null && !entry.assumedThousands && !hasExplicitUnit(entry.raw)) money[key] = { raw: entry.raw, amount: entry.amount * 1000, assumedThousands: true };
+    }
+  }
+  const stock = stockLines.length ? parseStockList(stockLines.join('\n'), { lenient: true, tolerant: true }) : null;
   if (!stock && !money.admin && !money.total) return null;
-  return { items: stock?.items ?? [], skipped: stock?.skipped ?? [], admin: money.admin ?? null, total: money.total ?? null, expense: money.expense ?? null };
+  return { items: stock?.items ?? [], skipped: stock?.skipped ?? [], invalid: stock?.invalid ?? [], admin: money.admin ?? null, total: money.total ?? null, expense: money.expense ?? null };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -119,4 +134,24 @@ export function balanceExplanation(status: 'MATCH' | 'SHORT' | 'EXCESS', amount:
   return status === 'EXCESS'
     ? `Uang lebih ${amount} dari perkiraan. Kemungkinan dari penjualan pertalite/aksesori yang tidak ikut dihitung, atau pembayaran bon.${hint}`
     : `Uang kurang ${amount} dari perkiraan. Kemungkinan bon (belum dibayar), pengeluaran yang belum ditulis, atau barang keluar yang belum tercatat.${hint}`;
+}
+
+// Dua baris hitungan yang cocok ke barang yang sama (mis. "IM3 4 GB 3 HARI" dan "IM3 10 GB 3 HARI", atau "Samsu Ketengan" dan
+// "SAMSUE") tidak boleh saling menimpa: satu yang dipakai (yang kuotanya cocok, kalau tidak yang pertama), sisanya dianggap
+// barang lain yang belum ada di katalog.
+export function dedupeCounts<T extends { item: StockListItem; product: CountProduct | null }>(counts: T[]): { counts: T[]; notes: string[] } {
+  const byProduct = new Map<number, number[]>();
+  counts.forEach((entry, index) => { if (entry.product) byProduct.set(entry.product.id, [...(byProduct.get(entry.product.id) ?? []), index]); });
+  const result = counts.map(entry => ({ ...entry })), notes: string[] = [];
+  const quotaOf = (value: string) => [...value.matchAll(/(\d+(?:[.,]\d+)?)\s*gb/gi)].map(match => match[1].replace(',', '.'));
+  for (const indexes of byProduct.values()) {
+    if (indexes.length < 2) continue;
+    const product = counts[indexes[0]].product!;
+    const productQuota = product.quota ? quotaOf(product.quota) : [];
+    const winner = indexes.find(index => productQuota.length && quotaOf(counts[index].item.label).some(q => productQuota.includes(q))) ?? indexes[0];
+    const losers = indexes.filter(index => index !== winner);
+    for (const index of losers) result[index].product = null;
+    notes.push(`“${counts[winner].item.label}” dan “${losers.map(index => counts[index].item.label).join('”, “')}” sama-sama cocok ke ${product.name}. Yang dipakai: “${counts[winner].item.label}”; yang lain dianggap barang lain yang belum ada di katalog.`);
+  }
+  return { counts: result, notes };
 }

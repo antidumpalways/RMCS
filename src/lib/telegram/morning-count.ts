@@ -13,7 +13,7 @@ export type MorningResult = {
 };
 
 export async function applyMorningCount(count: CountMessage, actorName: string): Promise<MorningResult> {
-  const { counts, catalogProducts } = await resolveCountItems(count);
+  const { counts, catalogProducts, duplicateNotes } = await resolveCountItems(count);
   const nameCount = new Map<string, number>();
   for (const product of catalogProducts) nameCount.set(product.name.toLowerCase(), (nameCount.get(product.name.toLowerCase()) ?? 0) + 1);
   const changes: string[] = [], unmatched: string[] = [], notes: string[] = [], seen = new Set<number>();
@@ -46,6 +46,8 @@ export async function applyMorningCount(count: CountMessage, actorName: string):
     }
     balance = { before, after: target, changed: before !== target };
   } else if (count.total) notes.push(`Modal “${count.total.raw}” kurang jelas, uang awal memakai catatan sistem. Tulis misalnya Modal: 34.463.000.`);
+  notes.push(...duplicateNotes);
+  if (count.invalid.length) notes.push(`Baris ini tidak terbaca dan diabaikan: ${count.invalid.slice(0, 6).join('; ')}.`);
   if (count.admin) notes.push('Admin diabaikan di pesan pagi; kirim bersama Update stok sore.');
   return { changes, unchanged, unmatched, notes, balance };
 }
