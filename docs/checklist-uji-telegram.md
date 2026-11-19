@@ -194,3 +194,11 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] `BATANGAN FELOZ` tidak pernah dicocokkan ke `FELOZ` (juga di Update stok owner).
 - [ ] Template dengan `Admin` atau `Uang keluar` terisi selalu dibaca SORE; template kosong mengikuti keadaan shift; kop `pagi`/`sore` memaksa.
 - [ ] Draf sore selalu menyebut "Dibaca sebagai Update stok SORE" supaya karyawan tahu bagaimana bot membacanya.
+
+## R. Barang masuk dari grup karyawan
+- [ ] Karyawan kirim `Barang masuk:` + `nama : jumlah` (angka = jumlah yang masuk, bukan stok akhir) di grup, kapan saja, juga saat rekap sedang diisi.
+- [ ] Bot menampilkan pratinjau "stok 50 -> 60" dengan tombol Simpan / Batal; stok belum berubah sebelum Simpan.
+- [ ] Simpan menambah stok sekali; menekan Simpan lagi tidak menambah dua kali. Owner menerima laporan "BARANG MASUK DARI GRUP".
+- [ ] Barang yang belum ada di katalog (mis. pertalite) dilaporkan "minta owner menambahkannya dulu" dan tidak ikut disimpan.
+- [ ] Update stok sore sesudahnya memakai stok yang sudah termasuk barang masuk (penjualan terhitung benar, bukan "barang masuk?").
+- [ ] Riwayat stok mencatat barang masuk (tipe IN) dengan nama karyawan.

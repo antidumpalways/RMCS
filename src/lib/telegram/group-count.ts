@@ -110,7 +110,7 @@ export function soldFromCounts(
     if (!product) { unmatched.push(`${item.label} (${item.stock})`); continue; }
     const label = productLabel(product, (nameCount.get(product.name.toLowerCase()) ?? 0) > 1);
     if (item.stock === product.stock) { same++; continue; }
-    if (item.stock > product.stock) { notes.push(`${label}: hitungan ${item.stock} lebih banyak dari stok sistem ${product.stock} (barang masuk?). Tidak dihitung terjual; owner perlu memeriksa.`); continue; }
+    if (item.stock > product.stock) { notes.push(`${label}: hitungan ${item.stock} lebih banyak dari stok sistem ${product.stock} (barang masuk?). Tidak dihitung terjual. Kalau memang ada barang masuk, kirim dulu “Barang masuk: nama : jumlah” lalu hitung ulang; kalau tidak, owner perlu memeriksa.`); continue; }
     sold.set(product.id, { productId: product.id, label, sold: product.stock - item.stock, counted: item.stock, systemStock: product.stock, price: product.sellPrice });
   }
   return { sold: [...sold.values()], unmatched, notes, same };

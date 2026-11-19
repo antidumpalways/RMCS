@@ -13,6 +13,7 @@ import { identifyTelegramActor, configuredTelegramOwners, type TelegramActor } f
 import { getCatalog, handleGroupAssistantMessage, handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
 import { balanceExplanation, countMode, differenceHints, isCountMessage, parseCountMessage, soldFromCounts, type CountMessage } from './group-count';
 import { applyMorningCount } from './morning-count';
+import { handleReceiptCallback, handleReceiptMessage, isReceiptMessage } from './stock-receipt';
 import { extractCountMessage } from './count-extract';
 import { authorizedOwnerPrivateChat } from './owner-intent';
 import { isImplicitCatalogQuestion, lateEntryText, looksLikeCatalogQuestion, removeBotMention, splitRecapStart, stripRecapHeader } from './group-routing';
@@ -751,6 +752,7 @@ async function handleCommand(m:TelegramMessage,actor:TelegramActor,command:strin
  return sendTelegramMessage(chatId,'Perintah tidak dikenal. Gunakan /rekap, /status, atau /batal.');
 }
 async function handleCallback(c:TelegramCallback,actor:TelegramActor){
+ if(c.data?.startsWith('rcms:rcv:')){await handleReceiptCallback(c,notifyOwnersText);return;}
  const menu=/^rcms:group:menu:(shift_open|rekap|status|cancel|check)$/.exec(c.data??'');
  if(menu){
   const m=c.message;
@@ -1002,10 +1004,12 @@ async function processUpdate(u:TelegramUpdate){
  if(m&&!assistantRequest&&!command&&startRequest===null&&lateEntry===null&&m.text&&isImplicitCatalogQuestion(m.text)){assistantRequest=true;implicitAsk=true;}
  // Ignore ordinary group chatter before creating Telegram identities or update rows.
  let aiIntent:ShiftIntent|null=null;
+ // Barang masuk ("Barang masuk: axis 3 hari : 10") boleh kapan saja, termasuk saat rekap sedang diisi.
+ const receiptMessage=!!m?.text&&!m.photo&&!m.document&&!c&&!command&&isReceiptMessage(m.text);
  let recapStart=startRequest;
  let sharedContent=false;
  let morningCount=false;
- if(!c&&!command&&!startRequest&&!assistantRequest&&lateEntry===null){
+ if(!c&&!command&&!startRequest&&!assistantRequest&&lateEntry===null&&!receiptMessage){
   const existingIdentity=await prisma.telegramIdentity.findUnique({where:{telegramUserId:senderId},select:{id:true}});
   const active=existingIdentity?await prisma.telegramSession.findUnique({where:{chatId_telegramIdentityId:{chatId:BigInt(chat.id),telegramIdentityId:existingIdentity.id}},select:{state:true,draftId:true,expiresAt:true}}):null;
   const inFlow=!!active&&['REPORTING','OPENING'].includes(active.state)&&!!active.draftId&&active.expiresAt>new Date();
@@ -1024,12 +1028,13 @@ async function processUpdate(u:TelegramUpdate){
  const claim=await claimUpdate(id);if(claim==='PROCESSED')return true;if(claim==='BUSY')throw new TelegramUpdateBusy();
  try{
   let actor=await identifyTelegramActor(from,BigInt(chat.id));if(!actor)throw new Error('Invalid sender id');
-  const recapRelated=c?recapCallback(c.data):!!m&&(command?command.command==='rekap':lateEntry===null&&!(assistantRequest&&m.text)&&aiIntent?.intent!=='correct_report');
+  const recapRelated=c?recapCallback(c.data):!!m&&(command?command.command==='rekap':lateEntry===null&&!(assistantRequest&&m.text)&&aiIntent?.intent!=='correct_report'&&!receiptMessage);
   if(recapRelated)actor=await joinSharedRecap(actor,BigInt(chat.id));
   if(c)await handleCallback(c,actor);
   else if(m&&command)await handleCommand(m,actor,command.command,command.args,id);
   else if(m&&lateEntry!==null)await handleLateEntry(m,actor,lateEntry,id);
   else if(m&&aiIntent)await handleAiShiftIntent(BigInt(chat.id),actor,aiIntent,m.text??'',m,id);
+  else if(m&&receiptMessage)await handleReceiptMessage(BigInt(chat.id),actor,m.text??'');
   else if(m&&morningCount)await handleMorningCountMessage(m,actor);
   else if(m&&recapStart){
    const chatId=BigInt(chat.id),body=recapStart.rest;
