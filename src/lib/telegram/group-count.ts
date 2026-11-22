@@ -10,12 +10,25 @@ export type CountMessage = {
   invalid: string[];
   admin: CountMoney | null;
   total: CountMoney | null;
+  /** Jumlah semua baris uang keluar (belanja dan sejenisnya). */
   expense: CountMoney | null;
+  /** Kejadian uang di luar stok: uang masuk (bayar utang, HP laku), uang keluar (belanja), bon; masing-masing dengan keterangan. */
+  events: CashEvent[];
 };
+export type CashEvent = { kind: 'in' | 'out' | 'bon'; money: CountMoney; note: string };
+
+// Satu kejadian per baris, boleh diulang: "Uang masuk: 500 bayar utang pak Budi", "Uang keluar: 1190 belanja", "Bon: 200 bu Sari".
+const EVENT_LINE = /^(uang\s+masuk|pemasukan|uang\s+keluar|pengeluaran|biaya|belanja|bon|kasbon|piutang)\s*[:=]\s*(.+)$/i;
+const AMOUNT_NOTE = /^\s*((?:rp\.?\s*)?\d[\d.,]*\s*(?:rb|ribu|k|jt|juta)?)(?![\p{L}\d])\s*(.*)$/iu;
+function eventKind(word: string): CashEvent['kind'] {
+  if (/^(?:uang\s+masuk|pemasukan)/i.test(word)) return 'in';
+  if (/^(?:bon|kasbon|piutang)/i.test(word)) return 'bon';
+  return 'out';
+}
 
 const HEADER = /^(?:tolong\s+)?(?:update|updet|apdet)\s+(?:stok|stock)(?:\s+(?:akhir|fisik|sekarang|terbaru|shift|tutup|pagi|sore|buka|awal))*\s*[:.,-]*\s*/i;
 // "Modal" yang ditulis karyawan berarti uang gabungan saldo + cash, sama seperti "Total".
-const FINANCE_LINE = /^(admin|total(?:\s+(?:saldo|kas|uang|akhir))*|modal(?:\s+(?:awal|akhir|saldo|kas|uang))*|saldo(?:\s+(?:total|akhir))*|kas|uang\s+keluar|pengeluaran|biaya)\s*[:=]\s*(.+)$/i;
+const FINANCE_LINE = /^(admin|total(?:\s+(?:saldo|kas|uang|akhir))*|modal(?:\s+(?:awal|akhir|saldo|kas|uang))*|saldo(?:\s+(?:total|akhir))*|kas)\s*[:=]\s*(.+)$/i;
 
 // Kop bisa menyebut pagi/buka (membuka shift) atau sore/tutup/akhir (menutup shift); tanpa penanda ditentukan dari keadaan shift.
 export function countMode(text: string): 'open' | 'close' | null {
@@ -67,23 +80,34 @@ export function parseCountMessage(text: string, openingBalance: number | null = 
   const rest = lines[0].replace(HEADER, '').trim();
   const body = rest ? [rest, ...lines.slice(1)] : lines.slice(1);
   const money: Partial<Record<'admin' | 'total' | 'expense', CountMoney>> = {};
-  const stockLines: string[] = [];
+  const stockLines: string[] = [], events: CashEvent[] = [];
   for (const line of body) {
+    const event = EVENT_LINE.exec(line);
+    if (event) {
+      const parts = AMOUNT_NOTE.exec(event[2]);
+      const kind = eventKind(event[1]);
+      events.push({ kind, money: interpretMoney(parts ? parts[1] : event[2], 'expense'), note: (parts?.[2] ?? '').trim().slice(0, 80) });
+      continue;
+    }
     const finance = FINANCE_LINE.exec(line);
     if (!finance) { stockLines.push(line); continue; }
-    const key = /^admin/i.test(finance[1]) ? 'admin' : /^(?:pengeluaran|biaya|uang\s+keluar)/i.test(finance[1]) ? 'expense' : 'total';
+    const key = /^admin/i.test(finance[1]) ? 'admin' : 'total';
     money[key] = interpretMoney(finance[2], key, key === 'total' ? openingBalance : null);
   }
   // Gaya ribuan: bila Total ditulis dalam ribuan (37954 = 37,954 juta), Admin dan Uang keluar tanpa satuan ikut ribuan.
   if (money.total?.assumedThousands) {
-    for (const key of ['admin', 'expense'] as const) {
-      const entry = money[key];
-      if (entry && entry.amount !== null && !entry.assumedThousands && !hasExplicitUnit(entry.raw)) money[key] = { raw: entry.raw, amount: entry.amount * 1000, assumedThousands: true };
+    const admin = money.admin;
+    if (admin && admin.amount !== null && !admin.assumedThousands && !hasExplicitUnit(admin.raw)) money.admin = { raw: admin.raw, amount: admin.amount * 1000, assumedThousands: true };
+    for (const event of events) {
+      const entry = event.money;
+      if (entry.amount !== null && !entry.assumedThousands && !hasExplicitUnit(entry.raw)) event.money = { raw: entry.raw, amount: entry.amount * 1000, assumedThousands: true };
     }
   }
+  const outs = events.filter(event => event.kind === 'out' && event.money.amount !== null);
+  if (outs.length) money.expense = { raw: outs.map(event => event.money.raw).join(' + '), amount: outs.reduce((sum, event) => sum + event.money.amount!, 0), assumedThousands: outs.some(event => event.money.assumedThousands) };
   const stock = stockLines.length ? parseStockList(stockLines.join('\n'), { lenient: true, tolerant: true }) : null;
-  if (!stock && !money.admin && !money.total) return null;
-  return { items: stock?.items ?? [], skipped: stock?.skipped ?? [], invalid: stock?.invalid ?? [], admin: money.admin ?? null, total: money.total ?? null, expense: money.expense ?? null };
+  if (!stock && !money.admin && !money.total && !events.length) return null;
+  return { items: stock?.items ?? [], skipped: stock?.skipped ?? [], invalid: stock?.invalid ?? [], admin: money.admin ?? null, total: money.total ?? null, expense: money.expense ?? null, events };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -132,8 +156,8 @@ export function balanceExplanation(status: 'MATCH' | 'SHORT' | 'EXCESS', amount:
   if (status === 'MATCH') return '';
   const hint = hints.length ? ` Selisih ini setara ${hints.join(' / ')}: mungkin salah hitung atau ada yang keluar belum tercatat.` : '';
   return status === 'EXCESS'
-    ? `Uang lebih ${amount} dari perkiraan. Kemungkinan dari penjualan pertalite/aksesori yang tidak ikut dihitung, atau pembayaran bon.${hint}`
-    : `Uang kurang ${amount} dari perkiraan. Kemungkinan bon (belum dibayar), pengeluaran yang belum ditulis, atau barang keluar yang belum tercatat.${hint}`;
+    ? `Uang lebih ${amount} dari perkiraan. Kemungkinan dari penjualan pertalite/aksesori yang tidak ikut dihitung, atau pembayaran bon. Kalau ada uang masuk lain (bayar utang, HP laku), tulis baris “Uang masuk: nominal keterangan”.${hint}`
+    : `Uang kurang ${amount} dari perkiraan. Kemungkinan bon (belum dibayar), pengeluaran yang belum ditulis, atau barang keluar yang belum tercatat. Tulis dengan baris “Bon: nominal nama” atau “Uang keluar: nominal keterangan”.${hint}`;
 }
 
 // Dua baris hitungan yang cocok ke barang yang sama (mis. "IM3 4 GB 3 HARI" dan "IM3 10 GB 3 HARI", atau "Samsu Ketengan" dan

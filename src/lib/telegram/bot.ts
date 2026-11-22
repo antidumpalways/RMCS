@@ -300,7 +300,8 @@ async function calculateBalanceCheck(db:BalanceReader,shiftStart:Date,openingBal
  const itemSales=soldLines.reduce((sum,line)=>sum+(priceById.get(line.productId!)??0n)*BigInt(line.quantity),0n);
  const sales=reportedTotal('sale',recorded.sales,'Penjualan')+itemSales,fees=reportedTotal('service_fee',recorded.serviceFees,'Biaya admin/jasa'),expenses=reportedTotal('expense',recorded.expenses,'Pengeluaran');
  // Report totals are treated as whole-shift totals. A total that includes Web App records replaces that category's ledger total; max() prevents duplicate addition.
- const movementDelta=sales+fees+recorded.debtPayments-expenses+recorded.adjustments,expectedBalance=openingBalance+movementDelta,difference=actualBalance-expectedBalance;
+ const extraIn=(draft.cashEvents??[]).filter(event=>event.kind==='in').reduce((sum,event)=>sum+BigInt(event.amount),0n),bonTotal=(draft.cashEvents??[]).filter(event=>event.kind==='bon').reduce((sum,event)=>sum+BigInt(event.amount),0n);
+ const movementDelta=sales+fees+recorded.debtPayments-expenses+recorded.adjustments+extraIn-bonTotal,expectedBalance=openingBalance+movementDelta,difference=actualBalance-expectedBalance;
  const status=difference===0n?'MATCH' as const:difference<0n?'SHORT' as const:'EXCESS' as const;
  // Selisih yang setara 1-3 pcs barang tertentu: petunjuk salah hitung atau barang keluar yang belum tercatat.
  const hintRows=difference===0n?[]:await db.product.findMany({where:{sellPrice:{gt:0n}},select:{name:true,sellPrice:true},take:600});

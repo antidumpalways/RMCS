@@ -42,7 +42,7 @@ export async function handleReceiptMessage(chatId: bigint, actor: { identityId: 
   if (!parsed || !parsed.items.length) {
     return sendTelegramMessage(chatId, 'Barang masuk belum terbaca. Contoh:' + String.fromCharCode(10) + 'Barang masuk:' + String.fromCharCode(10) + 'Telkomsel 3 hari : 10' + String.fromCharCode(10) + 'Axis 5 hari : 5' + String.fromCharCode(10) + '(angkanya jumlah yang masuk, bukan stok akhir)');
   }
-  const message: CountMessage = { items: parsed.items, skipped: parsed.skipped, invalid: parsed.invalid, admin: null, total: null, expense: null };
+  const message: CountMessage = { items: parsed.items, skipped: parsed.skipped, invalid: parsed.invalid, admin: null, total: null, expense: null, events: [] };
   const { counts, duplicateNotes } = await resolveCountItems(message);
   const NL = String.fromCharCode(10);
   const lines: ReceiptPayload['lines'] = [], preview: string[] = [], unknown: string[] = [], merged = new Map<number, number>();

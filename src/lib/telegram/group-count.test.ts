@@ -121,3 +121,20 @@ test('dua baris ke barang yang sama tidak saling menimpa dan batangan bukan bung
   assert.equal(looseUnitConflict('Samsu Ketengan', 'Samsu Ketengan'), false);
   assert.equal(looseUnitConflict('FELOZ', 'FELOZ'), false);
 });
+
+test('kejadian uang: uang masuk, uang keluar, dan bon dengan keterangan, boleh berulang', () => {
+  const NL = String.fromCharCode(10);
+  const message = parseCountMessage(['Update stok sore', 'Axis 3 hari : 5', 'Admin: 100', 'Uang masuk: 500 bayar utang pak Budi', 'Uang masuk: 1,5jt hp oppo a18',
+    'Uang keluar: 1190 belanja pertalite', 'Uang keluar: 50rb parkir', 'Bon: 30 bu Sari 2 voucher', 'Total: 34940'].join(NL), 34_000_000);
+  assert.deepEqual(message?.events.map(event => [event.kind, event.money.amount, event.note]), [
+    ['in', 500_000, 'bayar utang pak Budi'], ['in', 1_500_000, 'hp oppo a18'], ['out', 1_190_000, 'belanja pertalite'], ['out', 50_000, 'parkir'], ['bon', 30_000, 'bu Sari 2 voucher'],
+  ]);
+  // Semua uang keluar dijumlahkan menjadi pengeluaran; stok tidak terpengaruh baris-baris ini.
+  assert.equal(message?.expense?.amount, 1_240_000);
+  assert.equal(message?.items.length, 1);
+  // Tanpa keterangan dan angka rusak.
+  const plain = parseCountMessage(['Update stok sore', 'Bon: 200', 'Uang masuk: abc'].join(NL), 34_000_000);
+  assert.equal(plain?.events[0].money.amount, 200_000);
+  assert.equal(plain?.events[0].note, '');
+  assert.equal(plain?.events[1].money.amount, null);
+});

@@ -59,12 +59,21 @@ export async function extractCountMessage(count: CountMessage): Promise<RecapExt
     if (!value) return;
     if (value.amount === null) { unresolved.push(`Angka ${title} “${value.raw}” kurang jelas. Tulis misalnya 82rb atau 34.463.000.`); return; }
     entries.push({ category, label, amount: String(value.amount), operation: 'set' });
-    if (value.assumedThousands) notes.push(`${title} “${value.raw}” dibaca ${formatTelegramRupiah(value.amount)} (angka tanpa satuan dianggap ribuan). Salah? Kirim ulang dengan rb/jt, mis. ${title}: ${key === 'total' ? '34,4jt' : '82rb'}.`);
+    if (value.assumedThousands && key !== 'expense') notes.push(`${title} “${value.raw}” dibaca ${formatTelegramRupiah(value.amount)} (angka tanpa satuan dianggap ribuan). Salah? Kirim ulang dengan rb/jt, mis. ${title}: ${key === 'total' ? '34,4jt' : '82rb'}.`);
   };
   money('admin', 'Admin', 'service_fee', 'admin transfer');
   money('expense', 'Pengeluaran', 'expense', 'pengeluaran');
   money('total', 'Total', 'total_balance', 'saldo total');
 
+  // Kejadian uang di luar stok: uang masuk dan bon masuk hitungan perkiraan; uang keluar sudah menjadi pengeluaran di atas.
+  const cashEvents: NonNullable<RecapExtraction['cashEvents']> = [], eventLines: string[] = [];
+  const title = { in: 'Uang masuk', out: 'Uang keluar', bon: 'Bon' } as const;
+  for (const event of count.events) {
+    if (event.money.amount === null) { unresolved.push(`Angka ${title[event.kind]} “${event.money.raw}” kurang jelas. Tulis misalnya 500rb atau 500.000.`); continue; }
+    if (event.kind !== 'out') cashEvents.push({ kind: event.kind, amount: String(event.money.amount), note: event.note });
+    eventLines.push(`${title[event.kind]}: ${formatTelegramRupiah(event.money.amount)}${event.note ? ' — ' + event.note : ''}${event.money.assumedThousands ? ` (dibaca dari “${event.money.raw}”)` : ''}`);
+  }
+  if (eventLines.length) notes.push('Kejadian uang yang dicatat (sudah masuk perhitungan perkiraan uang): ' + eventLines.join('; ') + '.');
   const soldTotal = result.sold.reduce((sum, line) => sum + line.price * BigInt(line.sold), 0n);
   if (result.sold.length) notes.push(`Barang laku dari selisih stok: ${result.sold.reduce((sum, line) => sum + line.sold, 0)} pcs, nilai katalog ${formatTelegramRupiah(soldTotal)}.`);
   else if (count.items.length) notes.push('Tidak ada selisih stok: semua hitungan sama dengan stok sistem.');
@@ -74,5 +83,5 @@ export async function extractCountMessage(count: CountMessage): Promise<RecapExt
   notes.push(...duplicateNotes, ...result.notes);
   notes.unshift('Dibaca sebagai Update stok SORE (penutup shift). Kalau ini sebenarnya pagi, batalkan lalu kirim ulang dengan kop “Update stok pagi”.');
 
-  return { replaceInventory: true, entries, inventoryLines, unresolved, notes };
+  return { replaceInventory: true, entries, inventoryLines, unresolved, notes, cashEvents };
 }

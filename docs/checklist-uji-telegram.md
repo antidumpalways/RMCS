@@ -203,3 +203,11 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Update stok sore sesudahnya memakai stok yang sudah termasuk barang masuk (penjualan terhitung benar, bukan "barang masuk?").
 - [ ] Riwayat stok mencatat barang masuk (tipe IN) dengan nama karyawan.
 - [ ] Kop lain yang sama artinya: `Tambah stok`, `Tambahkan stok`, `Stok masuk`, `Restock`; juga satu baris `Tambahkan stok axis 3 hari 10`.
+
+## S. Kejadian uang tak terduga saat shift (uang masuk, uang keluar, bon)
+- [ ] Di Update stok sore karyawan boleh menulis baris berulang dengan keterangan: `Uang masuk: 500 bayar utang pak Budi`, `Uang masuk: 1500 hp oppo`, `Uang keluar: 1190 belanja pertalite`, `Bon: 30 bu Sari 2 voucher`.
+- [ ] Perkiraan uang = uang awal + barang laku + admin + uang masuk - uang keluar - bon; bila Total sama, hasilnya "cocok".
+- [ ] Draf dan laporan owner memuat daftar kejadian beserta keterangannya.
+- [ ] Tanpa baris itu, selisih tetap dilaporkan dengan saran menulis baris yang sesuai.
+- [ ] Angka tanpa satuan ikut gaya ribuan Total; `500rb`, `1,5jt` dipakai apa adanya.
+- [ ] Jangan menulis uang masuk yang sudah dicatat di aplikasi (mis. bayar utang lewat Web App), agar tidak terhitung dua kali.
