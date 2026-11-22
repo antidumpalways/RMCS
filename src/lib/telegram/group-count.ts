@@ -26,7 +26,7 @@ function eventKind(word: string): CashEvent['kind'] {
   return 'out';
 }
 
-const HEADER = /^(?:tolong\s+)?(?:update|updet|apdet)\s+(?:stok|stock)(?:\s+(?:akhir|fisik|sekarang|terbaru|shift|tutup|pagi|siang|sore|malam|begadang|bergadang|dini|buka|awal|mulai))*\s*[:.,-]*\s*/i;
+const HEADER = /^(?:tolong\s+)?(?:update|updet|apdet)\s+(?:stok|stock)(?:\s+(?:akhir|fisik|sekarang|terbaru|shift|tutup|pagi|siang|sore|malam|begadang|bergadang|dini|buka|awal|mulai|serah|terima))*\s*[:.,-]*\s*/i;
 // "Modal" yang ditulis karyawan berarti uang gabungan saldo + cash, sama seperti "Total".
 const FINANCE_LINE = /^(admin|total(?:\s+(?:saldo|kas|uang|akhir))*|modal(?:\s+(?:awal|akhir|saldo|kas|uang))*|saldo(?:\s+(?:total|akhir))*|kas)\s*[:=]\s*(.+)$/i;
 
@@ -34,9 +34,9 @@ const FINANCE_LINE = /^(admin|total(?:\s+(?:saldo|kas|uang|akhir))*|modal(?:\s+(
 export function countMode(text: string): 'open' | 'close' | null {
   const first = text.trim().split(/\r?\n/)[0] ?? '';
   const header = HEADER.exec(first)?.[0] ?? '';
-  // "buka/awal/mulai" hanya untuk menyamakan stok dan uang awal; semua nama shift lain adalah laporan penutup shift itu.
-  if (/\b(?:buka|awal|mulai)\b/i.test(header)) return 'open';
-  if (/\b(?:pagi|siang|sore|malam|begadang|bergadang|dini|tutup|akhir)\b/i.test(header)) return 'close';
+  // Nama shift (pagi/sore/malam) hanya label. "buka/serah terima" memulai shift (serah terima); "tutup/akhir" menutupnya.
+  if (/\b(?:buka|awal|mulai|serah|terima)\b/i.test(header)) return 'open';
+  if (/\b(?:tutup|akhir)\b/i.test(header)) return 'close';
   // Admin atau Uang keluar yang sudah terisi hanya ada pada laporan penutup shift.
   if (text.split(/\r?\n/).some(line => /^\s*(?:admin|uang\s+keluar|pengeluaran)\s*[:=]\s*\d/i.test(line))) return 'close';
   return null;

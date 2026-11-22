@@ -911,10 +911,19 @@ function looksLikeRecapContent(text:string){
  return (found.entries.length>0||(found.inventoryLines?.length??0)>0)&&found.unresolved.length===0&&!(found.inventoryLines??[]).some(line=>line.ambiguity);
 }
 function recapCallback(data:string|undefined){return /^rcms:(?:ok|cancel|edit|i|q|stockend|stocklist|dup):/.test(data??'')||data==='rcms:group:rekap'||!!visionCallbackFromData(data);}
-// Setiap shift mengirim satu laporan penutup ("Update stok sore/malam/pagi") yang sekaligus menjadi titik awal shift berikutnya.
-// Hanya kop "buka/awal/mulai" yang menyamakan stok dan uang awal tanpa menghitung penjualan.
-async function decideCountMode(_chatId:bigint,text:string):Promise<'open'|'close'>{
- return countMode(text)??'close';
+// Dua pesan per shift: "Update stok" saat mulai (serah terima: dicocokkan dengan penutup shift sebelumnya) dan saat selesai (laporan penutup).
+// Nama shift (pagi/sore/malam) hanya label; kata buka/tutup memaksa, selain itu ditentukan dari keadaan shift.
+async function decideCountMode(chatId:bigint,text:string):Promise<'open'|'close'>{
+ const explicit=countMode(text);
+ if(explicit)return explicit;
+ // Tanpa kata buka/tutup: belum ada shift berjalan berarti serah terima (buka); shift sedang berjalan berarti laporan penutup.
+ const opening=await activeShiftOpening(chatId,'');
+ if(!opening)return 'open';
+ // Nama shift di pesan beda dari shift yang sedang berjalan (mis. "pagi" saat shift "malam" belum ditutup): itu serah terima shift baru.
+ const messageLabel=countShiftLabel(text),runningLabel=opening.payload.shiftLabel;
+ if(messageLabel&&runningLabel&&runningLabel!=='buka'&&runningLabel!==messageLabel)return 'open';
+ const ageHours=(Date.now()-new Date(opening.payload.shiftStart).getTime())/3_600_000;
+ return ageHours>=16?'open':'close';
 }
 async function handleMorningCountMessage(m:TelegramMessage,actor:TelegramActor){
  const chatId=BigInt(m.chat.id),text=m.text??'';
@@ -926,20 +935,27 @@ async function handleMorningCountMessage(m:TelegramMessage,actor:TelegramActor){
  const count=parseCountMessage(text,reference);
  if(!count||(!count.items.length&&!count.total))return sendTelegramMessage(chatId,'Update stok buka belum terbaca. Contoh:\nUpdate stok buka\nTelkomsel 3 hari : 38\nAxis 5 hari : 9\nModal: 34.463.000');
  const result=await applyMorningCount(count,actor.displayName);
- await autoOpenShift(chatId,actor,'buka');
+ const label=countShiftLabel(text);
+ // Serah terima: shift yang terakhir ditutup, dan apakah ia mengirim laporan penutup.
+ const lastClosed=(await prisma.telegramDraft.findMany({where:{chatId,kind:'SHIFT_OPENING'},orderBy:{createdAt:'desc'},take:6})).map(row=>shiftOpeningPayload(row.payload)).find(payload=>!!payload?.closedAt);
+ const previousLabel=lastClosed?.shiftLabel&&lastClosed.shiftLabel!=='buka'?lastClosed.shiftLabel:null;
+ const previousUnreported=!!lastClosed&&(lastClosed as {autoClosed?:boolean}).autoClosed===true;
+ await autoOpenShift(chatId,actor,label);
  const money=formatTelegramRupiah;
- const lines=['✅ STOK DAN UANG AWAL DISESUAIKAN (Update stok buka)'];
- lines.push('📦 Stok: '+(result.changes.length?result.changes.length+' barang disesuaikan dengan hitunganmu':'semua sama dengan catatan sistem')+(result.unchanged&&result.changes.length?', '+result.unchanged+' sama':''));
+ const handover='🤝 SERAH TERIMA'+(label?' · SHIFT '+label.toUpperCase():'')+(previousLabel?' (dari shift '+previousLabel+')':'');
+ const lines=[handover];
+ if(previousUnreported)lines.push('⚠️ Shift sebelumnya tidak mengirim laporan penutup, jadi penjualannya tidak terhitung. Hitunganmu dipakai sebagai titik awal.');
+ lines.push('📦 Stok: '+(result.changes.length?result.changes.length+' barang berbeda dari catatan penutup shift sebelumnya (sekarang mengikuti hitunganmu)':'semua sama dengan catatan penutup shift sebelumnya ✅')+(result.unchanged&&result.changes.length?', '+result.unchanged+' sama':''));
  for(const change of result.changes.slice(0,25))lines.push('• '+change);
  if(result.changes.length>25)lines.push('…dan '+(result.changes.length-25)+' lainnya.');
  if(result.balance)lines.push('💰 Uang awal (saldo + cash): '+money(result.balance.after)+(result.balance.changed?' (catatan sistem sebelumnya '+money(result.balance.before)+', selisih '+money(result.balance.after-result.balance.before)+'; sekarang mengikuti hitunganmu)':' ✅ sama dengan catatan sistem'));
  if(count.total?.amount!=null&&count.total.assumedThousands)lines.push('ℹ️ Modal “'+count.total.raw+'” dibaca '+money(count.total.amount)+' (angka tanpa satuan dianggap ribuan).');
  if(result.unmatched.length)lines.push('⚠️ Belum dikenali (tidak diubah): '+result.unmatched.join(', ')+'. Tulis ulang dengan nama lengkap atau kabari owner.');
  for(const note of result.notes)lines.push('ℹ️ '+note);
- lines.push('','Saat shift-mu selesai, kirim Update stok + Admin + Total dengan nama shift-mu di baris pertama (mis. Update stok malam). Karyawan berikutnya tidak perlu kirim apa-apa.');
+ lines.push('','Saat shift-mu selesai, kirim lagi: Update stok + Admin + Total (boleh dengan nama shift, mis. Update stok '+(label??'sore')+'). Itu jadi laporan penutupmu dan bahan serah terima shift berikutnya.');
  await sendLongTelegramMessage(chatId,lines.join('\n'));
- if(result.changes.length||result.balance?.changed||result.unmatched.length){
-  const owner=['🌅 UPDATE STOK BUKA (penyesuaian stok dan uang awal)','Karyawan: '+actor.displayName];
+ if(result.changes.length||result.balance?.changed||result.unmatched.length||previousUnreported){
+  const owner=[handover,'Karyawan: '+actor.displayName,...(previousUnreported?['⚠️ Shift sebelumnya tidak mengirim laporan penutup.']:[])];
   if(result.changes.length)owner.push('Stok disesuaikan dengan hitungan karyawan ('+result.changes.length+' barang):',...result.changes.slice(0,40).map(change=>'• '+change));
   if(result.balance?.changed)owner.push('Uang awal diubah dari '+money(result.balance.before)+' menjadi '+money(result.balance.after)+' (selisih '+money(result.balance.after-result.balance.before)+').');
   if(result.unmatched.length)owner.push('Belum dikenali: '+result.unmatched.join(', '));
