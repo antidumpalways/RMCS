@@ -211,3 +211,12 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Tanpa baris itu, selisih tetap dilaporkan dengan saran menulis baris yang sesuai.
 - [ ] Angka tanpa satuan ikut gaya ribuan Total; `500rb`, `1,5jt` dipakai apa adanya.
 - [ ] Jangan menulis uang masuk yang sudah dicatat di aplikasi (mis. bayar utang lewat Web App), agar tidak terhitung dua kali.
+
+## T. Tiga shift: satu pesan per pergantian
+- [ ] Setiap shift hanya mengirim satu pesan di akhir tugasnya, nama shift di baris pertama: `Update stok pagi`, `Update stok sore`, `Update stok malam` (juga `begadang`, `siang`).
+- [ ] Bot membaca semuanya sebagai laporan penutup shift itu (draf menyebut "laporan penutup shift malam"), lalu Selesai menyimpan dan menutupnya.
+- [ ] Hitungan itu otomatis menjadi stok dan uang awal shift berikutnya; karyawan berikutnya tidak perlu mengirim pesan buka.
+- [ ] `Update stok buka` (juga `awal`, `mulai`) hanya untuk menyamakan stok dan uang awal bila stok fisik beda dari catatan; tidak menghitung penjualan, dan laporan penutup tidak diperlukan sesudahnya.
+- [ ] Hitungan lebih besar dari stok sistem (stok sistem keliru atau barang masuk) tidak dihitung terjual; catatannya menyarankan "Barang masuk:" atau `Update stok buka`.
+- [ ] Shift yang lupa dikirim laporannya: laporan berikutnya mencakup dua shift; periksa catatan dan selisihnya.
+- [ ] Label shift tampil di laporan owner ("REKAP SHIFT DISIMPAN · malam").

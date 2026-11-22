@@ -26,7 +26,7 @@ function eventKind(word: string): CashEvent['kind'] {
   return 'out';
 }
 
-const HEADER = /^(?:tolong\s+)?(?:update|updet|apdet)\s+(?:stok|stock)(?:\s+(?:akhir|fisik|sekarang|terbaru|shift|tutup|pagi|sore|buka|awal))*\s*[:.,-]*\s*/i;
+const HEADER = /^(?:tolong\s+)?(?:update|updet|apdet)\s+(?:stok|stock)(?:\s+(?:akhir|fisik|sekarang|terbaru|shift|tutup|pagi|siang|sore|malam|begadang|bergadang|dini|buka|awal|mulai))*\s*[:.,-]*\s*/i;
 // "Modal" yang ditulis karyawan berarti uang gabungan saldo + cash, sama seperti "Total".
 const FINANCE_LINE = /^(admin|total(?:\s+(?:saldo|kas|uang|akhir))*|modal(?:\s+(?:awal|akhir|saldo|kas|uang))*|saldo(?:\s+(?:total|akhir))*|kas)\s*[:=]\s*(.+)$/i;
 
@@ -34,11 +34,20 @@ const FINANCE_LINE = /^(admin|total(?:\s+(?:saldo|kas|uang|akhir))*|modal(?:\s+(
 export function countMode(text: string): 'open' | 'close' | null {
   const first = text.trim().split(/\r?\n/)[0] ?? '';
   const header = HEADER.exec(first)?.[0] ?? '';
-  if (/\b(?:pagi|buka|awal)\b/i.test(header)) return 'open';
-  if (/\b(?:sore|tutup|akhir)\b/i.test(header)) return 'close';
+  // "buka/awal/mulai" hanya untuk menyamakan stok dan uang awal; semua nama shift lain adalah laporan penutup shift itu.
+  if (/\b(?:buka|awal|mulai)\b/i.test(header)) return 'open';
+  if (/\b(?:pagi|siang|sore|malam|begadang|bergadang|dini|tutup|akhir)\b/i.test(header)) return 'close';
   // Admin atau Uang keluar yang sudah terisi hanya ada pada laporan penutup shift.
   if (text.split(/\r?\n/).some(line => /^\s*(?:admin|uang\s+keluar|pengeluaran)\s*[:=]\s*\d/i.test(line))) return 'close';
   return null;
+}
+
+// Nama shift dari kop ("Update stok malam" -> "malam"); dipakai sebagai label di laporan.
+export function countShiftLabel(text: string): string | null {
+  const first = text.trim().split(/\r?\n/)[0] ?? '';
+  const header = HEADER.exec(first)?.[0] ?? '';
+  const word = /\b(pagi|siang|sore|malam|begadang|bergadang|dini)\b/i.exec(header)?.[1]?.toLowerCase();
+  return word ? (word === 'bergadang' ? 'begadang' : word) : null;
 }
 
 export function isCountMessage(text: string): boolean {
@@ -134,7 +143,7 @@ export function soldFromCounts(
     if (!product) { unmatched.push(`${item.label} (${item.stock})`); continue; }
     const label = productLabel(product, (nameCount.get(product.name.toLowerCase()) ?? 0) > 1);
     if (item.stock === product.stock) { same++; continue; }
-    if (item.stock > product.stock) { notes.push(`${label}: hitungan ${item.stock} lebih banyak dari stok sistem ${product.stock} (barang masuk?). Tidak dihitung terjual. Kalau memang ada barang masuk, kirim dulu “Barang masuk: nama : jumlah” lalu hitung ulang; kalau tidak, owner perlu memeriksa.`); continue; }
+    if (item.stock > product.stock) { notes.push(`${label}: hitungan ${item.stock} lebih banyak dari stok sistem ${product.stock} (barang masuk?). Tidak dihitung terjual. Kalau ada barang masuk, kirim dulu “Barang masuk: nama : jumlah” lalu hitung ulang. Kalau stok sistem yang keliru, kirim sekali “Update stok buka” untuk menyamakannya.`); continue; }
     sold.set(product.id, { productId: product.id, label, sold: product.stock - item.stock, counted: item.stock, systemStock: product.stock, price: product.sellPrice });
   }
   return { sold: [...sold.values()], unmatched, notes, same };

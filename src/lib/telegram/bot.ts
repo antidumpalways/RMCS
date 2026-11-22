@@ -11,7 +11,7 @@ import { cashOnHandAt, shiftOpening } from '@/lib/automation';
 import { combinedBalanceAt, recordedCombinedMovementsBetween, setCombinedBalance } from '@/lib/services/combined-balance';
 import { identifyTelegramActor, configuredTelegramOwners, type TelegramActor } from './identity';
 import { getCatalog, handleGroupAssistantMessage, handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
-import { balanceExplanation, countMode, differenceHints, isCountMessage, parseCountMessage, soldFromCounts, type CountMessage } from './group-count';
+import { balanceExplanation, countMode, countShiftLabel, differenceHints, isCountMessage, parseCountMessage, soldFromCounts, type CountMessage } from './group-count';
 import { applyMorningCount } from './morning-count';
 import { handleReceiptCallback, handleReceiptMessage, isReceiptMessage } from './stock-receipt';
 import { extractCountMessage } from './count-extract';
@@ -613,7 +613,7 @@ async function recordReportMessage(rawMessage:TelegramMessage,actor:TelegramActo
  // Pesan "Update stok" (sisa stok + Admin + Total): barang laku dihitung dari selisih stok, bukan ditulis karyawan.
  const openingForCount=isCountMessage(message.text)?await activeShiftOpening(chatId,actor.identityId):null;
  const countMessage=isCountMessage(message.text)?parseCountMessage(message.text,openingForCount?Number(openingForCount.payload.openingBalance):null):null;
- const extraction=countMessage?await extractCountMessage(countMessage):await extractRecapMessage(message.text,prior);
+ const extraction=countMessage?await extractCountMessage(countMessage,countShiftLabel(message.text)):await extractRecapMessage(message.text,prior);
  let saved:RecapDraft|null=null;let savedRevision:number|null=null;
  for(let attempt=0;attempt<3&&!saved;attempt++){
   const current=await prisma.telegramSession.findUnique({where:{id:session.id}});
@@ -911,29 +911,24 @@ function looksLikeRecapContent(text:string){
  return (found.entries.length>0||(found.inventoryLines?.length??0)>0)&&found.unresolved.length===0&&!(found.inventoryLines??[]).some(line=>line.ambiguity);
 }
 function recapCallback(data:string|undefined){return /^rcms:(?:ok|cancel|edit|i|q|stockend|stocklist|dup):/.test(data??'')||data==='rcms:group:rekap'||!!visionCallbackFromData(data);}
-// "Update stok" pagi membuka shift; yang sore menutupnya lewat rekap. Penanda di kop (pagi/sore) didahulukan,
-// selain itu ditentukan dari keadaan shift: tanpa shift berjalan, atau shift yang sudah sangat lama, berarti pagi.
-async function decideCountMode(chatId:bigint,text:string):Promise<'open'|'close'>{
- const explicit=countMode(text);
- if(explicit)return explicit;
- const opening=await activeShiftOpening(chatId,'');
- if(!opening)return 'open';
- const ageHours=(Date.now()-new Date(opening.payload.shiftStart).getTime())/3_600_000;
- return ageHours>=16?'open':'close';
+// Setiap shift mengirim satu laporan penutup ("Update stok sore/malam/pagi") yang sekaligus menjadi titik awal shift berikutnya.
+// Hanya kop "buka/awal/mulai" yang menyamakan stok dan uang awal tanpa menghitung penjualan.
+async function decideCountMode(_chatId:bigint,text:string):Promise<'open'|'close'>{
+ return countMode(text)??'close';
 }
 async function handleMorningCountMessage(m:TelegramMessage,actor:TelegramActor){
  const chatId=BigInt(m.chat.id),text=m.text??'';
  const running=await activeShiftOpening(chatId,actor.identityId);
  if(running&&!await closeStaleShift(chatId,actor,running,true)){
-  return sendTelegramMessage(chatId,'Shift sebelumnya masih berjalan (ada rekap yang sedang diisi). Selesaikan atau batalkan rekap itu dulu, lalu kirim Update stok pagi lagi.');
+  return sendTelegramMessage(chatId,'Shift sebelumnya masih berjalan (ada rekap yang sedang diisi). Selesaikan atau batalkan rekap itu dulu, lalu kirim Update stok buka lagi.');
  }
  const reference=Number(await combinedBalanceAt(new Date()));
  const count=parseCountMessage(text,reference);
- if(!count||(!count.items.length&&!count.total))return sendTelegramMessage(chatId,'Update stok pagi belum terbaca. Contoh:\nUpdate stok pagi\nTelkomsel 3 hari : 38\nAxis 5 hari : 9\nModal: 34.463.000');
+ if(!count||(!count.items.length&&!count.total))return sendTelegramMessage(chatId,'Update stok buka belum terbaca. Contoh:\nUpdate stok buka\nTelkomsel 3 hari : 38\nAxis 5 hari : 9\nModal: 34.463.000');
  const result=await applyMorningCount(count,actor.displayName);
- await autoOpenShift(chatId,actor,'pagi');
+ await autoOpenShift(chatId,actor,'buka');
  const money=formatTelegramRupiah;
- const lines=['✅ SHIFT PAGI DIBUKA'];
+ const lines=['✅ STOK DAN UANG AWAL DISESUAIKAN (Update stok buka)'];
  lines.push('📦 Stok: '+(result.changes.length?result.changes.length+' barang disesuaikan dengan hitunganmu':'semua sama dengan catatan sistem')+(result.unchanged&&result.changes.length?', '+result.unchanged+' sama':''));
  for(const change of result.changes.slice(0,25))lines.push('• '+change);
  if(result.changes.length>25)lines.push('…dan '+(result.changes.length-25)+' lainnya.');
@@ -941,10 +936,10 @@ async function handleMorningCountMessage(m:TelegramMessage,actor:TelegramActor){
  if(count.total?.amount!=null&&count.total.assumedThousands)lines.push('ℹ️ Modal “'+count.total.raw+'” dibaca '+money(count.total.amount)+' (angka tanpa satuan dianggap ribuan).');
  if(result.unmatched.length)lines.push('⚠️ Belum dikenali (tidak diubah): '+result.unmatched.join(', ')+'. Tulis ulang dengan nama lengkap atau kabari owner.');
  for(const note of result.notes)lines.push('ℹ️ '+note);
- lines.push('','Sore nanti kirim lagi: Update stok + Admin + Total (atau Modal).');
+ lines.push('','Saat shift-mu selesai, kirim Update stok + Admin + Total dengan nama shift-mu di baris pertama (mis. Update stok malam). Karyawan berikutnya tidak perlu kirim apa-apa.');
  await sendLongTelegramMessage(chatId,lines.join('\n'));
  if(result.changes.length||result.balance?.changed||result.unmatched.length){
-  const owner=['🌅 UPDATE STOK PAGI','Karyawan: '+actor.displayName];
+  const owner=['🌅 UPDATE STOK BUKA (penyesuaian stok dan uang awal)','Karyawan: '+actor.displayName];
   if(result.changes.length)owner.push('Stok disesuaikan dengan hitungan karyawan ('+result.changes.length+' barang):',...result.changes.slice(0,40).map(change=>'• '+change));
   if(result.balance?.changed)owner.push('Uang awal diubah dari '+money(result.balance.before)+' menjadi '+money(result.balance.after)+' (selisih '+money(result.balance.after-result.balance.before)+').');
   if(result.unmatched.length)owner.push('Belum dikenali: '+result.unmatched.join(', '));
@@ -1018,7 +1013,7 @@ async function processUpdate(u:TelegramUpdate){
    // Karyawan langsung menulis barang terjual ("telkomsel 3 hari", "axis 5 hari 2 pcs") tanpa mengetik "rekap":
    // buka rekap otomatis dan catat isinya, jangan didiamkan.
    // Karyawan lain ikut mengisi rekap yang sedang berjalan: hanya pesan yang jelas berisi rekap, obrolan tetap didiamkan.
-   if(m?.text&&!m.photo&&!m.document&&isCountMessage(m.text)){if(await decideCountMode(BigInt(chat.id),m.text)==='open')morningCount=true;else recapStart={shiftLabel:null,rest:m.text.trim()};}
+   if(m?.text&&!m.photo&&!m.document&&isCountMessage(m.text)){if(await decideCountMode(BigInt(chat.id),m.text)==='open')morningCount=true;else recapStart={shiftLabel:countShiftLabel(m.text),rest:m.text.trim()};}
    else if(m?.text&&!m.photo&&!m.document&&looksLikeRecapContent(m.text)&&await activeSharedRecap(BigInt(chat.id)))sharedContent=true;
    else if(m?.text&&!m.photo&&!m.document&&isLikelySaleNote(m.text))recapStart={shiftLabel:null,rest:m.text.trim()};
    // Bahasa bebas: AI hanya menilai niat pada pesan teks yang lolos penyaring kasar. Gagal/ragu = diam.

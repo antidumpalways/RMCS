@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { balanceExplanation, countMode, dedupeCounts, differenceHints, interpretMoney, isCountMessage, parseCountMessage, soldFromCounts } from './group-count';
+import { balanceExplanation, countMode, countShiftLabel, dedupeCounts, differenceHints, interpretMoney, isCountMessage, parseCountMessage, soldFromCounts } from './group-count';
 import { looseUnitConflict } from './variant-guard';
 
 test('pesan "Update stok" karyawan: stok, Admin, dan Total', () => {
@@ -68,13 +68,21 @@ test('pesan hanya berisi Admin dan Total tetap terbaca', () => {
   assert.equal(message?.total?.amount, 34_463_000);
 });
 
-test('Modal dibaca sama seperti Total; kop pagi/sore menentukan mode', () => {
+test('Modal dibaca sama seperti Total; hanya kop buka yang membuka, nama shift menutup', () => {
   const NL = String.fromCharCode(10);
   const message = parseCountMessage(['Update stok pagi', 'Axis 3 hari : 5', 'Modal: 34463'].join(NL), 30_000_000);
   assert.equal(message?.total?.amount, 34_463_000);
   assert.equal(message?.items.length, 1);
   assert.equal(parseCountMessage(['Update stok', 'Modal awal: 34,4jt'].join(NL))?.total?.amount, 34_400_000);
-  assert.equal(countMode('Update stok pagi' + NL + 'x : 1'), 'open');
+  assert.equal(countMode('Update stok pagi' + NL + 'x : 1'), 'close');
+  assert.equal(countMode('Update stok malam' + NL + 'x : 1'), 'close');
+  assert.equal(countMode('Update stok begadang' + NL + 'x : 1'), 'close');
+  assert.equal(countMode('Update stok awal' + NL + 'x : 1'), 'open');
+  assert.equal(countMode('Update stok mulai' + NL + 'x : 1'), 'open');
+  assert.equal(countShiftLabel('Update stok malam' + NL + 'x : 1'), 'malam');
+  assert.equal(countShiftLabel('Update stok bergadang' + NL + 'x : 1'), 'begadang');
+  assert.equal(countShiftLabel('Update stok' + NL + 'x : 1'), null);
+  assert.equal(parseCountMessage(['Update stok malam', 'Axis 3 hari : 5'].join(NL))?.items.map(item => item.label).join(), 'Axis 3 hari');
   assert.equal(countMode('Update stok buka' + NL + 'x : 1'), 'open');
   assert.equal(countMode('Update stok sore' + NL + 'x : 1'), 'close');
   assert.equal(countMode('Update stok tutup' + NL + 'x : 1'), 'close');

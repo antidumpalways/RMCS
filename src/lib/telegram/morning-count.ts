@@ -48,7 +48,7 @@ export async function applyMorningCount(count: CountMessage, actorName: string):
   } else if (count.total) notes.push(`Modal “${count.total.raw}” kurang jelas, uang awal memakai catatan sistem. Tulis misalnya Modal: 34.463.000.`);
   notes.push(...duplicateNotes);
   if (count.invalid.length) notes.push(`Baris ini tidak terbaca dan diabaikan: ${count.invalid.slice(0, 6).join('; ')}.`);
-  if (count.events.length) notes.push('Baris Uang masuk/Uang keluar/Bon diabaikan di pesan pagi; tulis di Update stok sore.');
-  if (count.admin) notes.push('Admin diabaikan di pesan pagi; kirim bersama Update stok sore.');
+  if (count.events.length) notes.push('Baris Uang masuk/Uang keluar/Bon diabaikan di pesan pagi; tulis di laporan penutup shift.');
+  if (count.admin) notes.push('Admin diabaikan di pesan pagi; kirim bersama laporan penutup shift.');
   return { changes, unchanged, unmatched, notes, balance };
 }
