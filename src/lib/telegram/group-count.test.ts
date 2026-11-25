@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { balanceExplanation, countMode, countShiftLabel, dedupeCounts, differenceHints, interpretMoney, isCountMessage, parseCountMessage, soldFromCounts } from './group-count';
+import { balanceExplanation, countMode, countShiftLabel, handoverLabels, dedupeCounts, differenceHints, interpretMoney, isCountMessage, parseCountMessage, soldFromCounts } from './group-count';
 import { looseUnitConflict } from './variant-guard';
 
 test('pesan "Update stok" karyawan: stok, Admin, dan Total', () => {
@@ -76,7 +76,7 @@ test('Modal dibaca sama seperti Total; kata buka/tutup menentukan mode, nama shi
   assert.equal(parseCountMessage(['Update stok', 'Modal awal: 34,4jt'].join(NL))?.total?.amount, 34_400_000);
   // Nama shift hanya label; keputusan buka/tutup dari kata buka/tutup atau keadaan shift.
   for (const word of ['pagi', 'sore', 'malam', 'begadang', 'siang']) assert.equal(countMode('Update stok ' + word + NL + 'x : 1'), null);
-  for (const word of ['buka', 'awal', 'mulai', 'serah terima', 'malam buka', 'sore serah terima']) assert.equal(countMode('Update stok ' + word + NL + 'x : 1'), 'open');
+  for (const word of ['buka', 'awal', 'mulai', 'malam buka']) assert.equal(countMode('Update stok ' + word + NL + 'x : 1'), 'open');
   for (const word of ['tutup', 'akhir', 'sore tutup', 'malam akhir']) assert.equal(countMode('Update stok ' + word + NL + 'x : 1'), 'close');
   assert.equal(parseCountMessage(['Update stok serah terima', 'Axis 3 hari : 5'].join(NL))?.items.map(item => item.label).join(), 'Axis 3 hari');
   assert.equal(countShiftLabel('Update stok malam' + NL + 'x : 1'), 'malam');
@@ -144,4 +144,13 @@ test('kejadian uang: uang masuk, uang keluar, dan bon dengan keterangan, boleh b
   assert.equal(plain?.events[0].money.amount, 200_000);
   assert.equal(plain?.events[0].note, '');
   assert.equal(plain?.events[1].money.amount, null);
+});
+
+test('satu laporan ganti shift: nama di kop boleh shift yang selesai atau yang masuk', () => {
+  assert.deepEqual(handoverLabels('pagi', 'sore'), { closing: 'pagi', next: 'sore' });
+  assert.deepEqual(handoverLabels('pagi', 'pagi'), { closing: 'pagi', next: 'sore' });
+  assert.deepEqual(handoverLabels('sore', null), { closing: 'sore', next: 'malam' });
+  assert.deepEqual(handoverLabels('begadang', 'pagi'), { closing: 'begadang', next: 'pagi' });
+  assert.deepEqual(handoverLabels('buka', 'pagi'), { closing: 'pagi', next: 'sore' });
+  assert.deepEqual(handoverLabels(null, null), { closing: null, next: null });
 });

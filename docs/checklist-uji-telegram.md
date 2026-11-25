@@ -212,11 +212,11 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Angka tanpa satuan ikut gaya ribuan Total; `500rb`, `1,5jt` dipakai apa adanya.
 - [ ] Jangan menulis uang masuk yang sudah dicatat di aplikasi (mis. bayar utang lewat Web App), agar tidak terhitung dua kali.
 
-## T. Tiga shift, dua pesan per shift (serah terima + laporan penutup)
-- [ ] Awal shift: karyawan kirim `Update stok <nama shift>` + stok + `Modal:` (mis. `Update stok sore`). Tanpa shift berjalan, bot membacanya sebagai **serah terima** dan membalas "🤝 SERAH TERIMA · SHIFT SORE (dari shift pagi)".
-- [ ] Hitungan dicocokkan dengan penutup shift sebelumnya: semua sama -> "sama dengan catatan penutup shift sebelumnya ✅"; ada beda -> daftar "44 -> 43 (-1)", stok dan uang awal mengikuti hitungan yang masuk, owner menerima laporan serah terima.
-- [ ] Akhir shift: `Update stok <nama shift>` + stok + Admin + uang masuk/keluar/bon + Total. Shift sedang berjalan dan namanya sama -> laporan penutup (draf rekap, tekan Selesai).
-- [ ] Kata `buka`/`serah terima` memaksa serah terima; kata `tutup`/`akhir` memaksa penutup. Admin atau Uang keluar yang terisi selalu penutup.
-- [ ] Nama shift di pesan beda dari shift yang sedang berjalan (mis. `pagi` saat `malam` belum ditutup) -> serah terima shift baru; shift lama ditutup tanpa laporan dan owner diberi tahu "shift sebelumnya tidak mengirim laporan penutup".
-- [ ] Label shift tampil di laporan serah terima dan rekap owner.
-- [ ] Hitungan lebih besar dari stok sistem pada laporan penutup tidak dihitung terjual; catatannya menyarankan "Barang masuk:" atau serah terima.
+## T. Ganti shift: satu laporan menutup shift lama dan memulai yang baru
+- [ ] Hitungan pertama (belum ada shift sama sekali): `Update stok pagi` + stok + `Modal:` -> "SERAH TERIMA · SHIFT PAGI", shift pagi berjalan.
+- [ ] Saat ganti shift, cukup SATU laporan (boleh oleh yang pulang atau yang masuk, dengan atau tanpa Admin): draf "REKAP SHIFT PAGI" -> penjualan pagi dicocokkan -> Selesai -> "Shift sore otomatis dimulai dari hitungan ini". Laporan owner berlabel shift yang ditutup.
+- [ ] Bila yang satunya ikut melapor (kurang dari 3 jam setelah ganti shift): "SERAH TERIMA (cek ulang) · SHIFT SORE (dari shift pagi)", selisih angka dilaporkan, shift tidak ditutup lagi.
+- [ ] Rantai berlanjut: sore -> begadang -> pagi besok; tiap laporan menutup shift sebelumnya.
+- [ ] Nama di kop boleh nama shift yang selesai atau yang masuk.
+- [ ] `Update stok buka` hanya untuk menyamakan stok dan uang awal (tanpa menghitung penjualan); `Update stok tutup` memaksa laporan penutup (mis. ganti shift kurang dari 3 jam).
+- [ ] Draf yang belum ditekan Selesai belum memulai shift berikutnya.

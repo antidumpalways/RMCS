@@ -47,7 +47,7 @@ export async function resolveCountItems(count: CountMessage): Promise<{ counts: 
   return { counts: deduped.counts, catalogProducts: catalog.map(toCountProduct), duplicateNotes: deduped.notes };
 }
 
-export async function extractCountMessage(count: CountMessage, shiftLabel: string | null = null): Promise<RecapExtraction> {
+export async function extractCountMessage(count: CountMessage, labels: { closing: string | null; next: string | null } = { closing: null, next: null }): Promise<RecapExtraction> {
   const { counts, catalogProducts, duplicateNotes } = await resolveCountItems(count);
   const result = soldFromCounts(counts, catalogProducts);
   const inventoryLines: RecapInventoryExtraction[] = result.sold.map(line => ({
@@ -81,7 +81,7 @@ export async function extractCountMessage(count: CountMessage, shiftLabel: strin
   if (count.skipped.length) notes.push(`Dilewati (angka kosong): ${count.skipped.join(', ')}.`);
   if (count.invalid.length) notes.push(`Baris ini tidak terbaca dan diabaikan: ${count.invalid.slice(0, 6).join('; ')}.`);
   notes.push(...duplicateNotes, ...result.notes);
-  notes.unshift(`Dibaca sebagai laporan penutup shift${shiftLabel ? ' ' + shiftLabel : ''}. Karyawan shift berikutnya mengirim Update stok untuk serah terima. Kalau ini sebenarnya pembukaan shift, batalkan lalu kirim ulang dengan kop “Update stok buka”.`);
+  notes.unshift(`Laporan ini menutup shift${labels.closing ? ' ' + labels.closing : ''}. Setelah Selesai, shift${labels.next ? ' ' + labels.next : ' berikutnya'} otomatis dimulai dari hitungan ini. Kalau ini hanya untuk menyamakan stok dan uang awal, batalkan lalu kirim ulang dengan kop “Update stok buka”.`);
 
-  return { replaceInventory: true, entries, inventoryLines, unresolved, notes, cashEvents };
+  return { nextShiftLabel: labels.next, ...(labels.closing ? { shiftLabel: labels.closing } : {}), replaceInventory: true, entries, inventoryLines, unresolved, notes, cashEvents };
 }

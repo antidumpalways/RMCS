@@ -34,8 +34,8 @@ const FINANCE_LINE = /^(admin|total(?:\s+(?:saldo|kas|uang|akhir))*|modal(?:\s+(
 export function countMode(text: string): 'open' | 'close' | null {
   const first = text.trim().split(/\r?\n/)[0] ?? '';
   const header = HEADER.exec(first)?.[0] ?? '';
-  // Nama shift (pagi/sore/malam) hanya label. "buka/serah terima" memulai shift (serah terima); "tutup/akhir" menutupnya.
-  if (/\b(?:buka|awal|mulai|serah|terima)\b/i.test(header)) return 'open';
+  // Nama shift (pagi/sore/malam) hanya label. "buka" menyamakan stok awal; "tutup/akhir" memaksa laporan penutup.
+  if (/\b(?:buka|awal|mulai)\b/i.test(header)) return 'open';
   if (/\b(?:tutup|akhir)\b/i.test(header)) return 'close';
   // Admin atau Uang keluar yang sudah terisi hanya ada pada laporan penutup shift.
   if (text.split(/\r?\n/).some(line => /^\s*(?:admin|uang\s+keluar|pengeluaran)\s*[:=]\s*\d/i.test(line))) return 'close';
@@ -187,4 +187,15 @@ export function dedupeCounts<T extends { item: StockListItem; product: CountProd
     notes.push(`“${counts[winner].item.label}” dan “${losers.map(index => counts[index].item.label).join('”, “')}” sama-sama cocok ke ${product.name}. Yang dipakai: “${counts[winner].item.label}”; yang lain dianggap barang lain yang belum ada di katalog.`);
   }
   return { counts: result, notes };
+}
+
+const NEXT_SHIFT: Record<string, string> = { pagi: 'sore', siang: 'sore', sore: 'malam', malam: 'pagi', begadang: 'pagi', dini: 'pagi' };
+
+// Satu laporan saat ganti shift menutup shift yang sedang berjalan dan memulai berikutnya. Nama di kop boleh nama shift yang
+// selesai ("pagi" ditutup oleh pagi) atau nama shift yang masuk ("sore" melapor, berarti pagi selesai).
+export function handoverLabels(runningLabel: string | null, messageLabel: string | null): { closing: string | null; next: string | null } {
+  const running = runningLabel && runningLabel !== 'buka' ? runningLabel : null;
+  const closing = running ?? messageLabel;
+  const next = messageLabel && messageLabel !== closing ? messageLabel : closing ? NEXT_SHIFT[closing] ?? null : null;
+  return { closing, next };
 }
