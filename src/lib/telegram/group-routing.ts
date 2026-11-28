@@ -4,6 +4,22 @@
 const QUESTION_START = /^(?:tolong\s+)?(?:cek|cari(?:kan|in)?|foto|gambar(?:nya)?|harga|berapa|apakah|tanya)\b/i;
 const QUESTION_WORD = /\b(?:harga|berapa)\b/i;
 
+const ASK_WORD = '(?:ada|punya|jual|ready|tersedia)';
+const NO_WORD = '(?:gak|ga|gk|nggak|ngga|enggak|engga|kah)';
+// "ada gak casan type c", "adakah headset"
+const ASK_INLINE = new RegExp('\\b' + ASK_WORD + '\\s*' + NO_WORD + '\\b', 'i');
+// "ada casan vivo gak bang", "charger iphone ready ga", "ada kabel c?"
+const ASK_TAIL = new RegExp('(?:\\b' + NO_WORD + '|\\btidak|\\?)\\s*(?:(?:bang|kak|bos|min|ya)\\s*)?[?!.]*$', 'i');
+const NOT_ITEM = /\b(?:rekap|laporan|shift|admin|saldo|modal|total|setor(?:an)?|bon|kasbon|uang|duit|transfer|tf|selisih|gaji|u?tang|hutang)\b/i;
+
+// Karyawan menanyakan ketersediaan barang dengan bahasa bebas. Obrolan yang ikut lolos disaring lagi oleh AI.
+export function looksLikeItemQuestion(text: string): boolean {
+  const value = text.trim();
+  if (value.length < 6 || value.length > 140 || value.startsWith('/') || /\n/.test(value)) return false;
+  if (/\d+\s*(?:rb|ribu|k|jt|juta)\b|\d{5,}|\d+\s*(?:pcs?|unit|units?|biji|buah|lembar|batang|pack|pak|box|bungkus)\b/i.test(value) || NOT_ITEM.test(value)) return false;
+  return ASK_INLINE.test(value) || (new RegExp('\\b' + ASK_WORD + '\\b', 'i').test(value) && ASK_TAIL.test(value));
+}
+
 // Pertanyaan tentang katalog (harga/stok) — bukan catatan penjualan seperti "Axis 13GB 2 pcs".
 export function looksLikeCatalogQuestion(text: string): boolean {
   const value = text.trim();
@@ -11,7 +27,7 @@ export function looksLikeCatalogQuestion(text: string): boolean {
   if (/\?\s*$/.test(value)) return true;
   const hasQuantityUnit = /\d+\s*(?:pcs?|unit|units?|biji|buah|lembar|batang|pack|pak|box|bungkus)\b/i.test(value);
   if (hasQuantityUnit && !/\?/.test(value)) return false;
-  return QUESTION_START.test(value) || QUESTION_WORD.test(value);
+  return QUESTION_START.test(value) || QUESTION_WORD.test(value) || looksLikeItemQuestion(value);
 }
 
 const RECAP_HEADER = /^(?:rekap|laporan|lapor|barang\s+terjual|terjual|penjualan|jualan)(?:\s+(?:shift|hari\s+ini))?(?:\s+(?:pagi|siang|malam))?\s*[:.\-]*\s*$/i;
@@ -76,10 +92,10 @@ export function isImplicitCatalogQuestion(text: string): boolean {
   // "cari charger vivo" / "foto charger vivo": minta barang ditampilkan.
   const asksToShow = /^(?:tolong\s+)?(?:cari(?:kan|in)?|foto|gambar(?:nya)?)\s+\S/i.test(value);
   if (asksPrice || asksToShow) return !hasMoney && !hasQuantityUnit;
-  return asksAvailability && !hasMoney && !hasQuantityUnit;
+  return (asksAvailability && !hasMoney && !hasQuantityUnit) || looksLikeItemQuestion(value);
 }
 
-const QUESTION_FILLER = new Set(['harga', 'harganya', 'berapa', 'berapaan', 'brp', 'ada', 'adakah', 'ready', 'stok', 'stoknya', 'stock', 'sisa', 'kosong', 'punya', 'masih', 'cek', 'cari', 'tolong', 'tanya', 'dong', 'ya', 'kak', 'bang', 'bos', 'min', 'gak', 'ga', 'nggak', 'tidak', 'yang', 'yg', 'untuk', 'buat', 'nya', 'sih', 'nih', 'kah', 'apakah', 'info', 'mau', 'kalau', 'kalo', 'itu', 'ini', 'si', 'jual', 'dijual', 'foto', 'fotonya', 'gambar', 'gambarnya', 'carikan', 'cariin', 'lihat']);
+const QUESTION_FILLER = new Set(['harga', 'harganya', 'berapa', 'berapaan', 'brp', 'ada', 'adakah', 'ready', 'stok', 'stoknya', 'stock', 'sisa', 'kosong', 'punya', 'masih', 'cek', 'cari', 'tolong', 'tanya', 'dong', 'ya', 'kak', 'bang', 'bos', 'min', 'gak', 'ga', 'nggak', 'tidak', 'yang', 'yg', 'untuk', 'buat', 'nya', 'sih', 'nih', 'kah', 'apakah', 'info', 'mau', 'kalau', 'kalo', 'itu', 'ini', 'si', 'jual', 'dijual', 'foto', 'fotonya', 'gambar', 'gambarnya', 'carikan', 'cariin', 'lihat', 'barang', 'ngga', 'enggak', 'engga', 'gk', 'tersedia', 'apa', 'bg', 'kk']);
 
 // Mengambil nama barang dari pertanyaan harga/stok sederhana ("harga axis 3 hari berapa?" => "axis 3 hari").
 // Mengembalikan null bila bukan pertanyaan satu barang yang jelas, supaya ditangani asisten biasa.

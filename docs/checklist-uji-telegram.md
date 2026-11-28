@@ -237,3 +237,7 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Foto tanpa keterangan -> bot menampilkan contoh format.
 - [ ] Grup: `harga charger vivo`, `cari charger vivo`, `foto charger vivo`, `ada charger vivo?` -> foto + harga jual + stok, tanpa modal.
 - [ ] Barang tanpa foto dijawab teks seperti biasa.
+- [ ] Bahasa bebas (butuh DeepSeek): `bang ada casan buat hp vivo gak` -> "Ada, ini barangnya" + foto + harga.
+- [ ] Tipe yang tidak ada (`ada antigores a15 gak`, hanya punya A05) -> "belum ada, yang mirip", tidak mengaku cocok.
+- [ ] Barang tidak ada -> "Belum ada ... di katalog"; `ada barang ini gak` tanpa konteks -> bot bertanya barang yang mana.
+- [ ] Obrolan (`ada yang jaga malam gak`) -> bot diam.

@@ -20,7 +20,8 @@ import { looseUnitConflict } from './variant-guard';
 import { brandKnown, catalogTokens, isStarterPack, parseNewProductSpec, parsePriceReply, type NewProductSpec, type PendingPrice, type PriceReply } from './new-product';
 import { parseUpdateList, type UpdateItem, type UpdateKind, type UpdateList } from './stock-list';
 import { resolveInventoryProduct } from './inventory';
-import { quickCatalogQuery } from './group-routing';
+import { looksLikeCatalogQuestion, quickCatalogQuery } from './group-routing';
+import { interpretItemQuestion, type ItemQuestion } from './item-question';
 import { sendProductPhotos } from './product-reply';
 import { loadPhotos } from '@/lib/services/product-photo';
 import { parseDeleteStatement, parseEditStatements, parseOnlyStatement, parseProviderLists } from './provider-list-parser';
@@ -2213,6 +2214,33 @@ function groupPhotoCaption(product: CatalogProduct) {
   return `${product.name}${product.quota ? ` (kuota ${product.quota})` : ''}\nHarga: ${formatIdr(product.sellPrice)}\n${product.stock > 0 ? `Stok: ${product.stock}` : 'Stok HABIS'}${product.location?.name ? `\nLokasi: ${product.location.name}` : ''}`;
 }
 
+const groupTextLine = (product: CatalogProduct) => `• ${product.name}${product.quota ? ` (kuota ${product.quota})` : ''} — ${formatIdr(product.sellPrice)} · ${product.stock > 0 ? `stok ${product.stock}` : 'HABIS'}`;
+
+// Kalimat pembuka + barang yang dimaksud. Foto dikirim untuk yang punya foto, sisanya sebagai teks.
+function itemAnswer(found: ItemQuestion, catalog: CatalogProduct[]): { intro: string; products: CatalogProduct[] } {
+  const pick = (ids: number[]) => ids.flatMap(id => catalog.filter(product => product.id === id));
+  const named = found.wanted ? ` “${found.wanted}”` : '';
+  const sure = pick(found.sure), maybe = pick(found.maybe), similar = pick(found.similar);
+  if (sure.length) {
+    const products = [...sure, ...maybe].slice(0, 5);
+    return { intro: sure.every(product => product.stock <= 0) ? 'Barangnya ada di katalog, tapi stoknya habis:' : sure.length === 1 && !maybe.length ? 'Ada, ini barangnya:' : 'Ada, ini pilihannya:', products };
+  }
+  if (maybe.length) return { intro: `Mungkin ini yang dimaksud${named}? Cek dulu ya:`, products: [...maybe, ...similar].slice(0, 5) };
+  if (similar.length) return { intro: `Yang persis${named} belum ada. Yang mirip (tipe/ukurannya beda):`, products: similar };
+  return { intro: found.wanted ? `Belum ada${named} di katalog.` : 'Barang yang mana? Sebut nama atau cirinya, misalnya “ada charger type C?”.', products: [] };
+}
+
+async function sendItemAnswer(chatId: bigint, intro: string, products: CatalogProduct[]) {
+  let introduced = false;
+  const rest = await sendProductPhotos(chatId, products, product => {
+    const caption = (introduced || !intro ? '' : intro + '\n\n') + groupPhotoCaption(product);
+    introduced = true;
+    return caption;
+  });
+  if (rest.length === products.length) return sendTelegramMessage(chatId, [intro, rest.map(groupTextLine).join('\n')].filter(Boolean).join('\n'));
+  if (rest.length) return sendTelegramMessage(chatId, rest.map(groupTextLine).join('\n'));
+}
+
 /** Read-only group assistant; catalog changes and financial reports remain owner-only. */
 export async function handleGroupAssistantMessage(input: { chatId: bigint; identityId: string; text: string; updateId: string; implicit?: boolean }) {
   const id = groupAssistantId(input.chatId, input.identityId), now = new Date();
@@ -2242,21 +2270,35 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
     return;
   }
   try {
-    // Jalur cepat: "harga axis 3 hari berapa?" dijawab langsung dari katalog tanpa menunggu AI.
+    // Urutan: nama cocok persis dijawab langsung; selain itu AI memahami maksud pertanyaan; pencocokan longgar jadi cadangan.
     const quickQuery = quickCatalogQuery(input.text);
-    if (quickQuery) {
-      const matches = await findProductCandidates(quickQuery, await getCatalog());
-      if (matches.length >= 1 && matches.length <= 5) {
-        const line = (product: CatalogProduct) => `• ${product.name}${product.quota ? ` (kuota ${product.quota})` : ''} — ${formatIdr(product.sellPrice)} · ${product.stock > 0 ? `stok ${product.stock}` : 'HABIS'}`;
-        const response = matches.map(line).join('\n');
+    if (quickQuery || looksLikeCatalogQuestion(input.text)) {
+      const catalog = await getCatalog();
+      const answer = async (intro: string, products: CatalogProduct[]) => {
+        const response = [intro, ...products.map(groupTextLine)].filter(Boolean).join('\n');
         state.history = [...state.history, { role: 'user' as const, content: input.text.slice(0, 1000) }, { role: 'assistant' as const, content: response.slice(0, 1200) }].slice(-12);
         state.lastReply = response;
         state.processedUpdateIds = [...(state.processedUpdateIds ?? []), input.updateId].slice(-80);
         await prisma.telegramDraft.update({ where: { id }, data: { payload: state as object, status: 'PENDING', expiresAt: new Date(Date.now() + GROUP_ASSISTANT_TTL) } });
-        // Barang berfoto dikirim sebagai foto + harga; sisanya tetap teks.
-        const rest = await sendProductPhotos(input.chatId, matches, product => groupPhotoCaption(product));
-        if (rest.length) return sendTelegramMessage(input.chatId, rest.map(line).join('\n'));
+        return sendItemAnswer(input.chatId, intro, products);
+      };
+      const exact = quickQuery ? catalog.filter(product => strictProductMatch(quickQuery, product)) : [];
+      if (exact.length >= 1 && exact.length <= 5) return await answer('', exact);
+      // Daftar umum ("stok apa yang menipis?") tetap ditangani asisten biasa.
+      const understood = /\b(?:menipis|habis|semua|daftar)\b/i.test(input.text) ? null : await interpretItemQuestion({ text: input.text, history: state.history,
+        products: catalog.map(product => ({ id: product.id, name: product.name, categoryName: product.category.name, provider: product.provider, validity: product.validity })),
+        apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL });
+      if (understood?.asking) {
+        const reply = itemAnswer(understood, catalog);
+        return await answer(reply.intro, reply.products);
+      }
+      if (understood && input.implicit) {
+        await prisma.telegramDraft.update({ where: { id }, data: { status: 'PENDING' } });
         return;
+      }
+      if (!understood && quickQuery) {
+        const loose = await findProductCandidates(quickQuery, catalog);
+        if (loose.length >= 1 && loose.length <= 5) return await answer('', loose);
       }
     }
     const turn = await interpretOwnerTurn({ text: input.text, history: state.history, currentActions: [],
