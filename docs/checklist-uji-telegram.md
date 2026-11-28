@@ -171,7 +171,7 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Setelah shift, karyawan mengirim di grup: `Update stok` + daftar sisa stok (`TELKOMSEL 3 HARI : 38`, judul `ROKOK :`, dst) + `Admin: 82` + `Total: 34463`.
 - [ ] Draf menampilkan barang laku = stok sistem - hitungan, nilainya dari harga katalog, admin, dan "💰 SALDO TOTAL".
 - [ ] Angka tanpa satuan (`Admin: 82`, `Total: 34463`) dibaca ribuan dan dituliskan di "CATATAN HITUNGAN" supaya bisa diperiksa; `82rb` / `34,4jt` dipakai apa adanya.
-- [ ] Uang lebih dari perkiraan -> keterangan "kemungkinan dari penjualan pertalite/aksesori yang tidak ikut dihitung, atau pembayaran bon". Uang kurang -> "kemungkinan bon, pengeluaran belum ditulis, atau barang keluar belum tercatat".
+- [ ] Uang lebih dari perkiraan -> grup **tidak** menulis "lebih" maupun keterangannya (draf, /status, pesan tersimpan, serah terima); owner di chat pribadi menerima "LEBIH" beserta keterangan "kemungkinan dari penjualan pertalite/aksesori yang tidak ikut dihitung, atau pembayaran bon". Uang kurang di grup -> "kemungkinan bon, pengeluaran belum ditulis, atau barang keluar belum tercatat".
 - [ ] Selisih yang setara 1-3 pcs barang tertentu disebut ("setara 2 pcs Telkomsel 3 Hari").
 - [ ] Hitungan lebih besar dari stok sistem -> dicatat "barang masuk?" dan tidak dihitung terjual.
 - [ ] Barang yang namanya tidak dikenali -> dicatat sebagai "belum dikenali", tidak menghalangi Selesai.
@@ -183,7 +183,7 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Stok sistem disesuaikan dengan hitungan pagi; balasan memuat daftar "26 -> 28 (+2)" dan owner menerima "UPDATE STOK PAGI".
 - [ ] Uang awal (saldo + cash) mengikuti Modal pagi; bila beda dari catatan, balasan dan owner menyebut selisihnya.
 - [ ] Nama yang tidak dikenali dilaporkan, tidak mengubah apa pun.
-- [ ] **Sore** (shift sudah berjalan): `Update stok` + stok + `Admin: 82` + `Modal: 34600` -> draf rekap dengan barang laku dari selisih stok pagi vs sore, dan keterangan lebih/kurang.
+- [ ] **Sore** (shift sudah berjalan): `Update stok` + stok + `Admin: 82` + `Modal: 34600` -> draf rekap dengan barang laku dari selisih stok pagi vs sore, dan keterangan bila uang kurang.
 - [ ] Penanda di kop memaksa mode: `Update stok pagi` / `buka` membuka shift; `Update stok sore` / `tutup` menutupnya.
 - [ ] Shift kemarin belum direkap lalu karyawan kirim `Update stok pagi` -> shift lama ditutup otomatis (owner diberi tahu) dan shift baru dibuka.
 

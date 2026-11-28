@@ -309,13 +309,13 @@ async function calculateBalanceCheck(db:BalanceReader,shiftStart:Date,openingBal
  const hints=differenceHints(difference,hintRows);
  return{hints,openingBalance:openingBalance.toString(),expectedBalance:expectedBalance.toString(),actualBalance:actualBalance.toString(),movementDelta:movementDelta.toString(),difference:difference.toString(),status,sourceConflicts:conflicts,itemSales:itemSales.toString()};
 }
+// Teks untuk grup. Uang lebih (jumlah dan keterangannya) hanya dikirim ke owner, tidak ditampilkan di grup.
 function formatBalanceCheck(check:NonNullable<RecapDraft['balanceCheck']>){
  const expected=BigInt(check.expectedBalance),actual=BigInt(check.actualBalance),difference=BigInt(check.difference);
+ if(check.status==='EXCESS')return 'Saldo akhir yang dihitung karyawan: '+formatTelegramRupiah(actual);
  const lines=['Saldo seharusnya menurut RMCS + rekap: '+formatTelegramRupiah(expected),'Saldo akhir yang dihitung karyawan: '+formatTelegramRupiah(actual)];
  if(check.status==='MATCH')lines.push('✅ Saldo cocok.');
- else if(check.status==='SHORT')lines.push('⚠️ Kekurangan '+formatTelegramRupiah(-difference)+'. Dilaporkan ke Owner.');
- else lines.push('⚠️ Kelebihan '+formatTelegramRupiah(difference)+'. Dilaporkan ke Owner.');
- if(check.status!=='MATCH')lines.push(balanceExplanation(check.status,formatTelegramRupiah(difference<0n?-difference:difference),check.hints));
+ else lines.push('⚠️ Kekurangan '+formatTelegramRupiah(-difference)+'. Dilaporkan ke Owner.',balanceExplanation(check.status,formatTelegramRupiah(-difference),check.hints));
  if(check.status==='SHORT'&&check.sourceConflicts.length)lines.push(...check.sourceConflicts);
  if(check.itemSales&&BigInt(check.itemSales)>0n)lines.push('Termasuk uang dari barang yang ditulis dalam pcs (harga katalog): '+formatTelegramRupiah(BigInt(check.itemSales))+'.');
  lines.push('Nilai penjualan, admin, dan pengeluaran pada rekap dianggap total shift; transaksi RMCS yang tercakup tidak ditambahkan dua kali.');
@@ -430,7 +430,7 @@ async function sendReportDraft(chatId:bigint,actor:TelegramActor,sessionId:strin
   session={...session,revision};draft=nextDraft;
  }
  const stockOpeningText=opening.payload.reviewStatus==='OWNER_REVIEW'?'\n\nSTOK AWAL: ada selisih untuk tinjauan Owner.':'';
- const balanceText=balanceCheck?'\n\n💰 SALDO TOTAL: '+formatTelegramRupiah(BigInt(balanceCheck.actualBalance))+(balanceCheck.status==='MATCH'?' ✅ cocok':balanceCheck.status==='SHORT'?' ⚠️ kurang '+formatTelegramRupiah(-BigInt(balanceCheck.difference)):' ⚠️ lebih '+formatTelegramRupiah(BigInt(balanceCheck.difference)))+(balanceCheck.status!=='MATCH'?'\n'+balanceExplanation(balanceCheck.status,formatTelegramRupiah(BigInt(balanceCheck.difference)<0n?-BigInt(balanceCheck.difference):BigInt(balanceCheck.difference)),balanceCheck.hints):''):'';
+ const balanceText=balanceCheck?'\n\n💰 SALDO TOTAL: '+formatTelegramRupiah(BigInt(balanceCheck.actualBalance))+(balanceCheck.status==='MATCH'?' ✅ cocok':balanceCheck.status==='SHORT'?' ⚠️ kurang '+formatTelegramRupiah(-BigInt(balanceCheck.difference))+'\n'+balanceExplanation('SHORT',formatTelegramRupiah(-BigInt(balanceCheck.difference)),balanceCheck.hints):''):'';
  const issues=recapIssues(draft),stockRows:string[]=[];
  const productIds=[...new Set([...(draft.inventoryLines??[]).flatMap(line=>line.productId?[line.productId]:[]),...opening.payload.lines.map(line=>line.productId)])];
  const products=await prisma.product.findMany({where:{id:{in:productIds}},select:{id:true,name:true,stock:true,location:true,sellPrice:true}});
@@ -841,7 +841,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
   if(e instanceof TelegramInventoryError){await say(e.message);await sendTelegramMessage(chatId,e.message+' Tidak ada stok yang diubah. Periksa /rekap atau minta tinjauan owner.');return;}
   throw e;
  }
- await answerTelegramCallback(c.id,finalBalanceCheck?.status==='MATCH'?'Rekap disimpan. Saldo cocok.':'Rekap tersimpan; selisih saldo dilaporkan ke Owner.');
+ await answerTelegramCallback(c.id,finalBalanceCheck?.status==='MATCH'?'Rekap disimpan. Saldo cocok.':finalBalanceCheck?.status==='SHORT'?'Rekap tersimpan; selisih saldo dilaporkan ke Owner.':'Rekap disimpan.');
  const summary=postings.map(posting=>{const ids=posting.lineId.split(',');const label=ids.map(id=>(data.inventoryLines??[]).find(line=>line.id===id)?.label).filter(Boolean).join(' / ');return '• '+label+': '+posting.appliedQty+' unit dikurangi';}).join('\n');
  const correctionHelp=postings.map(posting=>' /koreksi '+reportIdResult+' '+posting.lineId+' <jumlah-baru> <alasan>').join('\n');
  const reconciliationText=finalBalanceCheck?formatBalanceCheck(finalBalanceCheck):'Saldo belum berhasil direkonsiliasi.';
@@ -859,7 +859,7 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
   }catch{await sendTelegramMessage(chatId,'Rekap tersimpan, tetapi stok yang lebih besar dari catatan gagal disamakan. Kirim “Update stok buka” untuk menyamakannya.');}
  }
  const nextStarted=data.countNotes?.length?await autoOpenShift(chatId,actor,data.nextShiftLabel??null).catch(()=>false):false;
- await sendLongTelegramMessage(chatId,(nextStarted?'▶️ Shift '+(data.nextShiftLabel??'berikutnya')+' otomatis dimulai dari hitungan ini.\n\n':'')+'✅ REKAP DISIMPAN'+(data.shiftLabel?' · Shift '+data.shiftLabel:'')+(summary?'\n\n'+summary:'')+'\n\n💰 Saldo: '+(finalBalanceCheck?.status==='SHORT'?'kurang '+formatTelegramRupiah(-BigInt(finalBalanceCheck.difference))+' ⚠️':finalBalanceCheck?.status==='EXCESS'?'lebih '+formatTelegramRupiah(BigInt(finalBalanceCheck.difference))+' ⚠️ (dilaporkan ke Owner)':finalBalanceCheck?.status==='MATCH'?'cocok ✅':'tercatat ✅')+'\n📦 Stok akhir: '+(closingStockDifferences.length?'ada selisih ⚠️ (dicatat untuk Owner)':'sesuai ✅')+'\n\nSalah catat? Tulis saja, contoh: axis 13gb tadi harusnya 5.\nAda yang terlewat? Tulis: susulan <barang atau uang>.');
+ await sendLongTelegramMessage(chatId,(nextStarted?'▶️ Shift '+(data.nextShiftLabel??'berikutnya')+' otomatis dimulai dari hitungan ini.\n\n':'')+'✅ REKAP DISIMPAN'+(data.shiftLabel?' · Shift '+data.shiftLabel:'')+(summary?'\n\n'+summary:'')+'\n\n💰 Saldo: '+(finalBalanceCheck?.status==='SHORT'?'kurang '+formatTelegramRupiah(-BigInt(finalBalanceCheck.difference))+' ⚠️':finalBalanceCheck?.status==='MATCH'?'cocok ✅':'tercatat ✅')+'\n📦 Stok akhir: '+(closingStockDifferences.length?'ada selisih ⚠️ (dicatat untuk Owner)':'sesuai ✅')+'\n\nSalah catat? Tulis saja, contoh: axis 13gb tadi harusnya 5.\nAda yang terlewat? Tulis: susulan <barang atau uang>.');
 }
 async function handleLateEntry(m:TelegramMessage,actor:TelegramActor,content:string,updateId:bigint){
  const chatId=telegramId(m.chat.id);if(chatId===null)return;
@@ -959,7 +959,7 @@ async function handleMorningCountMessage(m:TelegramMessage,actor:TelegramActor){
  lines.push('📦 Stok: '+(result.changes.length?result.changes.length+' barang berbeda dari catatan penutup shift sebelumnya (sekarang mengikuti hitunganmu)':'semua sama dengan catatan penutup shift sebelumnya ✅')+(result.unchanged&&result.changes.length?', '+result.unchanged+' sama':''));
  for(const change of result.changes.slice(0,25))lines.push('• '+change);
  if(result.changes.length>25)lines.push('…dan '+(result.changes.length-25)+' lainnya.');
- if(result.balance)lines.push('💰 Uang awal (saldo + cash): '+money(result.balance.after)+(result.balance.changed?' (catatan sistem sebelumnya '+money(result.balance.before)+', selisih '+money(result.balance.after-result.balance.before)+'; sekarang mengikuti hitunganmu)':' ✅ sama dengan catatan sistem'));
+ if(result.balance)lines.push('💰 Uang awal (saldo + cash): '+money(result.balance.after)+(!result.balance.changed?' ✅ sama dengan catatan sistem':result.balance.after<result.balance.before?' (catatan sistem sebelumnya '+money(result.balance.before)+', selisih '+money(result.balance.after-result.balance.before)+'; sekarang mengikuti hitunganmu)':''));
  if(count.total?.amount!=null&&count.total.assumedThousands)lines.push('ℹ️ Modal “'+count.total.raw+'” dibaca '+money(count.total.amount)+' (angka tanpa satuan dianggap ribuan).');
  if(result.unmatched.length)lines.push('⚠️ Belum dikenali (tidak diubah): '+result.unmatched.join(', ')+'. Tulis ulang dengan nama lengkap atau kabari owner.');
  for(const note of result.notes)lines.push('ℹ️ '+note);
