@@ -570,3 +570,11 @@ model ProductQuota {
   quota     String
   updatedAt DateTime @updatedAt
 }
+
+// Foto barang (kode file Telegram, bukan berkasnya). Tabel terpisah dan tanpa relasi seperti kuota:
+// bila tabelnya belum tersinkron, hanya fitur foto yang tidak jalan.
+model ProductPhoto {
+  productId Int      @id
+  fileId    String
+  updatedAt DateTime @updatedAt
+}

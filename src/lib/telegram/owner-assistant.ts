@@ -21,6 +21,8 @@ import { brandKnown, catalogTokens, isStarterPack, parseNewProductSpec, parsePri
 import { parseUpdateList, type UpdateItem, type UpdateKind, type UpdateList } from './stock-list';
 import { resolveInventoryProduct } from './inventory';
 import { quickCatalogQuery } from './group-routing';
+import { sendProductPhotos } from './product-reply';
+import { loadPhotos } from '@/lib/services/product-photo';
 import { parseDeleteStatement, parseEditStatements, parseOnlyStatement, parseProviderLists } from './provider-list-parser';
 import { formatListPlan, planCatalogList, type ListItem } from './catalog-list';
 import { formatPackagePlan, planProviderNormalize, planProviderPackages, type PackageInput } from './provider-packages';
@@ -2060,6 +2062,24 @@ async function applyOwnerUpdateList(chatId: bigint, ownerId: number, rowId: stri
   return followUps();
 }
 
+// "harga charger vivo?" / "foto charger vivo" dari owner. Hanya dijawab di sini bila ada barang berfoto yang cocok persis;
+// pesan yang mengubah data (ada nominal atau kata ubah) tetap diproses asisten biasa.
+async function answerOwnerPhotoSearch(chatId: bigint, text: string): Promise<boolean> {
+  if (/\b(?:jadi|ubah|ganti|set|update|tambah(?:kan)?|kurangi|hapus|pindah|modal|naik|turun|laku|terjual)\b|\d+\s*(?:rb|ribu|k|jt|juta)\b|\d{4,}/i.test(text)) return false;
+  const query = quickCatalogQuery(text);
+  if (!query) return false;
+  const matches = (await getCatalog()).filter(product => strictProductMatch(query, product));
+  if (!matches.length) return false;
+  const photos = await loadPhotos(matches.map(product => product.id));
+  const shown = matches.filter(product => photos.has(product.id));
+  if (!shown.length) return false;
+  const line = (product: CatalogProduct) => `${product.name}\nHarga jual: ${formatIdr(product.sellPrice)}\nModal: ${formatIdr(product.costPrice)}\nStok: ${product.stock}`;
+  const failed = await sendProductPhotos(chatId, shown.slice(0, 5), line);
+  const others = [...failed, ...shown.slice(5), ...matches.filter(product => !photos.has(product.id))];
+  if (others.length) await sendTelegramMessage(chatId, 'Juga cocok:\n' + others.slice(0, 15).map(product => `• ${product.name} — ${formatIdr(product.sellPrice)} · stok ${product.stock}`).join('\n'));
+  return true;
+}
+
 export async function handleOwnerMessage(message: OwnerMessage, ownerId: number) {
   const chatId = BigInt(message.chat.id);
   if (!message.from || !telegramOwnerAuthorized(message.from.id) || message.from.id !== ownerId ||
@@ -2077,6 +2097,8 @@ export async function handleOwnerMessage(message: OwnerMessage, ownerId: number)
   try {
     if (/^(?:(?:tolong\s+)?batal(?:kan)?\s+(?:yang\s+)?(?:tadi|terakhir|barusan)|undo|kembalikan\s+(?:yang\s+)?(?:tadi|terakhir|barusan))\s*[.!]*$/i.test(text)) return undoLastChange(chatId, ownerId);
     if (isCombinedBalanceQuestion(text)) return sendTelegramMessage(chatId, await showCombinedBalance());
+    // Hanya pelengkap: bila gagal, pesan tetap diproses asisten seperti biasa.
+    if (await answerOwnerPhotoSearch(chatId, text).catch(() => false)) return;
     const { rowId, state } = await getOwnerChatState(chatId, ownerId);
     const claimed = await prisma.telegramDraft.updateMany({ where: { id: rowId, kind: 'OWNER_CONVERSATION', status: 'PENDING', expiresAt: { gt: new Date() } }, data: { status: 'PROCESSING' } });
     if (claimed.count !== 1) return sendTelegramMessage(chatId, 'Saya sedang menyusun pesan sebelumnya. Tunggu sebentar lalu kirim lagi; belum ada perubahan yang diterapkan.');
@@ -2186,6 +2208,11 @@ function groupProductLine(product: CatalogProduct) {
   return `• ${product.name}${product.sku ? ` · SKU ${product.sku}` : ''} · ${product.category.name}${product.provider ? ` · ${product.provider}` : ''}${product.validity ? ` · ${product.validity}` : ''}${product.quota ? ` · kuota ${product.quota}` : ''} · stok ${product.stock} unit · harga jual ${formatIdr(product.sellPrice)}${product.location?.name ? ` · ${product.location.name}` : ''}`;
 }
 
+// Keterangan foto di grup: tanpa harga modal.
+function groupPhotoCaption(product: CatalogProduct) {
+  return `${product.name}${product.quota ? ` (kuota ${product.quota})` : ''}\nHarga: ${formatIdr(product.sellPrice)}\n${product.stock > 0 ? `Stok: ${product.stock}` : 'Stok HABIS'}${product.location?.name ? `\nLokasi: ${product.location.name}` : ''}`;
+}
+
 /** Read-only group assistant; catalog changes and financial reports remain owner-only. */
 export async function handleGroupAssistantMessage(input: { chatId: bigint; identityId: string; text: string; updateId: string; implicit?: boolean }) {
   const id = groupAssistantId(input.chatId, input.identityId), now = new Date();
@@ -2220,12 +2247,16 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
     if (quickQuery) {
       const matches = await findProductCandidates(quickQuery, await getCatalog());
       if (matches.length >= 1 && matches.length <= 5) {
-        const response = matches.map(product => `• ${product.name}${product.quota ? ` (kuota ${product.quota})` : ''} — ${formatIdr(product.sellPrice)} · ${product.stock > 0 ? `stok ${product.stock}` : 'HABIS'}`).join('\n');
+        const line = (product: CatalogProduct) => `• ${product.name}${product.quota ? ` (kuota ${product.quota})` : ''} — ${formatIdr(product.sellPrice)} · ${product.stock > 0 ? `stok ${product.stock}` : 'HABIS'}`;
+        const response = matches.map(line).join('\n');
         state.history = [...state.history, { role: 'user' as const, content: input.text.slice(0, 1000) }, { role: 'assistant' as const, content: response.slice(0, 1200) }].slice(-12);
         state.lastReply = response;
         state.processedUpdateIds = [...(state.processedUpdateIds ?? []), input.updateId].slice(-80);
         await prisma.telegramDraft.update({ where: { id }, data: { payload: state as object, status: 'PENDING', expiresAt: new Date(Date.now() + GROUP_ASSISTANT_TTL) } });
-        return sendTelegramMessage(input.chatId, response);
+        // Barang berfoto dikirim sebagai foto + harga; sisanya tetap teks.
+        const rest = await sendProductPhotos(input.chatId, matches, product => groupPhotoCaption(product));
+        if (rest.length) return sendTelegramMessage(input.chatId, rest.map(line).join('\n'));
+        return;
       }
     }
     const turn = await interpretOwnerTurn({ text: input.text, history: state.history, currentActions: [],
@@ -2236,6 +2267,7 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
       return;
     }
     let reply = '';
+    const found = new Map<number, CatalogProduct>();
     if (turn.actions.some(action => !isGroupReadAction(action))) {
       reply = 'Di grup saya hanya bisa membantu cek informasi barang. Untuk menambah atau mengubah katalog, harga, dan stok, minta owner melakukannya lewat chat pribadi. Untuk mencatat penjualan atau rekap shift, kirim /rekap lalu tulis barangnya.';
     } else if (turn.clarification) {
@@ -2260,6 +2292,7 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
           evidence.push(`Ada beberapa barang yang cocok dengan “${query}”: ${matches.slice(0, 5).map(groupProductLine).join(' | ')}. Sebutkan nama atau variannya supaya saya bisa memastikan.`);
           continue;
         }
+        for (const product of matches.slice(0, 5)) found.set(product.id, product);
         evidence.push((action.kind === 'search_products' ? 'Hasil pencarian: ' : 'Data barang: ') + matches.slice(0, 5).map(groupProductLine).join('\n'));
       }
       reply = await composeOwnerReply({ text: input.text, history: state.history, evidence,
@@ -2272,7 +2305,9 @@ export async function handleGroupAssistantMessage(input: { chatId: bigint; ident
     state.lastReply = response;
     state.processedUpdateIds = [...(state.processedUpdateIds ?? []), input.updateId].slice(-80);
     await prisma.telegramDraft.update({ where: { id }, data: { payload: state as object, status: 'PENDING', expiresAt: new Date(Date.now() + GROUP_ASSISTANT_TTL) } });
-    return sendTelegramMessage(input.chatId, response);
+    const sentReply = await sendTelegramMessage(input.chatId, response);
+    if (found.size) await sendProductPhotos(input.chatId, [...found.values()], groupPhotoCaption);
+    return sentReply;
   } catch (error) {
     await prisma.telegramDraft.updateMany({ where: { id, kind: 'GROUP_ASSISTANT', status: 'PROCESSING' },
       data: { status: 'PENDING', expiresAt: new Date(Date.now() + GROUP_ASSISTANT_TTL) } });

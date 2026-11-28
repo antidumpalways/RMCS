@@ -17,6 +17,11 @@ export function sendTelegramMessage(chatId: number | bigint, text: string, reply
   return callTelegram<{ message_id?: number }>('sendMessage', { chat_id: chatId.toString(), text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
 }
 
+// Foto dikirim ulang memakai kode file yang sudah tersimpan di Telegram; keterangan foto dibatasi 1024 karakter.
+export function sendTelegramPhoto(chatId: number | bigint, fileId: string, caption: string, replyMarkup?: TelegramReplyMarkup) {
+  return callTelegram<{ message_id?: number }>('sendPhoto', { chat_id: chatId.toString(), photo: fileId, caption: caption.slice(0, 1024), ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
+}
+
 // Jawaban tombol hanya valid beberapa detik. Kalau sudah kedaluwarsa (mis. penyimpanan rekap lambat),
 // itu tidak boleh menggagalkan pesan: data sudah diproses dan Telegram akan mengulang pesan yang sama.
 export async function tryAnswerTelegramCallback(callbackQueryId: string, text: string): Promise<boolean> {

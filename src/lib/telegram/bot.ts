@@ -14,6 +14,7 @@ import { getCatalog, handleGroupAssistantMessage, handleOwnerCallback, handleOwn
 import { balanceExplanation, countMode, countShiftLabel, handoverLabels, differenceHints, isCountMessage, parseCountMessage, soldFromCounts, type CountMessage } from './group-count';
 import { applyMorningCount } from './morning-count';
 import { applyStockRaises } from './stock-raise';
+import { handleOwnerPhoto, handleOwnerPhotoPick, isOwnerPhotoMessage } from './owner-photo';
 import { handleReceiptCallback, handleReceiptMessage, isReceiptMessage } from './stock-receipt';
 import { extractCountMessage } from './count-extract';
 import { authorizedOwnerPrivateChat } from './owner-intent';
@@ -26,7 +27,7 @@ type TelegramChat={id:number;type:string};
 type TelegramUser={id:number;first_name?:string;last_name?:string;username?:string;is_bot?:boolean};
 type TelegramPhoto={file_id:string;file_unique_id:string;width:number;height:number;file_size?:number};
 type TelegramDocument={file_id:string;file_unique_id:string;file_name?:string;mime_type?:string;file_size?:number};
-type TelegramMessage={message_id:number;chat:TelegramChat;from?:TelegramUser;sender_chat?:TelegramChat;text?:string;caption?:string;photo?:TelegramPhoto[];document?:TelegramDocument;media_group_id?:string;reply_to_message?:{message_id:number;from?:TelegramUser}};
+type TelegramMessage={message_id:number;chat:TelegramChat;from?:TelegramUser;sender_chat?:TelegramChat;text?:string;caption?:string;photo?:TelegramPhoto[];document?:TelegramDocument;media_group_id?:string;reply_to_message?:{message_id:number;from?:TelegramUser;photo?:TelegramPhoto[]}};
 type TelegramCallback={id:string;from:TelegramUser;data?:string;message?:TelegramMessage};
 type TelegramUpdate={update_id:number;message?:TelegramMessage;callback_query?:TelegramCallback};
 const SESSION_TTL=12*60*60_000, UPDATE_LEASE=2*60_000;
@@ -1000,10 +1001,14 @@ async function processUpdate(u:TelegramUpdate){
    }else if(senderId!==BigInt(chat.id)||!authorizedOwnerPrivateChat(from.id,chat.id)){
     if(c)await answerTelegramCallback(c.id,'Akses tidak diizinkan.');
     else await sendTelegramMessage(chat.id,'Asisten administrasi hanya tersedia untuk owner yang telah diotorisasi.');
+   }else if(c?.data?.startsWith('rcms:owner:photo:')){
+    try{await handleOwnerPhotoPick(c,from.id);}catch{await answerTelegramCallback(c.id,'Saya belum bisa menyimpan foto itu. Coba kirim ulang.');}
    }else if(c){
     try{await handleOwnerCallback(c,from.id);}catch{
      await answerTelegramCallback(c.id,'Saya belum bisa menyelesaikan tombol ini. Periksa status terbaru sebelum mencoba lagi.');
     }
+   }else if(m&&isOwnerPhotoMessage(m)){
+    await handleOwnerPhoto(m,from.id);
    }else if(m){
     await handleOwnerMessage(m,from.id);
    }

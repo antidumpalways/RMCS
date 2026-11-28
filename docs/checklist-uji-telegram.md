@@ -227,3 +227,13 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Shift berikutnya menghitung penjualan barang itu (mis. pertalite 13 -> 3 = laku 10).
 - [ ] `Tambah stok` yang disimpan saat draf belum ditekan Selesai tidak terhapus: stok akhir = hitungan + barang masuk.
 - [ ] Catatan hitungan ringkas: satu baris per jenis (dibaca ribuan, uang di luar stok, laku, stok naik, belum ada di katalog).
+
+## V. Foto barang (aksesori)
+- [ ] Setelah deploy, workflow GitHub "Sync Prisma schema" berhasil (membuat tabel foto).
+- [ ] Chat pribadi owner: kirim foto dengan keterangan `Tambah aksesoris` / nama / `Modal: 20rb` / `Jual: 35rb` / `Stok: 5` -> barang dibuat di kategori aksesoris dan bot membalas dengan fotonya.
+- [ ] Tanpa modal atau stok -> tetap tersimpan, bot memberi tahu cara mengisinya.
+- [ ] `Foto: nama barang` pada barang yang sudah ada -> foto terpasang; nama kurang jelas -> muncul tombol pilihan.
+- [ ] Nama barang baru yang sudah ada -> hanya foto yang diganti, harga dan stok tetap.
+- [ ] Foto tanpa keterangan -> bot menampilkan contoh format.
+- [ ] Grup: `harga charger vivo`, `cari charger vivo`, `foto charger vivo`, `ada charger vivo?` -> foto + harga jual + stok, tanpa modal.
+- [ ] Barang tanpa foto dijawab teks seperti biasa.

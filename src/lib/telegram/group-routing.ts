@@ -1,7 +1,7 @@
 // Pembantu murni untuk menentukan apakah pesan grup adalah catatan rekap atau pertanyaan katalog.
 // Dipisah dari bot.ts agar mudah dites.
 
-const QUESTION_START = /^(?:tolong\s+)?(?:cek|cari|harga|berapa|apakah|tanya)\b/i;
+const QUESTION_START = /^(?:tolong\s+)?(?:cek|cari(?:kan|in)?|foto|gambar(?:nya)?|harga|berapa|apakah|tanya)\b/i;
 const QUESTION_WORD = /\b(?:harga|berapa)\b/i;
 
 // Pertanyaan tentang katalog (harga/stok) — bukan catatan penjualan seperti "Axis 13GB 2 pcs".
@@ -73,11 +73,13 @@ export function isImplicitCatalogQuestion(text: string): boolean {
   const hasQuantityUnit = /\d+\s*(?:pcs?|unit|units?|biji|buah|lembar|batang|pack|pak|box|bungkus)\b/i.test(value);
   const asksPrice = /\b(?:harga(?:nya)?|berapa(?:an)?|brp)\b/i.test(value);
   const asksAvailability = /\?\s*$/.test(value) && /\b(?:ada|ready|stok|stock|kosong|sisa|punya)\b/i.test(value);
-  if (asksPrice) return !hasMoney && !hasQuantityUnit;
+  // "cari charger vivo" / "foto charger vivo": minta barang ditampilkan.
+  const asksToShow = /^(?:tolong\s+)?(?:cari(?:kan|in)?|foto|gambar(?:nya)?)\s+\S/i.test(value);
+  if (asksPrice || asksToShow) return !hasMoney && !hasQuantityUnit;
   return asksAvailability && !hasMoney && !hasQuantityUnit;
 }
 
-const QUESTION_FILLER = new Set(['harga', 'harganya', 'berapa', 'berapaan', 'brp', 'ada', 'adakah', 'ready', 'stok', 'stoknya', 'stock', 'sisa', 'kosong', 'punya', 'masih', 'cek', 'cari', 'tolong', 'tanya', 'dong', 'ya', 'kak', 'bang', 'bos', 'min', 'gak', 'ga', 'nggak', 'tidak', 'yang', 'yg', 'untuk', 'buat', 'nya', 'sih', 'nih', 'kah', 'apakah', 'info', 'mau', 'kalau', 'kalo', 'itu', 'ini', 'si', 'jual', 'dijual']);
+const QUESTION_FILLER = new Set(['harga', 'harganya', 'berapa', 'berapaan', 'brp', 'ada', 'adakah', 'ready', 'stok', 'stoknya', 'stock', 'sisa', 'kosong', 'punya', 'masih', 'cek', 'cari', 'tolong', 'tanya', 'dong', 'ya', 'kak', 'bang', 'bos', 'min', 'gak', 'ga', 'nggak', 'tidak', 'yang', 'yg', 'untuk', 'buat', 'nya', 'sih', 'nih', 'kah', 'apakah', 'info', 'mau', 'kalau', 'kalo', 'itu', 'ini', 'si', 'jual', 'dijual', 'foto', 'fotonya', 'gambar', 'gambarnya', 'carikan', 'cariin', 'lihat']);
 
 // Mengambil nama barang dari pertanyaan harga/stok sederhana ("harga axis 3 hari berapa?" => "axis 3 hari").
 // Mengembalikan null bila bukan pertanyaan satu barang yang jelas, supaya ditangani asisten biasa.
