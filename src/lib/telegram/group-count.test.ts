@@ -47,7 +47,7 @@ test('barang laku dari selisih stok sistem dan hitungan', () => {
   assert.deepEqual(result.sold.map(line => [line.label, line.sold]), [['Telkomsel 3 Hari', 2], ['Paket Data 10GB Three (3 hari)', 3]]);
   assert.equal(result.same, 2);
   assert.deepEqual(result.unmatched, ['IM3 3 hari (3)']);
-  assert.match(result.notes[0], /BULL: hitungan 9 lebih banyak dari stok sistem 3/);
+  assert.deepEqual(result.raised, [{ productId: 5, label: 'BULL', from: 3, to: 9 }]);
 });
 
 test('keterangan lebih/kurang menyebut pertalite, aksesori, bon, dan setara berapa pcs', () => {
@@ -153,4 +153,16 @@ test('satu laporan ganti shift: nama di kop boleh shift yang selesai atau yang m
   assert.deepEqual(handoverLabels('begadang', 'pagi'), { closing: 'begadang', next: 'pagi' });
   assert.deepEqual(handoverLabels('buka', 'pagi'), { closing: 'pagi', next: 'sore' });
   assert.deepEqual(handoverLabels(null, null), { closing: null, next: null });
+});
+
+test('bentuk gabungan "6 juta 500" dibaca 6.500.000', () => {
+  assert.equal(interpretMoney('6 juta 500', 'expense').amount, 6_500_000);
+  assert.equal(interpretMoney('6jt 500rb', 'expense').amount, 6_500_000);
+  assert.equal(interpretMoney('6 juta 500.000', 'total').amount, 6_500_000);
+  assert.equal(interpretMoney('36 juta 742 ribu', 'total').amount, 36_742_000);
+  assert.equal(interpretMoney('6 juta 5', 'expense').amount, null);
+  assert.equal(interpretMoney('1,5jt', 'expense').amount, 1_500_000);
+  const NL = String.fromCharCode(10);
+  const message = parseCountMessage(['Update stok malam', 'Uang keluar: 6 juta 500', 'Uang keluar: 6 juta 500 belanja', 'Uang masuk: 2jt 30 voucher', 'Total: 36742'].join(NL), 36_000_000);
+  assert.deepEqual(message?.events.map(event => [event.money.amount, event.note]), [[6_500_000, ''], [6_500_000, 'belanja'], [2_000_000, '30 voucher']]);
 });

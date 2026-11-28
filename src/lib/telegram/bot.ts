@@ -13,6 +13,7 @@ import { identifyTelegramActor, configuredTelegramOwners, type TelegramActor } f
 import { getCatalog, handleGroupAssistantMessage, handleOwnerCallback, handleOwnerMessage } from './owner-assistant';
 import { balanceExplanation, countMode, countShiftLabel, handoverLabels, differenceHints, isCountMessage, parseCountMessage, soldFromCounts, type CountMessage } from './group-count';
 import { applyMorningCount } from './morning-count';
+import { applyStockRaises } from './stock-raise';
 import { handleReceiptCallback, handleReceiptMessage, isReceiptMessage } from './stock-receipt';
 import { extractCountMessage } from './count-extract';
 import { authorizedOwnerPrivateChat } from './owner-intent';
@@ -852,6 +853,11 @@ async function handleCallback(c:TelegramCallback,actor:TelegramActor){
   await notifyOwnersText('📋 REKAP SHIFT DISIMPAN'+(data.shiftLabel?' · '+data.shiftLabel:'')+'\nKaryawan: '+(actor.sharedRecap?actor.sharedRecap.starterName+' (disimpan oleh '+actor.displayName+')':actor.displayName)+(data.contributors?.length?'\nIkut mengisi: '+data.contributors.join(', '):'')+(summary?'\n\n'+summary:'')+'\n\nAdmin: '+formatTelegramRupiah(BigInt(recapTotals(data).service_fee))+' · Pengeluaran: '+formatTelegramRupiah(BigInt(recapTotals(data).expense))+'\n💰 Saldo: '+balanceLine+(check&&check.status!=='MATCH'?'\n'+balanceExplanation(check.status,formatTelegramRupiah(gapAbs),check.hints):'')+'\n📦 Stok akhir: '+stockLine+(data.countNotes?.length?'\n\nℹ️ Catatan hitungan:\n'+data.countNotes.map(note=>'• '+note).join('\n'):'')+'\n\nSaldo sistem sudah mengikuti hitungan karyawan. Penyebab selisih (jika ada) silakan diperiksa manual.\nID laporan: '+reportIdResult);
  }catch{/* Rincian untuk owner hanya pelengkap. */}
  // Laporan stok sekaligus serah terima: shift berikutnya langsung dimulai dari hitungan yang baru disimpan.
+ if(data.stockRaises?.length){
+  try{const raised=await applyStockRaises(data.stockRaises,actor.displayName);
+   if(raised.length)await notifyOwnersText('📈 STOK DINAIKKAN SESUAI HITUNGAN\nLaporan oleh '+actor.displayName+' (periksa bila tidak ada barang masuk):\n'+raised.map(line=>'• '+line).join('\n'));
+  }catch{await sendTelegramMessage(chatId,'Rekap tersimpan, tetapi stok yang lebih besar dari catatan gagal disamakan. Kirim “Update stok buka” untuk menyamakannya.');}
+ }
  const nextStarted=data.countNotes?.length?await autoOpenShift(chatId,actor,data.nextShiftLabel??null).catch(()=>false):false;
  await sendLongTelegramMessage(chatId,(nextStarted?'▶️ Shift '+(data.nextShiftLabel??'berikutnya')+' otomatis dimulai dari hitungan ini.\n\n':'')+'✅ REKAP DISIMPAN'+(data.shiftLabel?' · Shift '+data.shiftLabel:'')+(summary?'\n\n'+summary:'')+'\n\n💰 Saldo: '+(finalBalanceCheck?.status==='SHORT'?'kurang '+formatTelegramRupiah(-BigInt(finalBalanceCheck.difference))+' ⚠️':finalBalanceCheck?.status==='EXCESS'?'lebih '+formatTelegramRupiah(BigInt(finalBalanceCheck.difference))+' ⚠️ (dilaporkan ke Owner)':finalBalanceCheck?.status==='MATCH'?'cocok ✅':'tercatat ✅')+'\n📦 Stok akhir: '+(closingStockDifferences.length?'ada selisih ⚠️ (dicatat untuk Owner)':'sesuai ✅')+'\n\nSalah catat? Tulis saja, contoh: axis 13gb tadi harusnya 5.\nAda yang terlewat? Tulis: susulan <barang atau uang>.');
 }

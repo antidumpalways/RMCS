@@ -48,18 +48,18 @@ export async function resolveCountItems(count: CountMessage): Promise<{ counts: 
 }
 
 export async function extractCountMessage(count: CountMessage, labels: { closing: string | null; next: string | null } = { closing: null, next: null }): Promise<RecapExtraction> {
-  const { counts, catalogProducts, duplicateNotes } = await resolveCountItems(count);
+  const { counts, catalogProducts } = await resolveCountItems(count);
   const result = soldFromCounts(counts, catalogProducts);
   const inventoryLines: RecapInventoryExtraction[] = result.sold.map(line => ({
     productId: line.productId, sourceText: `${line.label}: stok sistem ${line.systemStock}, hitungan ${line.counted}`, label: line.label, quantity: line.sold, unit: 'pcs', operation: 'add', ambiguity: null }));
 
-  const entries: RecapEntry[] = [], unresolved: string[] = [], notes: string[] = [];
+  const entries: RecapEntry[] = [], unresolved: string[] = [], notes: string[] = [], readAs: string[] = [];
   const money = (key: 'admin' | 'total' | 'expense', title: string, category: RecapEntry['category'], label: string) => {
     const value = count[key];
     if (!value) return;
     if (value.amount === null) { unresolved.push(`Angka ${title} “${value.raw}” kurang jelas. Tulis misalnya 82rb atau 34.463.000.`); return; }
     entries.push({ category, label, amount: String(value.amount), operation: 'set' });
-    if (value.assumedThousands && key !== 'expense') notes.push(`${title} “${value.raw}” dibaca ${formatTelegramRupiah(value.amount)} (angka tanpa satuan dianggap ribuan). Salah? Kirim ulang dengan rb/jt, mis. ${title}: ${key === 'total' ? '34,4jt' : '82rb'}.`);
+    if (value.assumedThousands && key !== 'expense') readAs.push(`${title} ${formatTelegramRupiah(value.amount)}`);
   };
   money('admin', 'Admin', 'service_fee', 'admin transfer');
   money('expense', 'Pengeluaran', 'expense', 'pengeluaran');
@@ -71,17 +71,18 @@ export async function extractCountMessage(count: CountMessage, labels: { closing
   for (const event of count.events) {
     if (event.money.amount === null) { unresolved.push(`Angka ${title[event.kind]} “${event.money.raw}” kurang jelas. Tulis misalnya 500rb atau 500.000.`); continue; }
     if (event.kind !== 'out') cashEvents.push({ kind: event.kind, amount: String(event.money.amount), note: event.note });
-    eventLines.push(`${title[event.kind]}: ${formatTelegramRupiah(event.money.amount)}${event.note ? ' — ' + event.note : ''}${event.money.assumedThousands ? ` (dibaca dari “${event.money.raw}”)` : ''}`);
+    eventLines.push(`${title[event.kind]} ${formatTelegramRupiah(event.money.amount)}${event.note ? ' (' + event.note + ')' : ''}`);
   }
-  if (eventLines.length) notes.push('Kejadian uang yang dicatat (sudah masuk perhitungan perkiraan uang): ' + eventLines.join('; ') + '.');
+  if (readAs.length) notes.push(`Dibaca ribuan: ${readAs.join(', ')}.`);
+  if (eventLines.length) notes.push(`Uang di luar stok (sudah dihitung): ${eventLines.join('; ')}.`);
   const soldTotal = result.sold.reduce((sum, line) => sum + line.price * BigInt(line.sold), 0n);
-  if (result.sold.length) notes.push(`Barang laku dari selisih stok: ${result.sold.reduce((sum, line) => sum + line.sold, 0)} pcs, nilai katalog ${formatTelegramRupiah(soldTotal)}.`);
-  else if (count.items.length) notes.push('Tidak ada selisih stok: semua hitungan sama dengan stok sistem.');
-  if (result.unmatched.length) notes.push(`Belum dikenali (tidak dihitung, tulis ulang dengan nama lengkap atau kabari owner): ${result.unmatched.join(', ')}.`);
+  if (result.sold.length) notes.push(`Laku ${result.sold.reduce((sum, line) => sum + line.sold, 0)} pcs = ${formatTelegramRupiah(soldTotal)}.`);
+  else if (count.items.length) notes.push('Tidak ada barang yang berkurang.');
+  if (result.raised.length) notes.push(`📈 Lebih besar dari catatan (tidak dihitung terjual, stok disamakan saat Selesai): ${result.raised.map(line => `${line.label} ${line.from}→${line.to}`).join(', ')}.`);
+  if (result.unmatched.length) notes.push(`⚠️ Belum ada di katalog / nama kembar, tidak dihitung (owner perlu menambahkan): ${result.unmatched.join(', ')}.`);
   if (count.skipped.length) notes.push(`Dilewati (angka kosong): ${count.skipped.join(', ')}.`);
-  if (count.invalid.length) notes.push(`Baris ini tidak terbaca dan diabaikan: ${count.invalid.slice(0, 6).join('; ')}.`);
-  notes.push(...duplicateNotes, ...result.notes);
-  notes.unshift(`Laporan ini menutup shift${labels.closing ? ' ' + labels.closing : ''}. Setelah Selesai, shift${labels.next ? ' ' + labels.next : ' berikutnya'} otomatis dimulai dari hitungan ini. Kalau ini hanya untuk menyamakan stok dan uang awal, batalkan lalu kirim ulang dengan kop “Update stok buka”.`);
+  if (count.invalid.length) notes.push(`Baris tidak terbaca: ${count.invalid.slice(0, 6).join('; ')}.`);
+  notes.unshift(`Menutup shift${labels.closing ? ' ' + labels.closing : ''}; shift${labels.next ? ' ' + labels.next : ' berikutnya'} dimulai setelah Selesai. Hanya mau menyamakan stok? Batal, lalu kirim “Update stok buka”.`);
 
-  return { nextShiftLabel: labels.next, ...(labels.closing ? { shiftLabel: labels.closing } : {}), replaceInventory: true, entries, inventoryLines, unresolved, notes, cashEvents };
+  return { nextShiftLabel: labels.next, ...(labels.closing ? { shiftLabel: labels.closing } : {}), stockRaises: result.raised, replaceInventory: true, entries, inventoryLines, unresolved, notes, cashEvents };
 }

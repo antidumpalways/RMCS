@@ -19,7 +19,9 @@ export type CashEvent = { kind: 'in' | 'out' | 'bon'; money: CountMoney; note: s
 
 // Satu kejadian per baris, boleh diulang: "Uang masuk: 500 bayar utang pak Budi", "Uang keluar: 1190 belanja", "Bon: 200 bu Sari".
 const EVENT_LINE = /^(uang\s+masuk|pemasukan|uang\s+keluar|pengeluaran|biaya|belanja|bon|kasbon|piutang)\s*[:=]\s*(.+)$/i;
-const AMOUNT_NOTE = /^\s*((?:rp\.?\s*)?\d[\d.,]*\s*(?:rb|ribu|k|jt|juta)?)(?![\p{L}\d])\s*(.*)$/iu;
+// Pilihan pertama: bentuk gabungan "6 juta 500" / "6jt 500rb"; sesudah itu satu angka biasa.
+const AMOUNT_NOTE = /^\s*((?:rp\.?\s*)?\d+\s*(?:jt|juta)\s*(?:\d{1,3}(?:[.,]\d{3})+|\d+\s*(?:rb|ribu|k)|\d{3,})(?![\p{L}\d])|(?:rp\.?\s*)?\d[\d.,]*\s*(?:rb|ribu|k|jt|juta)?)(?![\p{L}\d])\s*(.*)$/iu;
+const COMPOUND = /^\s*(?:rp\.?\s*)?(\d+)\s*(?:jt|juta)\s*(\d{1,3}(?:[.,]\d{3})+|\d+)\s*(rb|ribu|k)?\s*$/i;
 function eventKind(word: string): CashEvent['kind'] {
   if (/^(?:uang\s+masuk|pemasukan)/i.test(word)) return 'in';
   if (/^(?:bon|kasbon|piutang)/i.test(word)) return 'bon';
@@ -63,6 +65,14 @@ export function hasExplicitUnit(raw: string): boolean {
 
 export function interpretMoney(raw: string, kind: 'admin' | 'total' | 'expense', reference: number | null = null): CountMoney {
   const text = raw.trim();
+  // "6 juta 500" = 6.500.000. Ekor satu-dua angka tanpa satuan ("6 juta 5") ambigu, jadi ditanyakan.
+  const compound = COMPOUND.exec(text);
+  if (compound) {
+    const rest = Number(compound[2].replace(/[.,]/g, '')), unit = !!compound[3];
+    const tail = unit || rest < 1000 ? rest * 1000 : rest;
+    const valid = (unit || compound[2].length >= 3) && tail < 1_000_000;
+    return { raw: text, amount: valid ? Number(compound[1]) * 1_000_000 + tail : null, assumedThousands: false };
+  }
   const explicit = parseAmount(text);
   const hasUnit = /(?:rb|ribu|k|jt|juta)\b/i.test(text) || /^\D*\d{1,3}(?:[.,]\d{3})+\D*$/.test(text);
   if (explicit === null) return { raw: text, amount: null, assumedThousands: false };
@@ -131,22 +141,24 @@ export function productLabel(product: Pick<CountProduct, 'name' | 'validity'>, d
   return duplicates && product.validity && !product.name.toLowerCase().includes(product.validity.toLowerCase()) ? `${product.name} (${product.validity})` : product.name;
 }
 
+export type CountRaise = { productId: number; label: string; from: number; to: number };
+
 export function soldFromCounts(
   counts: Array<{ item: StockListItem; product: CountProduct | null }>,
   catalog: CountProduct[],
-): { sold: CountSold[]; unmatched: string[]; notes: string[]; same: number } {
+): { sold: CountSold[]; unmatched: string[]; notes: string[]; same: number; raised: CountRaise[] } {
   const nameCount = new Map<string, number>();
   for (const product of catalog) nameCount.set(product.name.toLowerCase(), (nameCount.get(product.name.toLowerCase()) ?? 0) + 1);
-  const sold = new Map<number, CountSold>(), unmatched: string[] = [], notes: string[] = [];
+  const sold = new Map<number, CountSold>(), unmatched: string[] = [], notes: string[] = [], raised: CountRaise[] = [];
   let same = 0;
   for (const { item, product } of counts) {
     if (!product) { unmatched.push(`${item.label} (${item.stock})`); continue; }
     const label = productLabel(product, (nameCount.get(product.name.toLowerCase()) ?? 0) > 1);
     if (item.stock === product.stock) { same++; continue; }
-    if (item.stock > product.stock) { notes.push(`${label}: hitungan ${item.stock} lebih banyak dari stok sistem ${product.stock} (barang masuk?). Tidak dihitung terjual. Kalau ada barang masuk, kirim dulu “Barang masuk: nama : jumlah” lalu hitung ulang. Kalau stok sistem yang keliru, kirim sekali “Update stok buka” untuk menyamakannya.`); continue; }
+    if (item.stock > product.stock) { raised.push({ productId: product.id, label, from: product.stock, to: item.stock }); continue; }
     sold.set(product.id, { productId: product.id, label, sold: product.stock - item.stock, counted: item.stock, systemStock: product.stock, price: product.sellPrice });
   }
-  return { sold: [...sold.values()], unmatched, notes, same };
+  return { sold: [...sold.values()], unmatched, notes, same, raised };
 }
 
 // Selisih uang yang setara dengan 1-3 pcs barang berharga jual tertentu: petunjuk salah hitung/barang keluar yang belum tercatat.

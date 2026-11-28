@@ -220,3 +220,10 @@ Siapkan dulu: 1 akun karyawan, 1 akun owner, catat **stok** dan **saldo** sebelu
 - [ ] Nama di kop boleh nama shift yang selesai atau yang masuk.
 - [ ] `Update stok buka` hanya untuk menyamakan stok dan uang awal (tanpa menghitung penjualan); `Update stok tutup` memaksa laporan penutup (mis. ganti shift kurang dari 3 jam).
 - [ ] Draf yang belum ditekan Selesai belum memulai shift berikutnya.
+
+## U. Ketepatan hitungan shift
+- [ ] `Uang keluar: 6 juta 500` dan `6jt 500rb` dibaca Rp 6.500.000; `6 juta 5` ditanyakan ulang.
+- [ ] Barang yang hitungannya lebih besar dari catatan tampil satu baris "📈 Lebih besar dari catatan ... disamakan saat Selesai"; setelah Selesai stok sistem naik ke hitungan itu dan owner menerima "STOK DINAIKKAN SESUAI HITUNGAN".
+- [ ] Shift berikutnya menghitung penjualan barang itu (mis. pertalite 13 -> 3 = laku 10).
+- [ ] `Tambah stok` yang disimpan saat draf belum ditekan Selesai tidak terhapus: stok akhir = hitungan + barang masuk.
+- [ ] Catatan hitungan ringkas: satu baris per jenis (dibaca ribuan, uang di luar stok, laku, stok naik, belum ada di katalog).
